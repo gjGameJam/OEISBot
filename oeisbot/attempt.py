@@ -1,8 +1,13 @@
 """Attempt one sequence end to end: known terms -> strategies -> verified run -> re-check -> artifact.
 
-Strategy order: the entry's own PARI programs first (run longer), then, if a local model is
-configured, model-generated Python. Every run is recorded; only verified runs with new terms that
-survive the live re-check become review artifacts.
+Strategy order: the entry's own PARI programs first, then, if a local model is configured and no run
+found new terms, model-generated Python -- also after a PARI program that reproduced every known term but
+found nothing new, since a faster program is exactly what that case needs. Every run is recorded; only
+verified runs with new terms that survive the live re-check become review artifacts.
+
+`pari_plan` decides which PARI programs are worth running (not known dead ends, not provably out of reach
+of the verify budget). Selection uses the same function (`Runnable`), so a session does not pick
+sequences an attempt could only skip.
 
 A run with new terms is recorded as `recheck_pending`, and its result saved to data/pending/, *before*
 the re-check starts; the re-check then resolves it. If the re-check cannot finish (oeis.org unreachable,
@@ -14,6 +19,8 @@ import pickle
 import random
 import sqlite3
 import time
+import uuid
+from collections import Counter
 from dataclasses import dataclass, field
 from http.client import HTTPException
 from pathlib import Path
@@ -149,7 +156,15 @@ class _Attempter:
                  session_id: int | None, rep: SequenceReport, say: Callable[[str], None], do_recheck: bool):
         self.conn, self.entry, self.known, self.budgets = conn, entry, known, budgets
         self.session_id, self.rep, self.say, self.do_recheck = session_id, rep, say, do_recheck
-        self.finished = False      # a success, a superseded run, or a verified dead end: stop trying
+        # a run found new terms (whatever its re-check then says): stop trying anything else
+        self.found_new = False
+        # the latest run that reproduced every known term but found no new one: other PARI programs are
+        # unlikely to do better cheaply, but a faster model-written program still might
+        self.verified: codegen.VerifiedRun | None = None
+        # one key for every run row this attempt writes (a skip row has no extra), so the failure penalty counts
+        # attempts, not program runs (select.candidates). A uuid: two attempts on one sequence can start within
+        # the same second
+        self.call = uuid.uuid4().hex
 
     def run(self, prog: Program, form: str) -> AttemptResult:
         started = db.now()
@@ -157,26 +172,30 @@ class _Attempter:
         runs.mkdir(parents=True, exist_ok=True)
         log_path = runs / f"{self.known.a_number}-{time.strftime('%Y%m%d-%H%M%S')}-{prog.sha[:8]}.jsonl"
         if prog.language == "python":
-            (runs / f"{log_path.stem}.py").write_text(prog.source, encoding="utf-8")   # keep every generated program
+            # keep every generated program as it ran (with the driver of a members(work) program), byte for
+            # byte, so its sha256 prefix is the recorded program_sha (text mode would write CRLF on Windows)
+            (runs / f"{log_path.stem}.py").write_bytes(prog.executed.encode("utf-8"))
         self.say(f"running {prog.strategy} from {prog.origin}")
         result = run_attempt(prog, self.known, self.budgets, name=self.entry.name, log_path=log_path)
         new = result.new_terms
         self.say(f"-> {result.outcome}: {result.stop.value} ({result.detail[:160]}); reproduced "
                  f"{result.reproduced}/{self.known.count}, {len(new)} new, {result.run.wall_s:.1f} s, "
                  f"peak {result.peak_mem_bytes / 2**20:.0f} MiB")
-        extra = {"log": str(log_path), "form": form, "rewrites": prog.notes,
+        extra = {"log": str(log_path), "form": form, "rewrites": prog.notes, "attempt_call": self.call,
                  "weak_verification": result.weak_verification,
-                 # the budgets a verified-but-infeasible run is judged against (db.is_dead_end)
+                 # the budgets a verified run without new terms is judged against (db.is_dead_end)
                  "extend_wall_s": self.budgets.extend_wall_s, "mem_bytes": self.budgets.mem_bytes}
         if not new:
-            self.rep.attempt_ids.append(db.record_attempt(self.conn, result, started_at=started,
-                                                          session_id=self.session_id, extra=extra))
+            attempt_id = db.record_attempt(self.conn, result, started_at=started, session_id=self.session_id,
+                                           extra=extra)
+            self.rep.attempt_ids.append(attempt_id)
             if result.verified:
-                self.finished = True   # verified but cannot go further: other variants unlikely to do better cheaply
+                self.verified = codegen.VerifiedRun(prog.origin, self.known.count, result.stop.value, result.detail,
+                                                    attempt_id, result.verified_at_s)
             return result
 
         # new terms: record and save them as pending first, so nothing below can lose them
-        self.finished = True
+        self.found_new = True
         extra["recheck"] = "not done yet"
         attempt_id = db.record_attempt(self.conn, result, started_at=started, session_id=self.session_id,
                                        outcome="recheck_pending", extra=extra)
@@ -208,6 +227,40 @@ class _Attempter:
             self.rep.artifact = rel
             self.say(f"artifact: {rel}")
         return result
+
+
+@dataclass
+class PariPlan:
+    """The entry's PARI programs, sorted into what an attempt would do with each."""
+    runnable: list[pari.Candidate]                         # in the order they would run
+    rejected: list[pari.Rejected]                          # blocks with no supported program form
+    dead_ends: list[tuple[pari.Candidate, sqlite3.Row]]    # not worth running again (db.is_dead_end)
+    out_of_reach: list[tuple[pari.Candidate, str]]         # cannot reproduce the known terms in the verify budget
+
+    def nothing_to_run(self) -> tuple[str, str]:
+        """The skip reason and detail recorded when none of the programs runs."""
+        if not self.dead_ends and not self.out_of_reach:
+            return "no_supported_program", "; ".join(r.reason for r in self.rejected) or "no PARI program, no model"
+        if not self.dead_ends:
+            return "verify_out_of_reach", "; ".join(why for _, why in self.out_of_reach)
+        extra = f"; {len(self.out_of_reach)} more out of reach of the verify budget" if self.out_of_reach else ""
+        return "all_programs_dead_ends", (f"{len(self.dead_ends)} already tried: failed the same way, or verified "
+                                          f"and found nothing new with no smaller budget{extra}")
+
+
+def pari_plan(conn: sqlite3.Connection, entry: Entry, known: KnownTerms, budgets: Budgets) -> PariPlan:
+    candidates, rejected = pari.build_candidates(entry, known)
+    plan = PariPlan([], rejected, [], [])
+    for cand in candidates:
+        if (dead := db.is_dead_end(conn, entry.a_number, cand.program.sha, known.count, budgets)) is not None:
+            plan.dead_ends.append((cand, dead))
+        elif (why := pari.out_of_reach(cand, known, budgets.verify_wall_s)) is not None:
+            plan.out_of_reach.append((cand, why))
+        else:
+            plan.runnable.append(cand)
+    # a dead end that verified does not hold the entry's other programs back: in a later attempt the next one
+    # gets its turn (within one attempt a verified run still ends the PARI stage, attempt_sequence)
+    return plan
 
 
 def attempt_sequence(conn: sqlite3.Connection, a_number: str, budgets: Budgets = config.DEFAULT_BUDGETS, *,
@@ -242,6 +295,8 @@ def attempt_sequence(conn: sqlite3.Connection, a_number: str, budgets: Budgets =
         return skip("bfile_error", str(e))
     if bf is None:
         db.update_bfile_info(conn, a_number, "absent")
+    elif not bf.values:     # a b-file with no usable line: known_terms falls back to DATA
+        db.update_bfile_info(conn, a_number, "present", 0)
     else:
         db.update_bfile_info(conn, a_number, "present", len(bf.values), bf.last_index,
                              len(str(abs(bf.values[bf.last_index]))))
@@ -252,27 +307,37 @@ def attempt_sequence(conn: sqlite3.Connection, a_number: str, budgets: Budgets =
     say(f"known {known.describe()}{' (' + '; '.join(known.notes) + ')' if known.notes else ''}")
 
     runner = _Attempter(conn, entry, known, budgets, session_id, rep, say, do_recheck)
-    candidates, rejected = pari.build_candidates(entry, known)
-    for r in rejected:
+    plan = pari_plan(conn, entry, known, budgets)
+    for r in plan.rejected:
         say(f"PARI block {r.block}: {r.reason}")
-    tried = dead_ends = 0
-    for cand in candidates:
-        if tried >= max_programs or runner.finished:
+    for cand, dead in plan.dead_ends:
+        why = {"extend_budget": "verified before and found nothing new in no less time",
+               "infeasible": "verified before and judged the next term infeasible with no less time and memory",
+               }.get(dead["failure_mode"], "failed the same way before")
+        say(f"{cand.program.origin}: {why} (attempt #{dead['id']}: {dead['failure_mode']})")
+    for cand, why in plan.out_of_reach:
+        say(f"{cand.program.origin}: not run: {why}")
+    tried = 0
+    for cand in plan.runnable:
+        if tried >= max_programs or runner.found_new or runner.verified is not None:
             break
-        if (dead := db.is_dead_end(conn, a_number, cand.program.sha, known.count, budgets)) is not None:
-            say(f"{cand.program.origin}: failed the same way before (attempt #{dead['id']}: {dead['failure_mode']})")
-            dead_ends += 1
-            continue
         tried += 1
         runner.run(cand.program, cand.form)
 
-    if not runner.finished and model is not None:
+    if not runner.found_new and model is not None:
         if known.count < config.CODEGEN_MIN_KNOWN_TERMS:
             return skip("too_few_known_terms", f"{known.count} known terms; the model needs at least "
                         f"{config.CODEGEN_MIN_KNOWN_TERMS} so {config.CODEGEN_HELD_OUT_MIN} can be held out",
                         strategy="python:model")
+        # an entry program that verified, in this attempt or in an earlier one that is now a dead end
+        verified = runner.verified or next(
+            (codegen.VerifiedRun(cand.program.origin, known.count, dead["failure_mode"], dead["detail"] or "", dead["id"])
+             for cand, dead in plan.dead_ends if dead["verified"] and not dead["new_terms"]), None)
+        if verified is not None:
+            say(f"{verified.origin} is correct but found nothing new; asking the model for a faster program")
         try:
-            outcome = codegen.generate_and_verify(entry, known, model, lambda prog: runner.run(prog, "model"), log=say)
+            outcome = codegen.generate_and_verify(entry, known, model, lambda prog: runner.run(prog, "model"),
+                                                  log=say, verified_elsewhere=verified)
         except ModelUnavailable as e:
             say(f"model unavailable: {e}")
         else:
@@ -283,10 +348,79 @@ def attempt_sequence(conn: sqlite3.Connection, a_number: str, budgets: Budgets =
             tried += len(outcome.attempts)
 
     if tried == 0:
-        if dead_ends:
-            return skip("all_programs_dead_ends")
-        return skip("no_supported_program", "; ".join(r.reason for r in rejected) or "no PARI program, no model")
+        return skip(*plan.nothing_to_run())
     return rep
+
+
+class Runnable:
+    """A `select.candidates` keep-check that leaves out sequences an attempt could only skip: a PARI-bearing
+    sequence whose programs are all unsupported, known dead ends or out of reach of the verify budget, unless
+    the model could take it. It runs the attempt's own `pari_plan` on the known terms the attempt would use,
+    and never makes a request.
+
+    Where the attempt's gates would record a skip -- entry missing, b-file not decidable offline (the
+    attempt's lookup may download it, or record `bfile_error`), known terms inconsistent -- the row is kept
+    and the attempt records what happens. An error the attempt has no gate for would stop the session, so
+    such a row is left out and reported instead."""
+
+    def __init__(self, conn: sqlite3.Connection, budgets: Budgets, model: bool):
+        self.conn, self.budgets, self.model = conn, budgets, model
+        self.left_out: Counter[str] = Counter()     # skip reason an attempt would record -> sequences
+        self.undecided = 0                          # kept: the attempt's gates decide
+        self.errors: list[str] = []                 # left out: the check raised where an attempt would too
+
+    def __call__(self, row: sqlite3.Row) -> bool:
+        if "pari" not in set(filter(None, row["program_langs"].split(","))):
+            return True     # only in the pool when the model is on, which decides for itself
+        a = row["a_number"]
+        try:
+            reason = self._why_not(a)
+        except Exception as e:
+            self.errors.append(f"{a}: {type(e).__name__}: {e}")
+            return False
+        if reason is None:
+            return True
+        self.left_out[reason] += 1
+        return False
+
+    def _gated(self, a_number: str) -> tuple[Entry, KnownTerms] | None:
+        """Entry and known terms as the attempt gets them, or None where its gates would record a skip."""
+        entry = oeisdata.load_entry(a_number)
+        if entry is None:
+            return None                             # not_in_oeisdata
+        try:
+            decided, bf = bfile.cached(a_number)
+        except Exception:
+            return None                             # bfile.fetch would raise too: bfile_error
+        if not decided:
+            return None                             # the attempt's lookup downloads it
+        try:
+            return entry, bfile.known_terms(entry, bf)
+        except bfile.InconsistentTerms:
+            return None                             # inconsistent_known_terms
+
+    def _why_not(self, a_number: str) -> str | None:
+        gated = self._gated(a_number)
+        if gated is None:
+            self.undecided += 1
+            return None
+        entry, known = gated
+        plan = pari_plan(self.conn, entry, known, self.budgets)
+        if plan.runnable:
+            return None
+        if self.model:
+            # the model stage takes it, or records exactly this skip before trying
+            return None if known.count >= config.CODEGEN_MIN_KNOWN_TERMS else "too_few_known_terms"
+        return plan.nothing_to_run()[0]
+
+    def summary(self) -> str:
+        parts = [f"left out {sum(self.left_out.values())} that could only be skipped ("
+                 + ", ".join(f"{c} {r}" for r, c in self.left_out.most_common()) + ")"] if self.left_out else []
+        if self.undecided:
+            parts.append(f"kept {self.undecided} that only an attempt can check")
+        if self.errors:
+            parts.append(f"left out {len(self.errors)} whose check failed (first: {self.errors[0]})")
+        return "; ".join(parts)
 
 
 def run_session(conn: sqlite3.Connection, count: int, budgets: Budgets = config.DEFAULT_BUDGETS, *,
@@ -300,9 +434,12 @@ def run_session(conn: sqlite3.Connection, count: int, budgets: Budgets = config.
             log(f"session {session_id}: {left} win(s) still waiting for a re-check" if left else
                 f"session {session_id}: pending re-checks resolved")
         if a_numbers is None:
-            pool = select.candidates(conn, alpha=alpha, require_langs=None if model else {"pari"})
+            keep = Runnable(conn, budgets, model is not None)
+            pool = select.candidates(conn, alpha=alpha, require_langs=None if model else {"pari"}, keep=keep)
             chosen = [c.a_number for c in select.pick(pool, count, random.Random(seed))]
-            log(f"session {session_id}: picked {len(chosen)} of {len(pool)} candidates (alpha={alpha})")
+            summary = keep.summary()
+            log(f"session {session_id}: picked {len(chosen)} of {len(pool)} candidates (alpha={alpha})"
+                + (f"; {summary}" if summary else ""))
         else:
             chosen = a_numbers[:count]
         for a in chosen:

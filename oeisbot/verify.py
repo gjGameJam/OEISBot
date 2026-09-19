@@ -6,7 +6,7 @@ Runs a program in the sandbox and checks every term as it streams out, as (index
   * every known term must match; the first mismatch kills the run
   * only after *all* known terms are reproduced is anything beyond them recorded as new
   * when verification completes, and after each new term, the next term is projected;
-    infeasible -> stop; a term running far past its projection -> kill
+    infeasible -> stop; a term running far past a trusted projection -> kill
   * every term is appended to a JSONL log outside the sandbox as it arrives, so a kill
     never loses finished work
 """
@@ -29,6 +29,9 @@ from .terms import KnownTerms, Program
 sys.set_int_max_str_digits(0)
 
 WEAK_VERIFICATION_TERMS = 10   # fewer known terms than this: reproducing them is weak evidence
+# raised by a driver when the program breaks the contract the driver enforces (codegen.MEMBERS_DRIVER:
+# members out of order). The order is then wrong somewhere, so no new term of that run can be trusted.
+CONTRACT_ERROR = "OEISBotContractError"
 
 
 class Stop(str, Enum):
@@ -72,7 +75,7 @@ class TermRecord:
     dt: float         # this term alone
     dcpu: float
     dwork: int
-    kind: str         # 'known' | 'new' | 'unchecked' (gap in known terms)
+    kind: str         # 'known' | 'new' | 'unchecked' (gap in known terms) | 'void' (new, then disowned)
 
 
 @dataclass
@@ -96,10 +99,12 @@ class Prediction:
     censored_s: float | None = None   # still running when stopped: actual cost is at least this
 
     @classmethod
-    def from_assessment(cls, a: estimate.Assessment) -> "Prediction":
+    def from_assessment(cls, a: estimate.Assessment, kill_factor: float) -> "Prediction":
+        """`trustworthy` is whether the over-prediction kill at `kill_factor` may act on the projection."""
+        note = a.drift_note(kill_factor)
         return cls(a.n, a.unit, a.seconds, a.seconds_low, a.seconds_high, a.mem_high,
-                   a.cost.model if a.cost else None, bool(a.cost and a.cost.trustworthy),
-                   a.feasible, a.risky, a.value_dependent, a.next_bits_high, list(a.reasons))
+                   a.cost.model if a.cost else None, a.trusted(kill_factor),
+                   a.feasible, a.risky, a.value_dependent, a.next_bits_high, list(a.reasons) + ([note] if note else []))
 
 
 @dataclass
@@ -176,6 +181,12 @@ class Harness:
             return None
         if line.startswith("@ERR"):
             self.child_error = line[4:].strip()
+            if self.child_error.startswith(CONTRACT_ERROR + ":"):
+                # a value that should have come earlier arrived late: every new term may be misplaced
+                for rec in self.records:
+                    if rec.kind == "new":
+                        rec.kind = "void"
+                return self._halt(Stop.PROTOCOL, self.child_error)
             return None
         if not line.startswith("@T "):
             return None
@@ -257,7 +268,7 @@ class Harness:
         pts, unit = self.points()
         remaining = self.budgets.extend_wall_s - (t - self.verified_at)
         a = estimate.assess(pts, n_next, unit=unit, time_budget_s=remaining, mem_budget=self.mem_cap, name=self.name)
-        self.predictions.append(Prediction.from_assessment(a))
+        self.predictions.append(Prediction.from_assessment(a, self.budgets.over_prediction_factor))
         self.term_started_at = t
         self.kill_after = a.kill_after_s(self.budgets.over_prediction_factor)
         if not a.feasible:

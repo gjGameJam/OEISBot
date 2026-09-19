@@ -115,6 +115,9 @@ CREATE INDEX IF NOT EXISTS reviews_a ON reviews(a_number);
 OPEN_REVIEW_STATUSES = ("new", "reviewing", "submitted")
 # failures that will repeat identically if the same program is run again on the same known terms
 DETERMINISTIC_FAILURES = ("wrong_term", "bad_index", "protocol", "crash", "incomplete")
+# a verified run that used its whole extension without a new term is a dead end only if it had the CPU:
+# a run starved by a busy machine did less work than its budget allows. Real runs had 0.93-0.99.
+EXTEND_DEAD_END_MIN_CPU_SHARE = 0.8
 
 
 def now() -> str:
@@ -236,17 +239,26 @@ def pending_recheck(conn: sqlite3.Connection, a_number: str) -> sqlite3.Row | No
 def is_dead_end(conn: sqlite3.Connection, a_number: str, program_sha: str, known_terms: int,
                 budgets: config.Budgets) -> sqlite3.Row | None:
     """A previous attempt that ran this exact program against the same number of known terms and
-    failed deterministically, or verified but judged the next term infeasible under an extension time
-    and memory budget at least as large as these. (Attempts recorded before the budgets were stored in
-    `extra` never count as infeasible dead ends.)"""
+    failed deterministically; or verified, found no new term, and either judged the next term infeasible
+    under an extension time and memory budget at least as large as these, or used up an extension time
+    at least as large as this one with at least EXTEND_DEAD_END_MIN_CPU_SHARE of its wall time on the CPU
+    (memory never ends a run as `extend_budget`, so memory is not compared there; attempts recorded before
+    the budgets were stored in `extra` never count for either); or ran at least `verify_wall_s` seconds
+    without reproducing the known terms (`verify_timeout`, keyed on the measured runtime, so older
+    attempts count too)."""
     return conn.execute(f"""
-        SELECT id, failure_mode, detail FROM attempts
+        SELECT id, failure_mode, detail, verified, new_terms FROM attempts
         WHERE a_number = ? AND program_sha = ? AND known_terms = ?
           AND (failure_mode IN ({','.join('?' * len(DETERMINISTIC_FAILURES))})
                OR (verified = 1 AND new_terms = 0 AND failure_mode = 'infeasible'
-                   AND json_extract(extra, '$.extend_wall_s') >= ? AND json_extract(extra, '$.mem_bytes') >= ?))
+                   AND json_extract(extra, '$.extend_wall_s') >= ? AND json_extract(extra, '$.mem_bytes') >= ?)
+               OR (verified = 1 AND new_terms = 0 AND failure_mode = 'extend_budget'
+                   AND json_extract(extra, '$.extend_wall_s') >= ? AND cpu_s >= ? * runtime_s)
+               OR (failure_mode = 'verify_timeout' AND runtime_s >= ?))
         ORDER BY id DESC LIMIT 1""", (a_number, program_sha, known_terms, *DETERMINISTIC_FAILURES,
-                                      budgets.extend_wall_s, budgets.mem_bytes)).fetchone()
+                                      budgets.extend_wall_s, budgets.mem_bytes,
+                                      budgets.extend_wall_s, EXTEND_DEAD_END_MIN_CPU_SHARE,
+                                      budgets.verify_wall_s)).fetchone()
 
 
 # ------------------------------------------------------------------ reviews

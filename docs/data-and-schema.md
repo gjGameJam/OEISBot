@@ -11,8 +11,8 @@ its own `oeisbot setup`. None of these directories is committed (see `.gitignore
 | `data/oeisbot.sqlite3` (+ `-wal`, `-shm`) | harness, CLI | the database (below) |
 | `data/oeisdata/` | `oeisbot sync` | shallow clone of `github.com/oeis/oeisdata`: `seq/A123/A123456.seq` entries and `files/A123/...` Git LFS pointers. About 2.3 GB, 676k files |
 | `data/bfiles/A123/b123456.txt` | `bfile.fetch` | cached b-files, exact bytes as downloaded. `b123456.absent` is written on any 404 but only consulted when there is no oeisdata snapshot |
-| `data/runs/<A>-<YYYYmmdd-HHMMSS>-<sha8>.jsonl` | verification harness | every term a run emitted, one JSON object per line |
-| `data/runs/<same stem>.py` | orchestrator | the source of every Python (model-generated) program that ran |
+| `data/runs/<A>-<YYYYmmdd-HHMMSS>-<sha8>.jsonl` | verification harness | every term a run emitted, one JSON object per line, as it arrived (a new term later voided by a list program's contract error stays `new` here; the attempt row counts it out) |
+| `data/runs/<same stem>.py` | orchestrator | every Python (model-generated) program that ran, as it ran: for a `members(work)` program, with the driver that numbers its members (so its sha256 prefix is the attempt's `program_sha`) |
 | `data/scratch/<A>-<lang>-<hex>/` | harness | a run's sandbox working directory; deleted after the run |
 | `data/pending/attempt-<id>.pickle` | orchestrator | the full in-memory result of a win whose re-check could not reach oeis.org (outcome `recheck_pending`); deleted once a later re-check resolves it |
 | `tools/python/` | `oeisbot setup` | embeddable CPython 3.11.9 with gmpy2 and sympy (about 110 MB) |
@@ -65,8 +65,10 @@ process stopped just after recording it.
 README warnings, when they apply:
 
 - **Weak verification**: fewer than 10 known terms.
-- **AI-generated program**: any `python:model` result, plus each **Hard-coded** bound the static scan
-  found.
+- **AI-generated program**: any `python:model` result, plus **Numbered by the runner** when the model
+  wrote `members(work)` and the driver in `executed.py` numbered the members, each **Hard-coded** bound
+  the static scan found, and **Compare with the entry's program** when the entry's own program had
+  already reproduced the known terms without finding new ones (naming it and its attempt id).
 - **Program was rewritten**: each note on a program from any strategy other than `python:model`. Today
   that means the print-loop rewrites.
 
@@ -118,26 +120,37 @@ session's `wins`.
 | `verified` | 1 if every known term was reproduced |
 | `known_terms`, `known_source` | count and source (`bfile` or `data`) of known terms |
 | `reproduced`, `new_terms` | counts |
-| `runtime_s`, `cpu_s` | sandbox wall time and job CPU time |
+| `runtime_s`, `cpu_s` | sandbox wall time and job CPU time (for a `verify_timeout` row, `runtime_s` is what the dead-end check compares with the next run's `verify_wall_s`) |
 | `peak_mem_bytes` | clamped job peak (Python) or largest reported stack figure (gp) |
 | `cost_unit` | `work` or `cpu` |
 | `projected_next_s_low/high`, `projected_next_mem` | the last projection made in the run |
 | `outcome` | `extended`, `verified`, `failed`, `superseded`, `recheck_pending` (new terms found, re-check not finished), `skipped` |
 | `failure_mode` | why it stopped: a [stop reason](verification-and-estimation.md#stop-reasons) for runs, or a skip reason (below) |
 | `detail` | human-readable detail |
-| `extra` | JSON: `log` (run log path), `form` (`a(n)`, `predicate`, `print-loop`, `model`), `rewrites` (program notes), `weak_verification`, `extend_wall_s` and `mem_bytes` (the run's budgets, used by the dead-end check; absent on older rows, which therefore never count as infeasible dead ends), and `recheck` (only when new terms were found: the re-check note; while `recheck_pending`, `not done yet` or, after a failed re-check, `not done: <ErrorType>: <message>`) |
+| `extra` | JSON: `log` (run log path), `form` (`a(n)`, `predicate`, `print-loop`, `model`), `rewrites` (program notes), `weak_verification`, `extend_wall_s` and `mem_bytes` (the run's budgets, used by the dead-end check; absent on older rows, which therefore never count as `infeasible` or `extend_budget` dead ends), `attempt_call` (a key shared by every row of one `attempt_sequence` call, so the selection's failure penalty counts attempts, not rows: a random hex string, or `legacy-<first row id of the attempt>` on the 108 run rows written before 2026-09-19, set once from their grouping; skips have no `extra`), and `recheck` (only when new terms were found: the re-check note; while `recheck_pending`, `not done yet` or, after a failed re-check, `not done: <ErrorType>: <message>`) |
 | `artifact_path` | set for wins, relative to the project root |
 
 Skip reasons: `not_in_oeisdata`, `no_more_keyword`, `open_review`, `recheck_pending`, `bfile_error`,
-`inconsistent_known_terms`, `no_supported_program`, `all_programs_dead_ends`, `too_few_known_terms`,
-`model_skip`, `model_no_runnable_code`. Skip rows leave the run columns NULL, except `verified` and
+`inconsistent_known_terms`, `no_supported_program`, `all_programs_dead_ends`, `verify_out_of_reach` (every
+PARI program is a predicate search too long for the verify budget; since 2026-09-18), `too_few_known_terms`,
+`model_skip`, `model_no_runnable_code`. Sessions no longer pick sequences that would get one of
+`no_supported_program`, `all_programs_dead_ends` or `verify_out_of_reach` when that can be decided offline
+(see [pipeline](pipeline.md#2-selection-oeisbot-run--n-n---alpha-a---seed-s---model)), so these mostly
+come from `oeisbot attempt`. Skip rows leave the run columns NULL, except `verified` and
 `new_terms`, which are `NOT NULL DEFAULT 0` and hold 0. A skip row with reason `recheck_pending` is an
 ordinary `skipped` row; only a program run's row carries the `recheck_pending` outcome.
 
 ### `predictions`: one row per projected term
 
 `attempt_id`, `n`, `cost_unit`, `predicted_s`, `predicted_s_low`, `predicted_s_high`, `predicted_mem`,
-`model` (`exp`, `poly`, `ratio`, or NULL when nothing could be projected), `trustworthy`, `feasible`,
+`model` (`exp`, `poly`, `ratio`, or NULL when nothing could be projected), `trustworthy` (whether the
+over-prediction kill acts on the projection, unless `value_dependent` is set; since 2026-09-18 this also requires that the seconds
+per cost unit are not projected to drift past the kill factor, see
+[verification](verification-and-estimation.md#assessment-estimateassess). This holds for rows stored since
+offer B: before it the kill ignored the flag, so the two kills of session 5, attempts 57 and 62, are stored
+with `trustworthy = 0`), `feasible` (0 when the projection stopped the run: projected memory over the
+budget, or projected time over the remaining extension on a trustworthy cost fit; before offer F on
+2026-09-19 an untrustworthy fit could do it too, as for attempt 93, the only such row),
 `value_dependent`, `actual_s` and `actual_mem` (NULL if the term never finished), `censored_s` (set on
 a verified run's last projection when it has no actual time and was feasible: the time from that
 projection to the end of the run). A projection that stopped the run as infeasible has neither an actual

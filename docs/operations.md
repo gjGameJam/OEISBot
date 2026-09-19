@@ -25,7 +25,7 @@ uv venv .venv --python 3.11
 uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
 .venv\Scripts\oeisbot setup
 .venv\Scripts\oeisbot sync
-.venv\Scripts\python -m pytest            # 145 tests, about 25 s; confirms the sandbox works on this machine
+.venv\Scripts\python -m pytest            # 256 tests, about 50 s; confirms the sandbox works on this machine
 ```
 
 Optional dashboard: see [dashboard](dashboard.md#running-it).
@@ -45,6 +45,7 @@ ollama ps                                # PROCESSOR should read 100% GPU
 .venv\Scripts\oeisbot sync                         # refresh the oeisdata mirror (about 70 s)
 .venv\Scripts\oeisbot run -n 10                    # pick and attempt 10 PARI-bearing sequences
 .venv\Scripts\oeisbot run -n 10 --model            # any candidate; model fallback after PARI
+.venv\Scripts\oeisbot run -n 10 --verify-s 600     # a slower second pass: revisits programs that timed out at 60 s
 .venv\Scripts\oeisbot attempts --limit 30          # what happened
 .venv\Scripts\oeisbot review list                  # wins waiting for review
 ```
@@ -57,8 +58,19 @@ A session runs sequentially in the foreground and prints one line per step:
 [A246855] -> verified: extend_budget (extension budget 120 s used); reproduced 3/3, 0 new, 122.8 s, peak 8 MiB
 ```
 
-With default budgets one sequence can take over 3 hours (10 min to verify, 3 h to extend, up to 3
-programs), so long sessions are best left running unattended.
+With default budgets a program that cannot reproduce its known terms costs at most a minute, but one
+that can may then extend for 3 hours, and with `--model` the model stage can follow it (and its own
+programs get the same budgets). Long sessions are best left running unattended.
+
+The first line of a session says how many candidates were left out because an attempt could only skip
+them (see [pipeline](pipeline.md#2-selection-oeisbot-run--n-n---alpha-a---seed-s---model)). A program that
+timed out verifying is not run again at the same or a shorter `--verify-s`: run a session with a longer
+one (say `--verify-s 600`) to give those a second, slower pass. Likewise a program that reproduced its
+known terms and then used its whole extension without a new term is not run again at the same or a
+shorter `--extend-s` (after one unproductive default run that means never at the default 3 h); the
+entry's next PARI program runs instead in a later attempt, with its own extension. Once all of them are
+dead ends, a longer `--extend-s`, `--model` (the model is asked for a faster program), or more known
+terms bring the sequence back.
 
 Stopping a session with Ctrl+C (or closing the window) ends the harness. The sandboxed job is killed
 with it by the Job Object's kill-on-close setting (tested for a killed harness). The session row is
@@ -72,8 +84,8 @@ attempt row, but every term it produced is already in `data/runs/`.
 | `setup` | install sandbox runtimes, grant access, create the database | |
 | `sync` | update oeisdata and rebuild `sequences` | `--no-pull` (use the current checkout) |
 | `stats` | languages present among candidates | `--forms` (classify PARI program shapes) |
-| `queue` | candidates with difficulty and pick probability | `--alpha A` (1), `--all` (include non-PARI), `--limit N` (40), `--sort difficulty\|weight\|a` |
-| `pick` | a weighted random draw, without attempting | `--alpha`, `--all`, `-k N` (10), `--seed S` |
+| `queue` | the pool `run` would pick from (default budgets), with difficulty and pick probability, and how many were left out as unrunnable | `--alpha A` (1), `--all` (the `run --model` pool: include non-PARI), `--limit N` (40), `--sort difficulty\|weight\|a` |
+| `pick` | a weighted random draw from that pool, without attempting | `--alpha`, `--all`, `-k N` (10), `--seed S` |
 | `attempt A... ` | attempt specific sequences (no session) | budget flags, `--model`, `--no-recheck` (testing only) |
 | `run` | pick and attempt | `-n N` (5; silently capped at 25), `--alpha`, `--seed`, `--model`, budget flags |
 | `recheck` | retry the oeis.org re-check of wins left as `recheck_pending`; exits with status 1 if any are still pending | |
@@ -84,7 +96,7 @@ attempt row, but every term it produced is already in `data/runs/`.
 | `review set ID STATUS` | change a review's status | `STATUS` = `new`, `reviewing`, `submitted`, `rejected`; `--note TEXT` |
 | `dashboard` | read-only web UI | `--host` (127.0.0.1), `--port` (8765) |
 
-Budget flags on `attempt` and `run`: `--verify-s` (600), `--extend-s` (10800), `--mem-gib` (6),
+Budget flags on `attempt` and `run`: `--verify-s` (60), `--extend-s` (10800), `--mem-gib` (6),
 `--max-new` (200). Every other limit is a constant in the code:
 
 - RAM and disk reserves, scratch cap, over-prediction factor and session cap: `Budgets` in
@@ -99,14 +111,14 @@ Budget flags on `attempt` and `run`: `--verify-s` (600), `--extend-s` (10800), `
 
 | Stop reason | Usually means | Try |
 |---|---|---|
-| `verify_timeout` | the program cannot reproduce the known terms in time (common: the last known terms were expensive for their authors too) | a longer `--verify-s`, or accept that the sequence is hard |
+| `verify_timeout` | the program cannot reproduce the known terms in time (common: the last known terms were expensive for their authors too) | a longer `--verify-s`, or accept that the sequence is hard. Until then the program is a dead end: it is not re-run at a `--verify-s` no longer than the time it already ran |
 | `wrong_term` | wrong program, or the program computes a different sequence than the entry's DATA | nothing: recorded as a dead end for this program |
 | `bad_index` | the program starts at a different index than the offset | for PARI this points to an entry whose program and offset disagree |
 | `crash` / `incomplete` | program error, or it stopped early (often a built-in limit) | read `detail`; dead end |
 | `memory_cap` | job hit its memory cap, or the machine ran low on RAM | raise `--mem-gib` if RAM allows, or close memory-hungry apps (Ollama keeps several GB loaded) |
-| `infeasible` | verified; the next term's projection exceeds the remaining budget (time, or memory: the reasons are in `detail`) | a longer `--extend-s` or a larger `--mem-gib`. Without a larger budget the program is a dead end and is not re-run for the same known terms |
-| `over_prediction` | verified; a new term ran far past its projection | check the estimator view; the projection may be poor for this sequence |
-| `extend_budget` | verified; the budget ran out without (more) new terms | a longer `--extend-s` |
+| `infeasible` | verified; the next term's projection exceeds the remaining budget (time, judged only on a trustworthy cost fit since 2026-09-19, or memory: the reasons are in `detail`) | a longer `--extend-s` or a larger `--mem-gib`. Without a larger budget the program is a dead end and is not re-run for the same known terms |
+| `over_prediction` | verified; a new term ran far past a trusted projection | check the estimator view; the projection may be poor for this sequence. Since 2026-09-18 a projection whose seconds per cost unit are projected to exceed the rate it converted with by more than the kill factor (2 by default) is not trusted, so a likely cause now is a milder climb in that rate, or a term that is simply dearer than the cost fit expects, as at the edge of the known terms (see [known limitations](known-limitations.md#verification-and-estimation)) |
+| `extend_budget` | verified; the budget ran out without (more) new terms. Also the usual end when the next term's projection was not trusted, since only a trusted one can kill a term and only a trustworthy cost fit can stop the run before it on time | a longer `--extend-s`; with `--model`, the model is asked for a faster program right away if no new terms were found. Without new terms the program is a dead end at the same or a shorter `--extend-s` (unless the machine was so busy the job got under 80% CPU) |
 | `launch_error` | not enough free RAM to start a job | free memory |
 
 Skip reasons are listed in [pipeline](pipeline.md#3-per-sequence-gates-attemptattempt_sequence).
@@ -116,8 +128,9 @@ Skip reasons are listed in [pipeline](pipeline.md#3-per-sequence-gates-attemptat
 - `oeisbot attempts` for a quick list; the dashboard's Attempts tab for counts and filters.
 - `data/runs/<A>-<time>-<sha>.jsonl` for every term a run accepted. A term that failed a check (wrong
   value, wrong index, malformed line) stops the run before it is logged; the attempt's `detail` holds it.
-- `data/runs/<same stem>.py` for model-generated programs that ran, including failed ones. Generations
-  rejected before running are not saved.
+- `data/runs/<same stem>.py` for model-generated programs that ran, including failed ones, as they ran
+  (a `members(work)` program with its driver). Generations rejected before running, including a repeat
+  of a program that already failed the same way, are not saved.
 - The dashboard's Estimator accuracy tab once there are finished projections.
 
 ### A win whose re-check failed (`recheck_pending`)
@@ -155,7 +168,8 @@ If one stays pending, the logged error type says why:
   ```
 
   Then delete `data/pending/attempt-<id>.pickle` if it exists. The new terms stay in the run log named in
-  the attempt's `extra`. `verified` counts once toward that sequence's selection penalty.
+  the attempt's `extra`. `verified` counts toward that sequence's selection penalty, at most once for
+  its attempt: nothing more if another row of the same attempt already counts.
 
 ## Reviewing a result
 
@@ -170,6 +184,8 @@ at `artifacts/<A-number>/attempt-<id>/`. Nothing has been sent anywhere.
      and ask whether lifting the bound changed the meaning.
    - *AI-generated program*: OEIS does not accept programs you do not understand. Treat the terms as a
      lead and re-derive them with a program you understand.
+   - *Numbered by the runner*: the model wrote only the list (`members(work)` in `program.py`); the driver
+     at the end of `executed.py` numbers the members from the offset and stops if they do not increase.
    - *Hard-coded bound*: terms beyond that bound may be wrong even though verification passed.
 3. **Understand the program** (`program.gp` or `program.py`) well enough to explain why it computes this
    sequence. This is required, not optional.

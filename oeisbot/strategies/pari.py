@@ -292,6 +292,32 @@ def rewrite_print_loop(stmts: list[Statement]) -> tuple[str, str, list[str]] | N
 class Candidate:
     program: Program
     form: str                   # 'a(n)' | 'predicate' | 'print-loop'
+    search_start: int | None = None   # predicate form: the first k its driver tests
+
+
+# The predicate driver cannot test candidates faster than this. Measured in the sandbox on this project's
+# machine, the cheapest predicate there is (a single comparison, `k >= L`) runs at about 5.8e6 calls/s;
+# the constant leaves over 3x headroom for faster machines. tests/test_pari.py times it and fails if the
+# measured rate ever comes within 1.5x of the constant.
+PREDICATE_MAX_RATE = 2e7
+
+
+def _approx(n: int) -> str:
+    return f"{n:.3g}" if n < 10**15 else f"about 10^{len(str(n)) - 1}"
+
+
+def out_of_reach(cand: Candidate, known: KnownTerms, verify_wall_s: float) -> str | None:
+    """Why `cand` provably cannot reproduce the known terms within `verify_wall_s`, or None. Only the
+    predicate form has such a bound: its driver calls the predicate once for every k from `search_start` up
+    to the last known term, however cheap the predicate is. Other forms' cost is not tied to the values."""
+    if cand.search_start is None:
+        return None
+    last = known.values[known.last_index]
+    calls = last - cand.search_start + 1
+    if calls <= PREDICATE_MAX_RATE * verify_wall_s:
+        return None
+    return (f"reaching a({known.last_index}) = {_approx(last)} takes {_approx(calls)} predicate calls, more than "
+            f"{PREDICATE_MAX_RATE:.0e} calls/s can make in {verify_wall_s:g} s")
 
 
 @dataclass
@@ -351,6 +377,7 @@ def build_candidates(entry: Entry, known: KnownTerms) -> tuple[list[Candidate], 
             a_fn = next((n for n, s in defs.items() if _is_a_name(n, entry.a_number) and len(s.params) >= 1), None)
             pred_fn = next((n for n, s in defs.items() if _is_predicate_name(n, entry.a_number) and len(s.params) >= 1), None)
             notes: list[str] = []
+            start = None
             if a_fn:
                 script = source + "\n" + A_DRIVER.format(first=known.first_index, fn=a_fn)
                 form = "a(n)"
@@ -384,6 +411,6 @@ def build_candidates(entry: Entry, known: KnownTerms) -> tuple[list[Candidate], 
                 continue
             seen.add(script)
             prog = Program("gp", source, origin=label, strategy=f"pari:{form}", script=script, notes=notes)
-            buckets[form].append(Candidate(prog, form))
+            buckets[form].append(Candidate(prog, form, search_start=start))
     # later programs in an entry are more often the faster rewrites; prefer them, function forms first
     return [c for form in ("a(n)", "predicate", "print-loop") for c in reversed(buckets[form])], rejected

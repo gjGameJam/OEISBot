@@ -52,6 +52,35 @@ def test_predicate_requires_increasing_terms():
     assert not cs and "not strictly increasing" in rej[0].reason
 
 
+def test_search_start_is_where_the_driver_starts():
+    """out_of_reach counts calls from search_start, so it must be the k the driver's loop begins at."""
+    for data, start in [("2,3,5,7", 1), ("-3,0,4", -3), ("0,1,4,9", 0)]:
+        c = cands("isok(k) = 1", data=data)[0][0]
+        assert c.search_start == start and f"for(oeisbot_k = {start}, +oo" in c.program.executed
+    assert cands("a(n) = prime(n)")[0][0].search_start is None
+    assert cands("for(n=1, 10^4, if(isprime(n), print1(n, \", \")))")[0][0].search_start is None
+
+
+def test_out_of_reach_bounds_predicate_searches_only():
+    budget = 60
+    limit = int(pari.PREDICATE_MAX_RATE * budget)          # calls one budget allows at most
+    fits, too_far = f"2,3,{limit}", f"2,3,{limit + 1}"     # search from k = 1: calls = last term
+    for data, reachable in [(fits, True), (too_far, False)]:        # exactly at the limit still fits
+        e = entry(["isok(k) = 1"], data=data)
+        c = pari.build_candidates(e, known(e))[0][0]
+        why = pari.out_of_reach(c, known(e), budget)
+        assert (why is None) == reachable, why
+    assert "predicate calls" in why and "a(3)" in why
+    # the same huge last term does not bound an a(n) program or a print loop
+    for prog in ("a(n) = n", "for(n=1, 10^4, if(isprime(n), print1(n, \", \")))"):
+        e = entry([prog], data=too_far)
+        c = pari.build_candidates(e, known(e))[0][0]
+        assert pari.out_of_reach(c, known(e), budget) is None
+    # a last term far beyond a float's range is still described without an overflow
+    e = entry(["isok(k) = 1"], data="2,3," + "9" * 400)
+    assert "about 10^399" in pari.out_of_reach(pari.build_candidates(e, known(e))[0][0], known(e), budget)
+
+
 def test_print_loop_rewrite_lifts_bounds():
     cs, _ = cands("for(n=1, 10^4, if(isprime(n), print1(n, \", \")))")
     c = cs[0]
@@ -105,6 +134,22 @@ def test_predicate_work_counts_reported():
     cs, _ = cands("isok(k) = isprime(k)")
     r = run_attempt(cs[0].program, known(entry(["isok(k) = isprime(k)"])), FAST)
     assert r.cost_unit == "work" and r.records[-1].work >= 71
+
+
+@runtime
+@pytest.mark.sandbox
+def test_predicate_driver_stays_below_the_rate_bound():
+    """out_of_reach is only sound while no predicate can be tested faster than PREDICATE_MAX_RATE. Time the
+    real driver on the cheapest predicate there is, a single comparison: false for every k below L, so the
+    first term arrives after exactly L calls."""
+    big = 2 * 10**7
+    e = entry([f"isok(k) = k >= {big}"], data=f"{big},{big + 1},{big + 2}")
+    c = pari.build_candidates(e, known(e))[0][0]
+    r = run_attempt(c.program, known(e), Budgets(verify_wall_s=30, extend_wall_s=0), extend=False)
+    assert r.verified, (r.stop, r.detail)
+    first = r.records[0]                       # includes gp's start-up, a few percent of the total
+    rate = (first.value - c.search_start + 1) / first.t
+    assert rate * 1.5 < pari.PREDICATE_MAX_RATE, f"{rate:.3g} predicate calls/s: raise PREDICATE_MAX_RATE"
 
 
 @runtime

@@ -220,6 +220,56 @@ def test_term_far_over_prediction_is_killed(monkeypatch):
     assert r.verified and r.stop is Stop.OVER_PREDICTION, (r.stop, r.detail)
     assert r.run.wall_s < 30
     assert r.predictions[-1].n == 19 and r.predictions[-1].censored_s >= 1.0
+    assert r.predictions[-1].trustworthy       # only a trustworthy projection kills
+
+
+def test_untrustworthy_projection_does_not_kill_the_term(monkeypatch):
+    monkeypatch.setattr(estimate, "MIN_GRACE_S", 1.0)
+    # only the last three known terms report enough work to be fitted, so the first new term's projection
+    # rests on three points: never trustworthy, however well they agree
+    prog = py("""
+        import time
+        def terms(work):
+            n = 0
+            while True:
+                if n >= 16:
+                    time.sleep(4 if n == 19 else 0.02)   # the first new term takes far longer than projected
+                    work(100 * 2 ** (n - 16))
+                yield n, 2 ** n
+                n += 1
+    """)
+    r = run_attempt(prog, POW2_KNOWN, Budgets(verify_wall_s=60, extend_wall_s=30, max_new_terms=1))
+    assert r.verified and r.stop is Stop.MAX_NEW_TERMS, (r.stop, r.detail)
+    assert [(t.n, t.value) for t in r.new_terms] == [(19, 2 ** 19)]
+    [p] = r.predictions
+    assert p.n == 19 and p.unit == "work" and not p.trustworthy and p.feasible and not p.value_dependent
+    # the rule before 2026-09-18 would have killed a(19) partway through
+    assert p.seconds_high is not None and max(estimate.MIN_GRACE_S, 2 * p.seconds_high) < p.actual_s
+
+
+def test_climbing_seconds_per_unit_does_not_kill_the_term(monkeypatch):
+    monkeypatch.setattr(estimate, "MIN_GRACE_S", 1.0)
+    # the same work every term, so the cost fit is flat and trustworthy, but from n = 14 each term takes 3x
+    # longer than the one before (like a primality test on a growing number), and a(19) takes 4 s
+    prog = py("""
+        import time
+        def terms(work):
+            n = 0
+            while True:
+                if n >= 14:
+                    time.sleep(4 if n == 19 else 0.01 * 3 ** (n - 14))
+                work(1000)
+                yield n, 2 ** n
+                n += 1
+    """)
+    r = run_attempt(prog, POW2_KNOWN, Budgets(verify_wall_s=60, extend_wall_s=30, max_new_terms=1))
+    assert r.verified and r.stop is Stop.MAX_NEW_TERMS, (r.stop, r.detail)
+    assert [(t.n, t.value) for t in r.new_terms] == [(19, 2 ** 19)]
+    [p] = r.predictions
+    assert p.n == 19 and p.unit == "work" and not p.trustworthy and p.feasible and not p.value_dependent
+    assert "not trusted to kill" in p.reasons[-1]           # so the cost fit itself was trustworthy
+    # the rule before offer A would have killed a(19) partway through
+    assert p.seconds_high is not None and max(estimate.MIN_GRACE_S, 2 * p.seconds_high) < p.actual_s
 
 
 def test_gp_program_verified():

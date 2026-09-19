@@ -20,7 +20,12 @@ Programs report terms on stdout, one line each:
 | `mem_bytes` | memory figure for this term (meaning depends on the runtime; see below) |
 
 Also recognized: `@DONE` (generator finished) and `@ERR <message>` (program failed; details on
-stderr). Any other stdout line is ignored, apart from being kept in the diagnostics tail.
+stderr). Any other stdout line is ignored, apart from being kept in the diagnostics tail. An `@ERR`
+whose message starts with `OEISBotContractError:` (`verify.CONTRACT_ERROR`, raised by the list
+contract's driver) stops the run as `protocol` and turns every new term recorded so far into kind
+`void`, so none counts: the program's order is wrong somewhere. The run log keeps them as they
+arrived, as `new`. Once a run has stopped for any other reason the harness reads no more lines, so a
+violation that would have come later is never seen.
 
 ### Python programs
 
@@ -38,6 +43,12 @@ def terms(work):
     # yield (n, a(n)) for n = offset, offset + 1, ... in order, until killed
     # call work(k) to report k units of real work (candidates tested, nodes visited, ...)
 ```
+
+A model program for a list of numbers defines `members(work)` instead, and the strategy appends a driver
+that defines this `terms(work)` from it: it numbers the members from the offset and raises
+`OEISBotContractError` on a pair or on a value not larger than the one before (see
+[strategies](strategies.md#the-list-contract-memberswork)). The runner sees an ordinary `terms(work)`;
+the harness treats that error specially (next section).
 
 The runner:
 
@@ -71,11 +82,11 @@ From `config.Budgets` (CLI flags in parentheses):
 
 | Field | Default | Used for |
 |---|---|---|
-| `verify_wall_s` (`--verify-s`) | 600 s | all known terms must be reproduced within this |
+| `verify_wall_s` (`--verify-s`) | 60 s | all known terms must be reproduced within this. Short on purpose: it is the quick first pass, and the long extension budget is only spent on programs that pass it (600 s until 2026-09-18) |
 | `extend_wall_s` (`--extend-s`) | 10,800 s | time for new terms, counted from the moment verification completed |
 | `max_new_terms` (`--max-new`) | 200 | stop after this many new terms |
 | `mem_bytes` (`--mem-gib`) | 6 GiB | job memory cap (further limited by free RAM) |
-| `over_prediction_factor` | 2.0 | kill a term running this many times past its high estimate |
+| `over_prediction_factor` | 2.0 | kill a term running this many times past its high estimate, when the projection is trusted; also the most a trusted projection's rate may drift (see [assessment](#assessment-estimateassess)) |
 | `reserve_phys_bytes` | 3 GiB | RAM kept free (see sandbox) |
 | `disk_bytes` | 512 MiB | scratch directory cap |
 | `reserve_disk_bytes` | 8 GiB | free disk kept |
@@ -114,7 +125,8 @@ strictly in index order and the first mismatch stops the run.
 
 - Not yet verified and elapsed > `verify_wall_s` → stop `verify_timeout`.
 - Verified and time since verification > `extend_wall_s` → stop `extend_budget`.
-- The term currently being computed has run longer than its kill threshold → stop `over_prediction`.
+- The term currently being computed has run longer than its kill threshold (only trusted projections
+  have one, see [assessment](#assessment-estimateassess)) → stop `over_prediction`.
 
 ## Stop reasons
 
@@ -124,10 +136,10 @@ strictly in index order and the first mismatch stops the run.
 |---|---|---|---|
 | `wrong_term` | verify | a known term did not match | yes |
 | `bad_index` | any | first index ≠ offset, or an index was skipped or repeated. After verification the run still counts as verified and earlier new terms stand | yes |
-| `protocol` | any | malformed `@T` line | yes |
-| `crash` | verify | program errored (`@ERR`) or exited non-zero before verification | yes |
+| `protocol` | any | malformed `@T` line, or a list-contract program yielding a pair or a value out of order (`OEISBotContractError`; after verification its new terms are voided) | yes |
+| `crash` | verify | program errored (`@ERR`, other than `OEISBotContractError`) or exited non-zero before verification | yes |
 | `incomplete` | verify | program ended cleanly before reproducing all known terms | yes |
-| `verify_timeout` | verify | known terms not all reproduced within `verify_wall_s` | no |
+| `verify_timeout` | verify | known terms not all reproduced within `verify_wall_s` | no, but counts as a dead end for runs with a `verify_wall_s` no larger than the time it already ran |
 | `timeout` | any | sandbox wall clock | no |
 | `memory_cap` | any | job memory cap, or system RAM low | no |
 | `cpu_cap` | any | job CPU cap (unused by the pipeline) | no |
@@ -135,16 +147,32 @@ strictly in index order and the first mismatch stops the run.
 | `output_cap` | any | stdout too large or a line over 1 MiB | no |
 | `launch_error` | start | not enough free RAM to start, or process creation failed | no |
 | `verified_only` | extend | verification done and extension was not requested | n/a |
-| `infeasible` | extend | the next term's projection does not fit the remaining budget | counts as a dead end if nothing new was found, but only for runs with an extension time and memory budget no larger than the one that stopped |
-| `over_prediction` | extend | a new term ran past `max(10 s, 2 × high estimate)` | no |
-| `extend_budget` | extend | `extend_wall_s` used up | no |
+| `infeasible` | extend | the next term's projection does not fit the remaining budget: a trustworthy cost fit's time, or the memory | counts as a dead end if nothing new was found, but only for runs with an extension time and memory budget no larger than the one that stopped |
+| `over_prediction` | extend | a new term ran past `max(10 s, 2 × high estimate)` of a trusted projection | no |
+| `extend_budget` | extend | `extend_wall_s` used up | no, but counts as a dead end if nothing new was found and the job had at least 80% CPU, for runs with an extension time no larger than the one it used up |
 | `max_new_terms` | extend | enough new terms | n/a |
 | `finished` | extend | program ended after verification, cleanly or not (new terms before the exit still count) | n/a |
 
 "Deterministic" failures are what `db.is_dead_end` refuses to repeat for the same program and the same
 number of known terms. A verified `infeasible` run with no new terms is also refused, unless the new run
 has a larger `extend_wall_s` or `mem_bytes` than the budgets stored in that attempt's `extra`; an attempt
-without stored budgets never counts.
+without stored budgets never counts. A verified `extend_budget` run with no new terms is refused too,
+unless the new run has a larger `extend_wall_s` than the one stored (memory is not compared: running out
+of memory ends a run as `memory_cap`, or as `finished` when gp's stack overflows, never as
+`extend_budget`); it counts only if the job's CPU time was at least 80% of its wall time
+(`db.EXTEND_DEAD_END_MIN_CPU_SHARE`; the nine real runs had 93–99%), so an extension spent on a busy
+machine does not make a dead end. A `verify_timeout` run is refused unless the new run has a
+`verify_wall_s` larger than that attempt's `runtime_s`: the program already ran that long without
+reproducing the known terms. (The sandbox's own `timeout` never counts.) Model programs are not checked
+here; within one model stage, a program the model sends again after a deterministic failure or a
+`verify_timeout` is not run (see [strategies](strategies.md#steps)).
+
+Why the verify budget is short: in the 16 PARI runs recorded before this change, the 3 that reproduced
+their known terms did so within 2.6 s, and in 11 of the 13 that timed out the cost per term jumped by 10×
+or more at the edge of the known terms (A272621's last three terms cost 1.4 s, 36 s and 417 s, and two
+were still missing at 600 s; the exceptions are A309238 and A265383, whose next term was not reached
+within 1.6× and 4.4× of the previous one's cost before the budget ran out). A longer budget bought almost
+nothing.
 
 When the harness itself did not stop the run, the sandbox status decides the reason: `timeout`,
 `memory_cap`, `cpu_cap`, `disk_cap`, `output_cap` and `launch_error` map to the stop of the same name.
@@ -198,7 +226,10 @@ Input: `(n, cost)` pairs with cost > 0 (most recent 24). Fewer than 3 → no pro
 6. **Range.** Predict the target with the model fitted to all points (`full`) and without the newest
    point (`dropped`). `disagreement = exp|full − dropped|`. When costs have been growing, both estimates
    are floored at the newest observed cost. `low`/`high` are the two sorted; `point` is `full`.
-7. **Trustworthy** when disagreement ≤ 3 and at least 4 points were used.
+7. **Trustworthy** when disagreement ≤ 3 and at least 4 points were used. This judges the cost fit only.
+   Only a trustworthy fit can make a term infeasible on time; whether the kill may act on the projection
+   also depends on the conversion to seconds (`trusted`, in the
+   [assessment](#assessment-estimateassess)).
 
 ### Assessment (`estimate.assess`)
 
@@ -216,14 +247,54 @@ For the next index, given the remaining extension time and the memory budget:
   threshold, so only the extension budget limits the term.
 - **Seconds.** `rate` = total wall seconds ÷ total cost over the last 5 fitted points; the point, low and
   high estimates are multiplied by it.
-- **Infeasible** when any of these hold:
-  - not value-dependent and `seconds_high` > remaining extension time;
-  - not value-dependent, disagreement > 10, and `seconds_high` > 10% of the remaining time;
+- **Rate drift.** The same 5 points' own rates (wall seconds ÷ cost) are fitted as `ln rate = a + b·n` and
+  projected to the next index; `rate_drift` = that projected rate ÷ `rate`. It is about 1 when every cost
+  unit takes as long as the last, and large when each unit keeps getting dearer: in "numbers k such that
+  8191·2^k + 1 is prime" (A377248) work counts the candidates k, and each primality test grows with k, so
+  a(7)'s rate drift was 11. The estimate in seconds is then low. It is not corrected: every correction
+  tried on the real term logs judged more terms infeasible that would have finished within the budget,
+  and such a stop gives the term up before it starts. Only trust is withdrawn (next point). The drift
+  depends on how the cost is weighted: a rate growing 1.5× per term drifts 1.95 by the next term when
+  the cost doubles per term (still trusted at the default factor of 2), and 2.9 when the cost is flat.
+- **Trusted** (`Assessment.trusted(factor)`, with `factor` = `over_prediction_factor`): the cost fit is
+  trustworthy (disagreement ≤ 3, at least 4 points) and `rate_drift ≤ factor`. A larger drift alone would
+  carry a correct term past the kill. The stored `predictions.trustworthy` is this flag, and when only the
+  drift withdrew it, the prediction's reasons say so (`drift_note`).
+- **Infeasible** when either holds:
+  - not value-dependent, the cost fit is trustworthy (disagreement ≤ 3, at least 4 points), and
+    `seconds_high` > remaining extension time;
   - `mem_high` > memory budget.
-- **Risky** when value-dependent, untrustworthy, or climbing. This lives only on the in-memory
-  prediction: it is neither stored nor acted on.
-- **Kill threshold** = `max(10 s, over_prediction_factor × seconds_high)`; none when value-dependent or when
-  there is no time projection.
+
+  An untrustworthy cost fit is not judged on time (since 2026-09-19, offer F): its term runs, with no kill
+  either, until it arrives or the extension budget is used up. When its `seconds_high` exceeds the
+  remaining time, a reason says so ("... but the fit is untrustworthy: not judged infeasible on time").
+  The trust is the cost fit's, not `trusted`: a fit that only the rate drift withdraws from the kill is
+  still judged on its high end, since a drifting rate makes the seconds too low, not too high. Before
+  offer F an untrustworthy fit stopped the run on its high end too, and also on a disagreement over 10
+  with `seconds_high` above 10% of the remaining time. Replayed on every term log (each known term
+  projected from the ones before it as if it were the first new term, at budgets of 60, 120, 300, 1800
+  and 10,800 s), 33 of the 34 stops those rules made were on untrustworthy fits: 9 stopped a term that
+  finished within the budget (A274508's a(16), A350878's a(14) and a(15), which took 0.3 to 8 s against
+  high estimates of 122 to 204 s), 7 a term that took longer. Of the 28 finished projections (per run
+  log) whose fit was untrustworthy, 10 took less than the low estimate and 14 more than the high one.
+  The price: a run whose projection is untrustworthy spends its whole remaining extension when the term
+  does not come, and then ends as `extend_budget`.
+- **Risky** when value-dependent, the cost fit is untrustworthy, or climbing (the rate drift does not
+  enter it). This lives only on the in-memory prediction: it is neither stored nor acted on.
+- **Kill threshold** = `max(10 s, over_prediction_factor × seconds_high)`, only for a trusted
+  projection. None when value-dependent, when there is no time projection, or when the projection is not
+  trusted (disagreement > 3, fewer than 4 points, or a rate drift past the factor): only the extension
+  budget stops such a term. So a kill is possible only for a stored prediction with `trustworthy = 1` and
+  `value_dependent = 0`.
+  Untrustworthy projections could kill until 2026-09-18; in session 5 that ended two of the three verified
+  runs 10 s and 24 s into their first new term, both on 3-point projections that disagreed about 5×. At
+  the edge of the known terms the next term usually costs more than extrapolation says, so an estimate the
+  estimator doubts is no evidence that the term went wrong. The rate drift was added the same day (offer
+  A): replaying the estimator on every term log, trustworthy work-unit projections would have killed
+  A377248's a(7) at 11.2 s (it took 78.5 s) and A253773's a(26) at 10 s (31.8 s), with rate drifts of 11
+  and 2.6. Every trustworthy work-unit projection in that replay drifted at least 2.6×, so in practice
+  the kill now acts only on CPU-unit projections, whose drift was 1.01, and there it can still be wrong
+  (see [known limitations](known-limitations.md#verification-and-estimation)).
 - **Next-term size.** `next_bits_high` = the newest term's bit length plus the number of steps × 1.5 × the
   largest per-index bit growth among the last three steps, + 1. It is computed but not stored or used;
   Python and PARI integers do not overflow.
@@ -239,8 +310,10 @@ A projection judged infeasible stops the run **before** that term starts.
 
 Each projection becomes a `predictions` row:
 
-- `predicted_s`, `predicted_s_low`, `predicted_s_high`, `predicted_mem`, `model`, `trustworthy`,
-  `feasible`, `value_dependent`, `cost_unit`;
+- `predicted_s`, `predicted_s_low`, `predicted_s_high`, `predicted_mem`, `model`, `trustworthy` (whether
+  the kill could act on it: `Assessment.trusted`, above; so a row with `trustworthy = 0` whose cost fit
+  was trustworthy, withdrawn only by the rate drift, can still be `feasible = 0` on time), `feasible`,
+  `value_dependent`, `cost_unit`;
 - `actual_s` and `actual_mem` if that term finished;
 - `censored_s` if the run stopped while that term was being computed (the term took at least that long).
 

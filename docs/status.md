@@ -1,12 +1,79 @@
 # Project status and handoff
 
-Snapshot as of **2026-09-17**, written at the end of session 4. This page exists so work can resume in a
-new session without the history of the one that built the project. Update it at the end of each working
-session.
+Snapshot as of **2026-09-19**, written at the end of session 5 and updated after offer B, the
+extension dead end and offers A, C, G, H, F, D and E (history items 21 to 29). This page exists so work can resume in a new session
+without the history of the one that built the project. Update it at the end of each working session.
 
-**Nothing is in flight.** No background jobs, no half-finished edits, no pending re-checks. The working
-tree is green: 145 tests pass and `scripts/check_docs.py` reports no link problems. Every decision made
-so far is in the table below; the open questions are in [next steps](#open-offers-and-next-steps).
+**No task is in progress.** The last one, offers D and E one at a time (the user, 2026-09-19: "Tackle D
+and E next. Go one item at a time and slow. Break down items into subitems when possible and use a critic
+agent to avoid defects"), is finished, in the same sections as the G, H, F task below with one critic
+agent per item: D (history item 28; the database backfilled) and E (item 29), each audited and
+re-checked. No offers are waiting for an answer. No background jobs, no pending re-checks, nothing
+committed since `1b6881d`. The working tree is green apart from one known flaky test: 256 tests, of which
+`tests/test_verify.py::test_extension_stops_when_next_term_is_projected_infeasible` fails about one run in
+four to eight on this machine (timing; offer F added one of its failure modes; fixing it is
+[next step 1](#open-offers-and-next-steps)); `scripts/check_docs.py` reports no link problems. Every
+decision made so far is in the table below; what could come next is in
+[next steps](#open-offers-and-next-steps).
+
+## Offers G, H and F, one at a time (done)
+
+The user's words (2026-09-19): "Implement G, H, and F one at a time. Break each item down into sections.
+Use a critic agent to stay on task." Each item goes through these sections, in order, and the next item
+starts only when the previous one is finished:
+
+1. **Evidence**: measure the problem on the real data first (database read-only, term logs, replays).
+2. **Plan**: a short written plan with that evidence, the channels or cases it covers, tests and docs.
+3. **Critic review**: one critic agent per item, briefed with the plan and told to keep the work on task
+   (flag scope creep as well as errors); the same agent is reused for section 7 (with SendMessage).
+4. **Decisions**: ask the user only what is genuinely theirs (scope, trade-offs), with a recommendation.
+5. **Implementation**.
+6. **Tests and mutation checks**: every new behaviour broken on purpose, each break caught, files restored
+   byte for byte (codegen.py, verify.py, estimate.py, artifact.py are CRLF; attempt.py, test_codegen.py
+   are LF).
+7. **Critic audit, then a re-check of the fixes** by the same critic.
+8. **Docs and status**: every changed behaviour in its doc page, known limitations, this page.
+
+Where each item stands:
+
+- **G** (history item 25): **done.** All eight sections, including the critic's audit and its re-check
+  of the fixes; 248 tests pass, 9 mutations caught (`mutateG.py`).
+- **H** (history item 26): **done.** All eight sections, including the critic's audit and its re-check
+  of the fixes; 248 tests pass, 9 mutations caught (`mutateH.py`).
+- **F** (history item 27): **done.** All eight sections; the user chose the rule in section 4. 254 tests
+  pass, 13 mutations caught (`mutateF.py`).
+
+Working files from the session that did offers A, C and G (not in the repo; they stay on disk unless
+Windows clears its temp folder), in `C:\Users\GRANTB~1\AppData\Local\Temp\claude\C--gtest-OEISBot\1eef21df-8ef2-4e13-91b7-c3612d34a306\scratchpad`:
+
+- `baselineA\`, `baselineC\`, `baselineG\`: copies of the tree just before each offer;
+- `mutateA.py`, `mutateC.py`, `mutateG.py`: the mutation checks (each applies text patterns to the
+  sources, runs the tests, restores byte for byte and checks sha256; patterns must match the current code);
+- `planA.md`, `planC.md`, `planG.md`; `offerA*.diff`, `offerC*.diff`, `offerG.diff`;
+- the replays and measurements: `backtest*.py`, `growth.py`, `critic\feas.py`, `c_reindex.py`,
+  `c_classify*.py`, `measureC_expected.md`, `c_measure_report.py`.
+
+Working files from the session that did offers H, F, D and E, in
+`C:\Users\GRANTB~1\AppData\Local\Temp\claude\C--gtest-OEISBot\2f7edb58-25f0-4309-8de7-4b8e603b688b\scratchpad`:
+
+- H: `baselineH\` (the tree just before H), `h_evidence.py` (the repeat rule replayed over every model
+  run), `planH.md`, `mutateH.py`, `offerH.diff` and `offerH_v2.diff` (after the audit's fixes), and the
+  critic's scripts in `criticH\`;
+- F: `baselineF\`, `f_evidence.py` and `f_alternatives.py` (the infeasibility check replayed over every
+  term log, with the candidate rules), `f_check_critic.py`, `f_points.py` (the real points the tests
+  pin), `planF.md` (sections 7 and 8: the revision after the critic, the user's decision), `mutateF.py`,
+  `offerF.diff` and `offerF_v2.diff`, and the critic's scripts in `criticF\`;
+- D: `baselineD\`, `d_evidence.py` (rows grouped into attempts, the penalty per option, the pools),
+  `d_check.py` (the grouping proof and option 1c), `planD.md` (sections 5 and 6: the revision after the
+  critic, the user's decision), `mutateD.py`, `d_backfill.py` (the one-off backfill, applied) and
+  `d_backfill_rollback_check.py` (its rollback proven on copies), `offerD.diff` and `offerD_v2.diff`, and
+  the critic's scripts in `criticD\`;
+- E: `baselineE\`, `e_evidence.py` (what the rule held back, the 300 entries with siblings, history) and
+  `e_reach.py` (which of them the rule can reach), `planE.md` (sections 4 and 5: the revision after the
+  critic, the user's decision), `mutateE.py`, `offerE.diff` and `offerE_v2.diff`, and the critic's scripts
+  in `criticE\` (its `test_longer_budget.py` shows the old rule's sibling never running).
+- `flaky_compare.py`: the flaky test run N times with the current and the pre-F `estimate.py` (next step 1).
+
 
 ## Resuming in a new session
 
@@ -17,36 +84,93 @@ so far is in the table below; the open questions are in [next steps](#open-offer
 3. **Confirm the machine is still set up** (every command should succeed without reinstalling):
 
    ```
-   .venv\Scripts\python -m pytest            # expect 145 passed
+   .venv\Scripts\python -m pytest            # expect 256 passed; test_extension_stops_when_next_term_is_projected_infeasible
+                                             # (test_verify.py) fails intermittently (next step 1): rerun it alone
    .venv\Scripts\oeisbot model-check         # expect 'ready' (first call loads the model, about a minute)
    .venv\Scripts\oeisbot stats               # expect 26,814 candidates (14,436 with no program)
-   .venv\Scripts\oeisbot attempts --limit 60 # expect 49 rows, ids 1-49
+   .venv\Scripts\oeisbot attempts --limit 200 # expect 111 rows, ids 1-111
+   .venv\Scripts\oeisbot queue --limit 0    # expect 3568 candidates; left out 1748 (1326 / 393 / 29)
    .venv\Scripts\oeisbot recheck             # expect "no wins are waiting for a re-check"
-   .venv\Scripts\python scripts\check_docs.py  # expect 0 link problems; the 6 IDENT lines are the expected ones
+   .venv\Scripts\python scripts\check_docs.py  # expect 0 link problems; the 7 IDENT lines are the expected ones
    ```
 
    If a count differs, the database has moved on from this page: trust the database and update the page.
 
 4. **Do not redo** the expensive setup: the oeisdata clone (2.3 GB), the model pull (9 GB) and `oeisbot
    setup` are done. Do not delete `data/`: it holds the attempt history.
+5. **Work the way the user asks for** ("go slow and use a critic", "review your work as you go"): write a
+   short plan with the evidence, have a separate agent critique it before coding, ask the user only the
+   decisions that are theirs, implement with tests, break each new behaviour on purpose to prove a test
+   fails (restore files byte for byte; line endings differ per file), have a separate agent audit the
+   change without being told it looks right, fix, and send the fixes back to the same auditor. Check every
+   number a reviewer reports before repeating it. Before a real run, write the expected results down.
+   Every stage so far found something the previous one missed (history items 11, 18, 21, 22, 23, 24,
+   25, 26, 27, 28, 29). The user's latest instructions: "Implement G, H, and F one at a time. Break each
+   item down into sections. Use a critic agent to stay on task" and, for D and E, "Go one item at a time
+   and slow. Break down items into subitems when possible and use a critic agent to avoid defects" (the
+   sections are in [the G, H, F task](#offers-g-h-and-f-one-at-a-time-done); one critic agent per item,
+   reused through SendMessage for the audit and the re-check). A change to the database itself (history
+   item 28): a scratch script with a dry run on a `VACUUM INTO` copy, its rollback proven there, the
+   critic's review of the script, a `VACUUM INTO` backup in `data/`, then one `BEGIN IMMEDIATE`
+   transaction holding every read, write and check.
 
 ## Where things stand
 
-- **Build:** all eight steps of the [design spec](design-spec.md) are implemented, with 145 passing tests.
+- **Build:** all eight steps of the [design spec](design-spec.md) are implemented, with 256 passing tests.
+- **Selection and the model after PARI** (session 5, 2026-09-18): the verify budget is a 60 s first pass,
+  timed-out programs are dead ends up to the time they already ran, provably hopeless predicate searches
+  are not run, sessions no longer pick sequences an attempt could only skip, and with `--model` a PARI
+  program that verifies but finds nothing new hands over to the model. Planned with a critic, audited
+  independently, re-checked. History items 17-20.
+- **Over-prediction kill** (offer B, 2026-09-18, after session 5): only a trustworthy projection can kill
+  a term now; an untrustworthy one leaves the term to the extension budget. History item 21.
+- **Rate drift** (offer A, 2026-09-18): nor can a projection whose seconds per cost unit, projected to
+  the next term, exceed the rate it was converted with by more than the kill factor (2). The estimate
+  itself is not corrected. History item 23.
+- **The list contract** (offer C, 2026-09-19): for a sequence the model judges to be a list of numbers
+  with a property, and whose known terms strictly increase, it writes `members(work)` and a driver
+  numbers the members; a program identical to one that already failed the same way is not run.
+  History item 24.
+- **Held-out values in retries** (offer G, 2026-09-19): a failure description no longer shows a program
+  value equal to a held-out term that the prompt does not already show (either sign); text the program
+  wrote itself (a crash's message, the stderr tail, a printed line that became a `protocol` stop) is
+  still passed on (known limitation). History item 25.
+- **No rerun after a timeout** (offer H, 2026-09-19): within one model stage, a program identical to one
+  that ran out of the verify budget is not run again either (`codegen.REPEATS_IN_STAGE`); it uses up its
+  generation like any other repeat. History item 26.
+- **No infeasible stop on an untrustworthy projection** (offer F, 2026-09-19): only a trustworthy cost
+  fit can stop a run as infeasible on time (memory is checked as before), so a run whose projection is
+  untrustworthy, as every real one so far, goes on until its term arrives or its extension is used up.
+  History item 27.
+- **Failure penalty per attempt** (offer D, 2026-09-19): the selection's ×2 counts attempts (one
+  `attempt_sequence` call, its run rows sharing `extra.attempt_call`), not program runs; the existing
+  rows were backfilled once, after a backup. History item 28.
+- **No hold-back** (offer E, 2026-09-19): once one of an entry's PARI programs is a budget dead end, a
+  later attempt at that budget runs the next one, with its own extension. History item 29.
+- **Extension dead end** (2026-09-18): a verified run that used its whole extension without a new term,
+  on at least 80% CPU, is not repeated at the same or a smaller `--extend-s`; the entry's other PARI
+  programs get their turn in later attempts (since offer E; it held them back until then). History items
+  22, 29.
 - **Fixes after the build** (session 3, 2026-09-17): the four offers from the end of session 2 are done,
   an independent audit of those fixes was addressed, the `fini` mismatch is fixed and the test suite grew
   from 92 to 141 tests. See history items 10 and 11.
-- **Docs:** complete and independently audited against the code (23 findings, all fixed); updated for
-  the session 3 fixes. The session 3 doc changes were audited too; its findings are fixed.
-- **Real runs:** 27 sequences attempted, 0 wins. Database session 4 was the first to spend its budget on
-  arithmetic rather than model generation, and it found that verification — not extension — is the
-  binding constraint: 5 of 6 PARI runs could not reproduce the known terms within 600 s, and the one that
-  did found no new term in 1800 s. History item 16 has the numbers; details in
+- **Docs:** complete and independently audited against the code (23 findings, all fixed), and updated
+  and audited with every change since (session 3, session 5, offer B, the extension dead end, offers A, C, G, H, F, D and E).
+- **Real runs:** 47 sequences attempted, 108 program runs, 0 wins. Database session 4 showed that
+  verification, not extension, is the binding constraint (history item 16). Session 5 measured the
+  quick-first-pass selection: 0 wasted picks, 3.6× the program runs per hour of the earlier PARI-only
+  sessions and about 3× the runs past the known terms per hour, but the same per-run pass rate (3 of 22)
+  and still no new term (item 19). The model, given its first correct-but-slow PARI programs, failed all
+  9 generations, 8 of them on index bookkeeping (item 20). After offer B, session 5's two killed
+  sequences ran again and each used its whole 300 s extension (item 21). With the list contract the
+  model verified two sequences at the first try and had no `bad_index` in 20 runs, but found no new
+  term (item 24). Details in
   [known limitations](known-limitations.md#observations-from-real-runs).
-- **Git:** branch `main` has only the initial commit (`c1109d1`, a Python `.gitignore`). **All project
-  work is uncommitted and untracked.** The user said not to worry about committing for now. `.gitignore`
-  already excludes the local state below, so `git add -A` would stage only source, tests, docs and
-  config.
+- **Git:** the user committed and pushed everything up to session 4 themselves (`1b6881d` "started oeis
+  bot", on `main`, in sync with `origin/main` at the start of session 5). **Session 5's changes are
+  uncommitted** on top of it (source, tests, docs, `dashboard/src/views.tsx`), and so are offer B, the
+  extension dead end and offers A, C, G, H, F, D and E: 32 modified files in all. Do not commit or push unless the user asks. `.gitignore`
+  excludes the local state below.
 - **Background processes:** none. The Ollama tray app keeps its server running on port 11434.
 
 ### Local state on this machine (not in git)
@@ -58,11 +182,12 @@ so far is in the table below; the open questions are in [next steps](#open-offer
 | `tools/pari/gp.exe` | PARI/GP 2.17.4 standalone |
 | AppContainer `OEISBot.Sandbox` | profile created; read grants on `tools/python`, `tools/pari`; modify grant on `data/scratch` |
 | `data/oeisdata/` | synced to commit `956668977564dbec38a657dafa875f021b4d052b` at 2026-09-17 13:06 UTC; the candidate table was rebuilt from that same checkout after the `fini` fix (`sync --no-pull`) |
-| `data/oeisbot.sqlite3` | 26,814 candidates; 4 sessions; 55 attempt rows (52 program runs, 3 skips) over 27 distinct sequences; 3 predictions; 0 reviews. Six rows have no `session_id`: standalone re-attempts, including the A129250 one that checked the retry-prompt fix |
-| `data/runs/` | 67 files (term logs and generated programs from the runs above) |
+| `data/oeisbot.sqlite3` | 26,814 candidates; 5 sessions; 111 attempt rows (108 program runs: 43 PARI, 11 of them verified, and 65 model, 2 verified; 3 skips) over 47 distinct sequences; 13 predictions; 0 reviews. 40 rows have no `session_id`: standalone `oeisbot attempt` runs, including the A129250 re-attempt, the 12 rows of the step-2 run (history item 20), the 2 rows of the offer-B check (item 21) and the 20 rows of the offer-C measurement (item 24). A copy taken just before session 5 is in that session's scratchpad only, not in the repo. Since offer D (2026-09-19) the 108 run rows carry `extra.attempt_call` (`legacy-<first row id>`, 60 distinct attempts), backfilled once; see the backup below |
+| `data/oeisbot-before-offerD.sqlite3` | a copy of the database (`VACUUM INTO`, checked table by table) taken just before offer D's backfill wrote `extra.attempt_call` into the 108 run rows on 2026-09-19; nothing else in the database was changed. Safe to delete once D is accepted |
+| `data/runs/` | 140 files (term logs and generated programs from the runs above; a run that stopped at its first term has no term log) |
 | `data/pending/` | does not exist yet (created only when a re-check fails) |
-| `data/*.log` | `clone.log`, `session1.log`, `session2_model.log`, `session3_real.log`, `bfile_sweep.log`, `model_smoke2.log`, `ollama_pull.log` (console output of earlier runs; safe to delete) |
-| `data/bfiles/` | 123 files. `fetch-bfiles` has resolved every candidate: 68 have a b-file, 26,746 do not |
+| `data/*.log` | `clone.log`, `session1.log`, `session2_model.log`, `session3_real.log`, `session5_probe.log`, `session5_model_step2.log`, `offerB_check.log`, `offerC_measure.log`, `bfile_sweep.log`, `model_smoke2.log`, `ollama_pull.log` (console output of earlier runs; safe to delete) |
+| `data/bfiles/` | 68 b-files in 55 subfolders. `fetch-bfiles` has resolved every candidate: 68 have a b-file, 26,746 do not |
 | `artifacts/` | empty (no wins) |
 | `dashboard/node_modules/`, `oeisbot/dashboard/static/` | installed and built |
 | Ollama | 0.34.1, installed with `winget --source winget`; `qwen2.5-coder:14b` pulled; runs 100% on GPU at 8k context |
@@ -96,6 +221,33 @@ so far is in the table below; the open questions are in [next steps](#open-offer
 | No long default-budget run yet | user ("Not yet", session 3) | this page |
 | Stop excluding `fini` from candidates, and fill the known test gaps | user ("Tackle these small defects...", session 3) | [pipeline](pipeline.md#1-sync-oeisbot-sync---no-pull), [development](development.md#tests) |
 | Make the retry prompt depend on the failure type, before running another session | user ("Tackle the failure-type-aware retry prompt before the run", session 4) | [strategies](strategies.md#steps) |
+| Do steps 1 (cheaper candidates: a quick first pass) and 2 (the model after a correct-but-slow PARI run) together, then a real session; go slow and use a critic | user (session 5) | history items 17-20 |
+| Default verify budget 600 s → 60 s, model programs included | user chose it among two options | [verification](verification-and-estimation.md#budgets) |
+| Test run in two parts: a PARI-only session of 20 picks (60 s verify, 1800 s extend), then `attempt` with `--model` on the three known correct-but-slow sequences | user chose it among three options, after the critic showed a `--model` session would blur the step-1 measurement | history items 19-20 |
+| A timed-out program is a dead end for any verify budget no longer than its recorded `runtime_s` (so older attempts count); predicate searches get a static bound (`PREDICATE_MAX_RATE` 2 × 10^7 calls/s); selection and attempts share `attempt.pari_plan`; selection reads b-files only from the cache | assistant, reviewed by the critic and the audit | [pipeline](pipeline.md#4a-the-entrys-own-pari-programs-always-first) |
+| The model is told when the entry's program already verified (also from an earlier attempt), and the reviewer gets a "compare with the entry's program" warning | assistant (critic and audit) | [strategies](strategies.md#what-the-model-is-shown) |
+| Leave the failure penalty counting rows (a `--model` attempt can add up to 6 doublings) until the user decides | assistant; open offer D until the user chose per attempt on 2026-09-19 (rows below) | [strategies](strategies.md#failure-penalty) |
+| Do offer B first | user ("Start with B", after the roadmap question) | this page |
+| Only a trustworthy projection (disagreement ≤ 3, at least 4 points) can kill a term; no larger grace for untrustworthy ones; the wall-per-work rate gap stays with offer A | assistant, reviewed by a critic, which also found the rate gap | [verification](verification-and-estimation.md#assessment-estimateassess), [known limitations](known-limitations.md#verification-and-estimation) |
+| Make a verified run that used its whole extension without a new term a dead end, before a long session | user ("Yes before a long session make such runs dead ends") | this page |
+| Key that dead end on `extend_wall_s` only (not memory) and require at least 80% CPU over the run's wall time; word the log and skip detail by stop reason | assistant; the CPU guard proposed by the critic, the wording fixed after the audit | [pipeline](pipeline.md#4a-the-entrys-own-pari-programs-always-first), [verification](verification-and-estimation.md#stop-reasons) |
+| An `infeasible` or `extend_budget` dead end holds back the entry's other PARI programs at that budget (a verified run already ended the PARI stage within one attempt); a program broken after verifying holds nothing back | assistant, after the audit found siblings would otherwise get the full extension in the next attempt; reversed by the user on 2026-09-19 (offer E, rows below) | [pipeline](pipeline.md#4a-the-entrys-own-pari-programs-always-first), [strategies](strategies.md#order-and-limits) |
+| Offer A: withdraw trust (so no kill) when the rate drifts; keep the over-prediction kill otherwise | user ("Drift check only", over turning the kill off by default or stretching the kill point) | [verification](verification-and-estimation.md#assessment-estimateassess) |
+| Offer A: do not correct the estimate in seconds for a growing rate | user ("Leave the number", over extrapolating the rate or taking the higher of work and wall-time projections) | [known limitations](known-limitations.md#verification-and-estimation) |
+| Measure the drift as the rate projected to the next term over the rate used, and compare it with `over_prediction_factor`, for both cost units (instead of a per-term growth threshold of 1.25) | assistant, adopting the critic's proposal: no new constant, the same result on the replay | [verification](verification-and-estimation.md#assessment-estimateassess) |
+| Offer C: the model writes `members(work)` for a list (rather than `isok(k)`, with or without a members fallback) | user ("members only") | [strategies](strategies.md#the-list-contract-memberswork) |
+| A program repeating one that already failed the same way is not run and uses up its generation (rather than re-asking without counting it, or running it) | user ("Don't run, count it") | [strategies](strategies.md#steps) |
+| Measure offer C on ten sequences at `--verify-s 60 --extend-s 120` | user ("Ten sequences, 60/120 s") | this page |
+| Ask list-or-function as a question of its own, only when the known terms strictly increase | assistant, after the same question folded into the classify prompt missed 2 of 44 | [strategies](strategies.md#the-list-contract-memberswork) |
+| Under the list contract a held-out wrong term shows neither value, and the driver's errors name positions only | assistant, from the critic | [strategies](strategies.md#steps) |
+| Offer G: hide a program value equal to a held-out term (either sign) in `wrong_term` and `bad_index` details; leave a crash's message and stderr tail as a known limitation | user ("Details only") | [strategies](strategies.md#steps), [known limitations](known-limitations.md#strategies) |
+| Offer H: a `verify_timeout` makes a repeat within the model stage (`codegen.REPEATS_IN_STAGE`), handled like offer C's repeats (not run, uses up its generation); `db.DETERMINISTIC_FAILURES` unchanged, so a longer `--verify-s` still revisits a timed-out PARI program | assistant, carrying out the user's offer H with the offer-C decision ("Don't run, count it"); the critic reviewed the plan and found no decision for the user | [strategies](strategies.md#steps) |
+| No CPU-share guard on that rule (a timeout on a busy machine still counts as a repeat, costing one generation), as `db.is_dead_end` has none; recorded as a known limitation | assistant, the critic agreeing; told to the user, who can ask for the guard | [known limitations](known-limitations.md#strategies) |
+| Offer F: an untrustworthy cost fit never stops a run as infeasible on time (rather than judging it by the low end of its range, or leaving the gate as it was) | user ("Never (F as written)"), on the assistant's recommendation, which the critic had turned from the low-end rule to this one | [verification](verification-and-estimation.md#assessment-estimateassess), [known limitations](known-limitations.md#verification-and-estimation) |
+| Offer D: the failure penalty counts attempts (one `attempt_sequence` call each), not rows, and the existing rows are backfilled once (rather than grouping only session rows at query time, leaving model rows out, or no change) | user ("Per attempt + backfill (Recommended)") | [strategies](strategies.md#failure-penalty) |
+| D's attempt key is a uuid in `extra.attempt_call` (not a column, not `extra.attempt`, which would read as a row id); a row without it or with an unreadable `extra` counts on its own; the backfill is a one-off scratch script in one transaction, after a `VACUUM INTO` backup, not added to the repo | assistant, reviewed by the critic (the transaction after its audit) | [data and schema](data-and-schema.md#attempts-one-row-per-program-run-or-per-skip) |
+| Offer E: reverse the hold-back rule, so after a budget dead end the entry's other PARI programs get their turn in later attempts (rather than keeping it, or keeping it only after `extend_budget`) | user ("Reverse: siblings get a turn (Recommended)"), on the assistant's recommendation, which the critic's review had turned from confirming | [pipeline](pipeline.md#4a-the-entrys-own-pari-programs-always-first), [known limitations](known-limitations.md#pipeline-and-recording) |
+| F's trust is the cost fit's (`Projection.trustworthy`), not `Assessment.trusted`, so a fit withdrawn from the kill only by the rate drift is still judged on its high end; the disagreement-over-10 rule and its constant removed; an untrustworthy projection over the budget gets a reason saying it was not judged on time; memory unchanged | assistant, reviewed by the critic | [verification](verification-and-estimation.md#assessment-estimateassess) |
 
 ## History (condensed)
 
@@ -253,34 +405,404 @@ so far is in the table below; the open questions are in [next steps](#open-offer
       `risky=True`, 4.9x disagreement) — it is the number, not the warning, that misleads. See open
       offer A.
 
+17. **Steps 1 and 2, planned and critiqued (session 5, 2026-09-18).** The user asked for "steps 1 and 2
+    together, then a real session to see whether more runs get past the known terms", to go slow and to
+    use a critic. The evidence first: the 3 PARI runs that ever verified did so within 2.6 s, and 11 of the
+    13 timeouts show the next term costing 10× or more than the last one reached, so time past a minute
+    bought almost nothing. A written plan was critiqued by a separate agent before any code. It corrected
+    several evidence claims, asked for one function shared by selection and attempts and for offline
+    b-file reads, and showed that a `--model` session would mostly pick sequences that bypass the PARI
+    check. The user then chose the 60 s default and the two-part test run.
+18. **Implementation, independent audit, fixes (session 5).**
+    - `config.Budgets.verify_wall_s` 600 → 60.
+    - `db.is_dead_end`: `verify_timeout` is a dead end for verify budgets up to the attempt's `runtime_s`.
+    - `pari.out_of_reach`: a predicate driver needs one call per integer up to the last known term; a
+      search needing more than `PREDICATE_MAX_RATE` × `verify_wall_s` calls is not run (skip
+      `verify_out_of_reach`). The cheapest predicate measured 5.8 × 10^6 calls/s; a sandbox test guards
+      the constant.
+    - `attempt.pari_plan` sorts an entry's PARI programs into runnable, dead ends and out of reach;
+      `attempt.Runnable`, passed to `select.candidates(keep=...)`, uses it to leave out sequences an attempt
+      could only skip (1,731 of 5,316 PARI-bearing candidates at 60 s), with `bfile.cached` for offline
+      b-file reads. `oeisbot queue`/`pick` use it too.
+    - `_Attempter.finished` split into `found_new` (stop everything) and `verified`; the model stage runs
+      after a verified run with no new terms, gets a note (`codegen.VerifiedRun`, `slow_program_note`) and
+      tags each program for the reviewer (README and Review inbox).
+
+    The independent audit found no way to lose or publish a win, escape the sandbox or leak a held-out
+    term, but: a correct program recorded as an infeasible dead end in an earlier session reached the
+    model without the note; the selection check kept rows an attempt would crash on (now left out and
+    reported); the `--model` pool counted the wrong skip reason; the rate constant had only 1.7× headroom
+    (raised from 10^7 to 2 × 10^7); 10 behaviours had no test; and several doc claims were wrong, one of
+    them a number copied from the critic unchecked (arrival times quoted as per-term costs). A re-check of
+    the fixes found an untested guard whose removal could put a held-out value into the prompt (test
+    added), a wrong penalty count in the docs, and an older crash on a b-file with no usable line (fixed).
+    145 → 178 tests; 34 deliberate code mutations, each caught by a test. The mutation scripts restore
+    files byte for byte (the first version rewrote line endings; restored from a backup).
+19. **Session 5: the quick first pass, measured.** `run -n 20 --verify-s 60 --extend-s 1800 --seed 202`,
+    no `--model`. Hypotheses were written down before the run.
+
+    | Measure | Earlier PARI-only sessions (1 and 4) | Session 5 | Expected |
+    |---|---|---|---|
+    | Picks wasted as skips | 2 of 14 | **0 of 20** | about 0 |
+    | Program runs past the known terms | 2 of 12 | 3 of 22 (14%) | unchanged, about 20% |
+    | Program runs per hour of wall clock | 7.7 | **27.6** | clearly higher |
+    | Runs past the known terms per hour | 1.3 | **3.8** | higher |
+    | New terms | 0 | 0 | probably 0 |
+
+    47.8 minutes of wall clock in all; the 17 `verify_timeout` failures cost 17 minutes together, where
+    the old 600 s budget would have spent almost 3 hours on them. Other stops: 1 `wrong_term`, 1
+    `incomplete`. The per-run rate did not rise and was not expected to: step 1 changes what a failure
+    costs and what gets picked, not what a run can do. Most picks were searches of the form "numbers k
+    such that c·b^k ± d is prime", expensive per call, which no static bound can flag.
+
+    The finding worth acting on: **2 of the 3 verified runs were killed by `over_prediction` after 10.6 s
+    and 28.5 s**, using under 2% of their 1800 s extension. A277532's a(7) was projected at 2.3 s (high
+    11.7 s, CPU unit) and A390295's a(10) at 2.5 s (work unit); both projections were marked
+    untrustworthy, but `estimate.Assessment.kill_after_s` did not look at that (fixed by offer B, item
+    21). Only A323252 used its whole extension (no new term in 1800 s). See offer B.
+20. **Step 2 exercised.** `attempt A247883 A057246 A246855 --model --verify-s 60 --extend-s 120`. Each
+    PARI program verified again (10/10, 4/4, 3/3), found nothing in 120 s, and the model stage then ran
+    with the note on all three, as designed. All 9 generations failed: 8 `bad_index`, 1 `crash`
+    (`gmpy2.sum_divisors` does not exist). The generated programs show why: for "numbers k such that"
+    sequences the model ties the index to the candidate (`n += 1` alongside `k += 1`, or `yield (n, n)`),
+    and for two of the three sequences it sent the byte-identical program three times despite the
+    protocol guidance. The feature works; the model cannot yet use it. See offer C.
+21. **Offer B: no over-prediction kill on an untrustworthy projection.** `estimate.Assessment.kill_after_s`
+    now returns no threshold unless the cost projection is trustworthy (disagreement ≤ 3 and at least 4
+    fitted points), matching the stored `predictions.trustworthy`. Options weighed: no kill (chosen), a
+    larger grace scaled by the disagreement (rejected: arbitrary, and A277532's projection was
+    untrustworthy for having 3 points, not only for disagreeing), or `risky` instead of `trustworthy`
+    (rejected: not stored, and a trustworthy climbing projection uses the ratio model built for it). A
+    critic reviewed the plan first. It confirmed the evidence from the database (both kills were on 3-point
+    projections that disagreed about 5×, and replaying the term logs reproduces the recorded estimates
+    exactly) and found a case the rule does not cover: trust judges the cost fit, not the conversion to
+    seconds. On A377248 a *trustworthy* work projection for a(7) (high 5.6 s, kill at 11.2 s) met an actual
+    78.5 s, because the wall seconds per work unit grew about 8× per term; that is left to offer A and
+    documented. It also corrected the plan's cost claim: at the default 3 h `--extend-s`, an unproductive
+    run now costs the whole 3 h, and `extend_budget` is still not a dead end (changed in item 22).
+    Tests: the recorded session-5 points replayed (their recorded high estimates reproduced, no kill), both
+    sides of the 10 s floor, no kill on disagreement or on too few points, and a sandbox run whose first new
+    term outlives the old threshold and is kept. 178 → 182 tests. An independent audit found no defect in
+    the code or downstream (dead ends, penalties, artifacts, dashboard and the model hand-over do not
+    depend on the kill), confirmed the doc numbers against the database, and found two mutations the
+    tests missed (`risky` instead of `trustworthy`; the point estimate instead of the high one), now
+    covered by a trustworthy climbing projection, plus one stale count and wording nits, fixed. 10
+    deliberate mutations (the old rule, never killing, inverted trust, disagreement only, point count
+    only, no floor, `risky`, point estimate, no value-dependent check, a harness that never kills), each
+    caught, and the four new tests each fail on their own under the old rule.
+    Real check: `attempt A277532 A390295 --extend-s 300` (attempts 90 and 91, PARI only, 60 s verify). Both
+    verified again, and both first projections were again untrustworthy (3 points; high 7.1 s and 2.6 s,
+    so the old rule would have killed at 14.2 s and 10 s). Both ran the whole 300 s and stopped
+    `extend_budget`, with censored times of 300.3 s and 300.2 s. No new term.
+22. **A used-up extension is a dead end.** The user asked for it before a long session: after offer B an
+    unproductive verified run whose first projection is untrustworthy spends its whole extension. New
+    clause in `db.is_dead_end`: verified, no new terms, `extend_budget`, stored `extend_wall_s` at least
+    the current one, and `cpu_s ≥ 0.8 × runtime_s` (`EXTEND_DEAD_END_MIN_CPU_SHARE`). A critic reviewed the
+    plan and replayed the selection check in memory: the PARI-only pool is unchanged at the default 3 h
+    and loses 2, 4 and 6 sequences at 1800, 300 and 120 s (never one for `--model`). It confirmed on
+    `gp.exe` that memory never ends a run as `extend_budget` (a stack overflow at `parisizemax` ends as
+    `finished`), so memory is not compared; proposed the CPU guard (the nine real runs had 93–99% CPU);
+    and found two tests the log rewording would break. An independent audit then found the rewording keyed
+    on the wrong thing (a program that verified and later emitted a bad index was logged as "found
+    nothing new with no less time"; now worded by stop reason) and a gap: within one attempt a verified
+    run ends the PARI stage, but in the next attempt the dead end was skipped and the entry's *other*
+    programs ran with the full extension instead (300 of the 3,568 pool sequences have 2 or more
+    runnable programs). Now an `infeasible` or `extend_budget` dead end holds the others back at that
+    budget (a held-back list in `PariPlan`, removed again by offer E, item 29); a deterministic dead end that verified first holds nothing back. The
+    pool numbers above are unchanged (each of the six has one runnable program).
+    Tests: the clause in `test_db` (boundary, more time, memory, new terms, no stored budgets, starved
+    CPU, exactly the CPU share, `over_prediction`), an end-to-end sandbox run that searches until its 2 s
+    extension runs out and is then skipped at 2 s and 1 s but run again at 3 s, the selection check
+    agreeing, a two-program entry whose other program is held back, every sibling held back by an
+    `infeasible` or `extend_budget` dead end (three blocks; added after the re-check), a
+    broken-after-verifying program that holds nothing back, and the model note from such a dead end. The
+    auditor's re-check found no defect, only those last two test gaps. 182 → 189 tests; 16 deliberate
+    mutations, each caught.
+23. **Offer A: the conversion to seconds joins trust.** The evidence first: the estimator replayed on
+    all 57 term logs (39 sequences), projecting each known term from the ones before it as if it were new.
+    In most predicate searches the seconds per work unit grow from term to term (1.4× to 7.3× per term,
+    against 0.6× to 1.02× on CPU-unit runs), and trustworthy work-unit projections would have killed
+    A377248's a(7) (78.5 s against an 11.2 s kill) and A253773's a(26) (31.8 s against 10 s). A trustworthy
+    CPU projection would have killed A274508's a(15) (32.4 s against 22.1 s), which is not a conversion
+    problem. A critic reviewed the plan. It confirmed the numbers and found three things: the replay had
+    left out each log's unfinished last term, where two more kills of unknown merit sit (A273521's a(7),
+    still running after 597 s, and A350878's a(16), after 38 s); the proposed threshold of 1.25× growth
+    per term rested on almost no steady work-unit data; and a better measure, used instead. The user chose
+    to withdraw trust only, rather than turn the kill off by default or stretch it, and to leave the
+    estimate uncorrected: every correction tried added 3 or 4 wrong infeasible stops (a term at one of
+    five budgets, finished within it) to the current rule's 9.
+    - `estimate.assess` fits the own rates (wall seconds per cost unit) of the five points the rate is
+      taken from, projects them to the next term, and stores that over the rate used as
+      `Assessment.rate_drift`.
+    - `Assessment.trusted(factor)` needs a trustworthy cost fit and a drift no larger than the kill factor.
+      The kill (`kill_after_s`) and the stored `predictions.trustworthy` (`Prediction.from_assessment`,
+      which now takes the factor) both use it, and `drift_note` adds the reason to the prediction.
+    - In the replay this withdraws every work-unit kill (drifts 2.6 to 17) and keeps the CPU ones (1.01).
+
+    Tests: A377248's real points (trustworthy fit, drift 11, no kill, stored untrusted with its reason),
+    the exact definition and both sides of the factor, the five-point window, the CPU unit steady and
+    starved, and a sandbox run whose terms get 3× dearer per term under a flat cost fit (the old rule kills
+    its first new term, the new one keeps it). 14 deliberate mutations, each caught; the timing-sensitive
+    kill tests passed 20 runs in a row.
+    An independent audit found no code defect. It replayed the old and the new estimator on all 360
+    prefixes of the 57 logs and found the estimates, ranges, feasibility at five budgets and reasons
+    identical, and the wrong kills down from 3 to 1. It re-derived every quoted number. Its findings,
+    all confirmed and fixed:
+    - the doc reason for not correcting the estimate was wrong: a run that goes on is not "only time",
+      since a used-up extension is itself a dead end (item 22); the difference is that it can still
+      find the term. The "3 or 4 more" counted stops at five budgets, not terms;
+    - three mutants survived: a drift window of four or six points (the window test only ruled out seven
+      or more) and the harness storing trust at a fixed 2 instead of its budget's factor. A test with
+      irregular rates now pins the five-point fit against an independent least-squares fit, and one
+      drives the harness in memory at factors 2 and 20;
+    - operations.md claimed every climbing rate is untrusted: a rate growing 1.5× per term drifts only
+      1.95 under a doubling cost (2.9 under a flat one), so it can still be killed; the docs now say so,
+      and known limitations records the drift's own limits (a one-step extrapolation from five points;
+      A253773's a(26) was withdrawn at 2.6);
+    - `trustworthy` described as "the kill could act on it" ignored value-dependent rows, and stale
+      "trustworthy projection" wording remained in `config.py` and `verify.py`.
+    The auditor's re-check confirmed each fix (and 15 further mutations of its own, all caught except an
+    untested overflow cap) and found three small things, fixed: the in-memory harness test depended on
+    free RAM through the memory cap (now stubbed) and its last check sat on the 10 s floor (now at factor
+    100); the stored `trustworthy` definition did not hold for session 5's two kills, stored before
+    offer B with `trustworthy = 0` (the schema and dashboard pages now say so); and operations.md said
+    work unit and twice where it means cost unit and the kill factor.
+    189 → 196 tests; 17 deliberate mutations, each caught.
+
+24. **Offer C: the list contract and repeated programs (2026-09-18/19).** The evidence first: of the 45
+    model generations so far, all 17 `bad_index` failures were on sequences that are lists of numbers with
+    a property, and the programs show why (`yield (n, n)` while counting candidates, or the prime
+    `c·b^k ± d` yielded where k belonged). Run again in the sandbox with the runner numbering the values
+    they yielded, 6 of the 17 reproduced every known term (every step-2 program for A247883 and A057246),
+    4 were right as far as they got within 60 s, and 7 were still wrong (4 of them the prime instead of k).
+    19 of the 45 generations were byte-identical to the one before (in 11 of the 15 model stages); the
+    temperature ramp does reach the model, so the retry, which shows it its own last program, is what it
+    copies. A critic reviewed the plan. It confirmed the numbers and found that the proposed measurement
+    (`attempt A247883 A057246 A246855 --model` at the default budgets) would have rerun three PARI programs
+    for 3 h each on sequences whose entries rule out new terms; that the re-index evidence favoured a
+    members generator over the `isok(k)` predicate the offer named (no isok program was ever tested, and
+    about 18% of list-style candidates without PARI end at terms a counting predicate cannot reach); that
+    a list-contract retry showing the program's wrong value at a held-out index would tell the model that
+    number is not a member. The user chose `members(work)`, not running a repeat (and counting it as a
+    generation), and a ten-sequence measurement at 60/120 s.
+    - `codegen.FORM`: when the known terms strictly increase, the model is asked on its own whether the
+      sequence is a list or a(n) of n. Folded into the classify question as a field it called two real
+      lists functions 4 times out of 4 (42 of 44 right); asked alone, 44 of 44. The classify prompt and the
+      whole `terms(work)` prompt are unchanged, word for word.
+    - `codegen.MEMBERS`: `members(work)` yields the members; `MEMBERS_DRIVER`, appended as
+      `Program.script`, numbers them from the offset and raises on a pair or a value not larger than the
+      previous one, naming positions only. The static check and code extraction follow the contract, the
+      name `terms` may not be bound at module level beside `members`, and under the list contract a
+      held-out wrong term shows neither value.
+    - A program with the syntax tree (`ast.dump`) of one that already ran in the stage and failed
+      deterministically is not run: it is a rejection, uses its generation, and the retry says so.
+    - The strategy stays `python:model` (the AI-generated warnings match that exact string); the origin
+      names the contract; a "list contract" note shows as **Numbered by the runner** in the README and the
+      dashboard (rebuilt). `data/runs/*.py` now holds the executed program, driver included, so its hash is
+      the attempt's `program_sha`. `fixed_bounds` also reads constant expressions such as `10**7`.
+
+    Tests: 25 new at first (196 → 221), including the driver in the sandbox at offsets 0, 1 and 5, both driver
+    errors naming no value, a `members(work)` win end to end, the repeat rule after each deterministic stop
+    and not after the others, and no held-out value in any list prompt. 31 deliberate mutations, each
+    caught; the first run let one through (the driver error naming the value), and the test was tightened.
+    An independent audit then found, all confirmed and fixed:
+    - **a wrong new term could be recorded.** A program yielding 2, 3, 5, 7, 11 (the known terms), 17, 13
+      had a(6) = 17 recorded as new, outcome `extended`: the driver saw 13 only after 17 was out, and an
+      error after verification counted as a normal finish. The driver now raises `OEISBotContractError`
+      (`verify.CONTRACT_ERROR`), which the harness turns into a `protocol` stop that voids the run's new
+      terms (kind `void`);
+    - the name `terms` bound at module level other than by `def` (`terms = []`, a class, an import) passed
+      the static check and was silently replaced by the driver; any module-level binding is now refused;
+    - a list retry could still show a held-out value, when the program's value at a shown index was a
+      held-out member (a(9) = 29 where 29 is the hidden a(10)); such a value is no longer shown;
+    - the run file was written in text mode, so on Windows its bytes (CRLF) did not hash to `program_sha`;
+      it is now written byte for byte;
+    - a long constant expression could crash the session through `ast.dump` or `_int_value` recursion (and
+      a longer one already through `ast.parse`); both are bounded, and unparsable code is a rejection;
+    - several surviving mutants (an equal value let through, `-` read as `+`, the repeat retry without the
+      stop's guidance, extraction without the contract, the form question's temperature, and any rewording
+      of the classify or `terms(work)` prompts, which the "unchanged" test compared only with itself),
+      and doc errors (a stage of repeats cannot end as `model_no_runnable_code`, three stale mentions of the
+      old contract or context, the predicate rate given for one driver only). The prompts are now pinned
+      against the old text.
+    The auditor's re-check confirmed those fixes and found: the voiding only works while the run is
+    going (the harness reads nothing after a stop, so the last new terms of every productive run are
+    unchecked for order), which the docs had not said; four more surviving mutants (only the latest new
+    term voided, an unreadable value taken as small, `del terms` and `import terms.x` missed), now
+    tested; and a few more module-level bindings of `terms` (`except ... as terms`, a `match` capture,
+    assignment expressions in defaults and class bases), now refused. Two pre-existing issues it found
+    are recorded as known limitations rather than changed: a `terms(work)` retry can show a program
+    value that equals a held-out term (offer G), and the artifact's `executed.py` is written in text
+    mode, so it does not hash to the sha256 in its `verification.md`.
+    196 → 242 tests; 51 deliberate mutations, each caught.
+    Measurement (the user's choice, written down beforehand in the session's scratchpad):
+    `attempt A247883 A057246 A246855 A253773 A272621 A253380 A345338 A383336 A095751 A320768 --model
+    --verify-s 60 --extend-s 120`, attempts 92-111, console log `data/offerC_measure.log`. No PARI program
+    ran (dead ends or none). Every expectation held: the list question was asked for the 9 with strictly
+    increasing known terms and answered right for all 9 (8 lists, A383336 a function); 0 `bad_index` in 20
+    runs; A247883 and A057246 verified at generation 1 (then `extend_budget`, and `infeasible` at a 3,583×
+    disagreement, offer F's case); A246855, A253773, A272621 and A253380 stopped at `verify_timeout`
+    without the "prime instead of k" failure; A345338 `wrong_term` again; 5 repeats not run, 1 generation
+    rejected for copying 7 known terms; no new term; 16 minutes of runs. Not expected: 7 of the 20 runs
+    were identical programs run again after a `verify_timeout`, which the repeat rule allows (offer H).
+
+25. **Offer G: no held-out value in a failure description (2026-09-19).** Planned in sections, with one
+    critic agent from the plan to the audit. The evidence: of the 65 model runs, 23 were
+    `wrong_term`; replaying each retry description, one carried a held-out value, attempt #105
+    (A345338, list contract): `a(1) = -10031`, the held-out a(4) = 10031 with its sign flipped, which no
+    "equals a held-out term" rule would catch. The critic confirmed it and found two more channels the
+    plan had missed (the `bad_index` detail, where 5 of 17 real ones put a value in the index slot, and a
+    crash's own message), that comparing absolute values breaks for values of 60+ digits (the harness's
+    abbreviation counts the sign), that a value both shown and held out must stay shown (A111731), and that
+    an offer-C test asserted the leak. The user chose to fix the failure details and leave the free text (a
+    crash's message and stderr tail) as a known limitation, the CLAUDE.md rule reworded to match.
+    `describe_failure` now leaves out a program value whose printed form, either sign, is that of a
+    held-out term not also shown (`_held_out_forms`), in `wrong_term` details at any index and in
+    `bad_index` details, with the wording already used for the list contract, so it does not say the
+    value is a term. Tests: 6 new (242 → 248), the offer-C test inverted.
+    The critic's audit found the change within the user's scope and two untested behaviours (a
+    `bad_index` value printed in full, over 60 digits, and a negative one), now tested; the CLAUDE.md
+    rule claiming more than the code (a value the prompt also shows is kept on purpose), now qualified;
+    and a third unscrubbed text (a line the program printed that became a `protocol` stop), now named
+    in CLAUDE.md and known limitations. 9 deliberate mutations, each caught. The critic's re-check
+    confirmed every fix with four mutations of its own (all caught), found nothing broken and nothing
+    beyond the user's scope, and G was closed.
+26. **Offer H: no rerun of a program that timed out in the same model stage (2026-09-19).** In sections,
+    with one critic agent from the plan to the re-check. The evidence, replaying the repeat rule over all
+    65 model runs (25 stages): 26 runs had the syntax tree of an earlier run in their stage (all also
+    byte-identical). 19 followed a deterministic failure, all before offer C's rule existed (ids up to
+    85). The other 7 followed a `verify_timeout`: #95, #96, #98, #99, #103, #108, #109, reruns of 4
+    programs in the offer-C measurement. Each timed out again with the same number of known terms
+    reproduced, 421.6 s of the measurement's 16 minutes. No model run has stopped at any other resource
+    or host stop, and no program ran in two stages. After a "not run" rejection the model has sent the
+    same program again (A095751), so H saves time rather than bringing a different program.
+    `codegen.REPEATS_IN_STAGE` is `db.DETERMINISTIC_FAILURES` plus `verify_timeout`, and
+    `generate_and_verify` records a failed program for the repeat check when its stop is in it: every
+    generation of a stage runs under the same verify budget. `db.DETERMINISTIC_FAILURES` is unchanged,
+    since adding the timeout there would make a timed-out PARI program a dead end at every `--verify-s`.
+    The critic confirmed the evidence and found: the plan's reasons for leaving `cpu_cap` (the Windows
+    job has a CPU cap too) and `output_cap` (it comes from the program) out were wrong, though leaving
+    them out is right; 5 of the 30 PARI timeouts had under 80% CPU, so a timeout on a busy machine can
+    happen and still counts as a repeat (a known limitation; no guard, as `db.is_dead_end` has none); an
+    end-to-end test was more than needed (dropped); two doc pages were missing from the plan. Tests: the
+    `verify_timeout` case moved from "run again" to "not run again" (248 tests still). The audit found the
+    code within H and correct, and: a program first failing in generation 2 was untested (for every stop,
+    a gap from offer C; the commonest real case), a timeout reproducing some terms was untested (the fake
+    runner reported 0), a count in the docs (7 reruns, but of 4 programs), and the module docstring still
+    stating the old rule. All fixed; 9 deliberate mutations, each caught. The re-check confirmed the
+    fixes and found nothing new. Side effect: a repeat that is not run adds no `failed` row, so no
+    doubling of the selection penalty (offer D): the offer-C stages of A246855, A253773 and A383336
+    would each have added one doubling instead of three (all three are at or near the ×64 cap anyway).
+27. **Offer F: no infeasible stop on an untrustworthy projection (2026-09-19).** In sections, with one
+    critic agent. The evidence: one real `infeasible` stop in the database, attempt 93 (A057246, 3 points,
+    3,583× disagreement, high 13,026 s, merit unknown). Replaying `estimate.assess` on every term log
+    (each known term projected from the ones before it as if it were the first new term, at 60, 120,
+    300, 1800 and 10,800 s): 34 stops, 33 on untrustworthy fits; 9 wrong (A274508's a(16), A350878's
+    a(14) and a(15)), 7 right, 18 unknown. Trust did not separate them. The plan recommended judging an
+    untrustworthy fit by the low end of its range (0 wrong, 5 right on the replay's budgets). The critic
+    confirmed every count and showed that this came from the budget grid: with the remaining time
+    shrinking as an extension runs, the low-end rule still stops finished terms (A350878's a(14): low
+    44.5 s, actual 0.3 s), 10 of 28 finished untrustworthy projections took less than their low end, at
+    1800 s and above both options are the same, and all 6 real time projections were untrustworthy, so
+    either option in practice turns the time check off. The recommendation changed to F as written, and
+    the user chose it. `estimate.assess` makes a term infeasible on time only on a trustworthy cost fit;
+    otherwise a reason says it was not judged on time; the disagreement-over-10 rule is gone. Tests:
+    3 new functions (248 → 254): the replay's untrustworthy projections at budgets from 1 s to 3 h, a
+    trustworthy one still stopping on its high end, a drift-withdrawn one too, and the harness driven
+    in memory past an untrustworthy projection, keeping the new term. The audit found the code exactly
+    the user's choice, and: the memory check untested for an untrustworthy fit (two mutants survived;
+    now tested), a wrong count wording and a wrong end state (`timeout` cannot end a verified run), the
+    stale projection counts in known limitations and the dashboard page (13 predictions, 6 with a time
+    estimate; 5 points in the estimator view), and a reason that contradicted a memory stop. All fixed;
+    13 deliberate mutations, each caught, including the two options not chosen. The re-check confirmed
+    the fixes and found nothing new. Cost, as told to the user: a run whose projection is untrustworthy
+    now spends its whole remaining extension when the term does not come. Found later the same day:
+    `test_verify.py::test_extension_stops_when_next_term_is_projected_infeasible`, already flaky on
+    timing, gained a failure mode from F (a noisy run whose deciding projection is untrustworthy ends
+    `extend_budget` instead of `infeasible`); it passed during F's tests and audit. Next step 1.
+28. **Offer D: the failure penalty counts attempts, not rows (2026-09-19).** The user asked for D and E
+    "one item at a time and slow", in subitems, with a critic. The evidence: the 111 rows form 63
+    attempts (one `attempt_sequence` call each: session rows by session and sequence, the 40 standalone
+    rows by runs of one sequence, a grouping proven by model generation numbers restarting at 1 in each
+    call, PARI rows first and equal known terms and budgets within each). Per-attempt counting changes 17
+    of the 44 penalised sequences (A246855, A057246, A247883 ×64 → ×8; A383336, A129250, A253380,
+    A253773, A272621 ×64 → ×4; ...), all through model generations or two PARI programs in one attempt;
+    their share of the pick weight is small either way (0.07% → 0.09% of the PARI pool). No test covered
+    the penalty. The critic corrected two statements the user would have read (9 sequences have only
+    model rows, not 13; without a backfill the 17 would never change, not "until attempted again"),
+    proposed the no-write option (grouping session rows at query time: 14 of the 17, but not the three
+    ×64 ones in the PARI pool) and the key's name. The user chose per attempt with a backfill.
+    Subitems: D1 `_Attempter` makes one uuid per call and every run row stores it in
+    `extra.attempt_call`; D2 `select.candidates` counts distinct keys, a row without one (or with an
+    unreadable `extra`) on its own; D4 tests (254 → 256: the count's rules one by one, and end to end a
+    failed PARI run and a model generation as one attempt, a second attempt as another, the key on a
+    win's row and through `retry_pending_rechecks`), 12 deliberate mutations, each caught (the first
+    run let "verified rows not counted" through: the verified case was split); D3 the backfill, a
+    scratch script, dry-run on a copy first; D5 docs. The audit found the code, tests and docs correct,
+    and one real defect in the backfill script: its checks ran after the commit, so a failed check would
+    have left the rows written. It now runs in one `BEGIN IMMEDIATE` transaction, rolled back on any
+    failure (proven on copies: a wrong expectation leaves 0 keys; a second run is refused), and checks
+    that no PARI program appears twice in a group. The re-check tested the transaction under an
+    interrupt and a competing writer and found nothing new. Applied: `data/oeisbot-before-offerD.sqlite3`
+    first, then 108 rows written in 63 attempts (60 distinct keys: 3 attempts were skips), exactly the 17
+    expected changes, 385 `is_dead_end` answers unchanged, every other column and `extra` field unchanged;
+    afterwards `attempts` still 111 rows, the pool still 3,568, integrity ok.
+29. **Offer E: the hold-back rule reversed (2026-09-19).** The evidence: the rule had never held anything
+    back (0 at the default, 1800, 300 and 120 s budgets; the only entries whose two PARI programs both ran,
+    A101722, A101569 and A101583, both timed out verifying, alike). 300 of the 5,316 PARI-bearing
+    candidates have two or more runnable programs; 223 of them are one template ("numbers n such that
+    (c·10^n − d)/9 is prime", one block computing the number, the other building it), both doing the same
+    primality tests. The plan recommended confirming the rule on that ground. The critic corrected it:
+    under the rule a sibling of a program that verifies never ran in the PARI stage at any budget (at a
+    longer `--extend-s` the first program runs first again, verifies and ends the stage; its test shows
+    it), not just "at that budget" as the docs said; "3 h per sibling" held only for `extend_budget` (an
+    `infeasible` dead end can only come right at verification); and the rule acts only after a program
+    verifies, while 220 of the 223 template entries need primality proofs for numbers of over 1000 digits
+    just to verify, so the rule never reaches them. The reachable entries are mostly ones whose siblings
+    differ (13 of them use a different primality test). The recommendation changed to reversing, the
+    critic added the middle option (hold back after `extend_budget` only), and the user chose to reverse.
+    Removed: the constant naming the two budget dead ends, the plan's held-back list, the step in
+    `pari_plan`, its log line and its `nothing_to_run` wording. The two hold-back tests inverted (256 tests still): after a used-up extension
+    the sequence stays in the PARI-only pool and a later attempt runs the next program, which wins; after
+    either kind of budget dead end the others run in order. 7 deliberate mutations, each caught; the
+    audit's own mutant (only the next sibling kept after a dead end) survived the first version, because
+    the next sibling won; that sibling now fails, so the one after it must run too. The audit also
+    corrected "up to three extensions" (the cap of 3 is per attempt; across attempts every runnable
+    program gets one) and "indices over 1000" (numbers of over 1000 digits). The re-check found nothing
+    new. Found on the way, not changed: a flaky timing check in `test_verify.py` (next steps).
+
 ## Open offers and next steps
 
-One offer is waiting for an answer:
-
-- **A. Stop preferring `work` over CPU seconds when the conversion rate is itself growing.**
-  `verify.Harness.points()` picks the work unit whenever the last record reports `work > 0`, and
-  `estimate.assess` converts to seconds with the mean wall-per-work rate of the last five terms — which
-  assumes that rate is roughly constant. On A377248 the rate grew about 7.5x per term, and the resulting
-  projection was 3.5x low or worse (history item 16). Options: fit both units and take the more
-  pessimistic projection; or detect a climbing wall-per-work rate and fall back to CPU. This is a change
-  to the feasibility gate, so it wants its own tests and an independent audit.
+Offers waiting for an answer: none (D and E were decided and done on 2026-09-19).
 
 Suggested next steps, roughly by value:
 
-1. **Decide what the budget evidence means for candidate selection.** Database session 4 showed that a
-   600 s verify budget clears the gate for 1 of 6 PARI runs, and that the failures are cost, not bugs.
-   Raising the budget further is one option, but the cheaper one is to stop picking sequences whose last
-   known term is already expensive — which is next step 2, now with data behind it.
-2. Tune difficulty once there is data. Predicates and print loops whose last known term is large are
-   expensive to verify, and the scoring does not see that.
-3. Address the six remaining documented mismatches ([known limitations](known-limitations.md#differences-from-the-design-intent)).
-4. Smaller follow-ups from session 3 ([known limitations](known-limitations.md#pipeline-and-recording)):
-   save pending re-checks as JSON instead of pickles; give up on (or flag) a pending win whose re-check
-   fails the same way every time; key the infeasible dead end on the effective memory cap.
-   Untested paths that remain: the `fini` candidates have never been attempted (the 186 new ones are in the
-   pool but no session has run since), and no live run has used a b-file.
+1. **Fix the flaky test** `tests/test_verify.py::test_extension_stops_when_next_term_is_projected_infeasible`
+   (a doubling brute-force program, known terms a(0)..a(18), a 2 s extension; it asserts the run stops
+   `infeasible` (line 191), well inside the extension (194), and every finished term within 4× of its
+   projection (200)). Measured on 2026-09-19 with `flaky_compare.py` (30 runs each, the test alone):
+   with the current `estimate.py` 7 failures (191: 2, 194: 2, 200: 3), with the pre-F `estimate.py` 4
+   (194: 2, 200: 2). So 194 and 200 were flaky before (timing: a slow moment on one of the millisecond
+   terms the rate is taken from inflates a projection, or delays the stop), and offer F added 191: when
+   the deciding projection is untrustworthy on a noisy run it no longer stops the run, which then ends
+   `extend_budget` ("extension budget 2 s used"), as F intends. The F audit missed it because the test
+   passed at the time. The fix belongs in the test (for example drive the harness in memory with
+   controlled times, as `test_estimate.py`'s harness tests do, or make the terms slow enough that noise
+   cannot matter), not in the rule; plan it with a critic like the offers.
+2. A session like session 5 (`run -n 20 --verify-s 60 --extend-s 1800`, PARI only) to see what
+   verified runs do with their full extension now that offers B, A and F no longer stop them early on an
+   untrustworthy projection. Proposed to the user, not started. Write the expected results down first,
+   as for session 5 (about 3 of 20 picks verify; those now run their whole 1800 s unless they find a
+   term; about 1–2 h in all). At 1800 s the extension dead end leaves A247883 and A323252 out of the pool.
+3. Smaller follow-ups ([known limitations](known-limitations.md#pipeline-and-recording)): save pending
+   re-checks as JSON instead of pickles; give up on (or flag) a pending win whose re-check fails the same
+   way every time; key the infeasible dead end on the effective memory cap. The five remaining documented
+   mismatches ([known limitations](known-limitations.md#differences-from-the-design-intent)).
+4. A second, slower pass (`run --verify-s 600`) would revisit the 24 PARI programs that timed out at 60 s
+   (17) or 120 s (7); the 6 that already ran 600 s stay dead ends below `--verify-s` 601. The evidence so
+   far says it will rarely pay.
 5. Decide on Wolfram Engine: 5,282 candidates have Mathematica but no PARI program.
-6. Commit the work when the user asks.
+6. Commit session 5's work, offer B, the extension dead end and offers A, C, G, H, F, D and E when the user asks.
 
 ## Helper scripts
 

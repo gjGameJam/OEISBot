@@ -34,7 +34,9 @@ reloads; the estimator card, the queue table and the attempts table are also dim
 
 Whether the feasibility step works.
 
-- **Filters**: cost unit (all, work counts, CPU time), trusted projections only, chart/table toggle.
+- **Filters**: cost unit (all, work counts, CPU time), trusted projections only (`predictions.trustworthy`:
+  those the over-prediction kill acts on, unless the term is value-dependent; session 5's two kills came before
+  that rule and are stored untrusted), chart/table toggle.
 - **Tiles** (computed by the server over all points; the unit and trusted filters do not change them):
   - terms predicted and finished (and how many were stopped before finishing);
   - share within 2× of prediction;
@@ -51,16 +53,23 @@ A point appears once a verified run has a time projection whose term finished (f
 (hollow, a genuine lower bound). A projection that stopped the run as `infeasible` does not appear: its
 term never started, so it has neither an actual nor a censored time (see
 [verification](verification-and-estimation.md#where-predictions-are-stored)). On the real database as
-of 2026-09-17 the view is still empty.
+of 2026-09-19 the view has five points, all hollow: A277532 and A390295 twice each, and A247883's model
+program (attempt 92), which ran its whole 120 s extension without a new term. In session 5 the first
+new terms of A277532 and A390295 were killed for over-prediction after 24 s and 10 s (before only trustworthy projections
+could kill); in the offer-B check the same terms ran the whole 300 s extension without finishing.
 
 ### Queue
 
-The candidate pool as selection sees it:
+The candidate pool as selection sees it, before the last check a session applies (see the last point):
 
 - **Controls**: α, "only sequences with a PARI program".
 - **Table** (up to 2,000 rows, sortable): A-number (links to oeis.org), name, difficulty, pick chance,
   programs, known terms, b-file status, extension credits, search flag.
 - Sequences with an open review or a `recheck_pending` win are excluded, exactly as in selection.
+- Unlike a session, `oeisbot queue` and `oeisbot pick`, the tab does **not** leave out sequences an attempt
+  could only skip (no supported PARI program, all programs dead ends or out of reach): that check reads
+  every PARI-bearing entry from disk (about 3 s) and the tab refreshes every minute. Its totals and pick
+  chances are therefore those of the wider pool. `oeisbot queue` shows the pool a session really uses.
 
 ### Attempts
 
@@ -80,8 +89,9 @@ Wins waiting for a person.
 - **Tiles**: counts by status.
 - **Each review** shows status, A-number, new index range, new-term count, strategy, runtime, creation
   time, review id and name.
-- **Warnings**: weak verification, AI-generated program, hard-coded bounds (model programs), and
-  program rewrites (gp).
+- **Warnings**: weak verification, AI-generated program, "numbered by the runner" (a `members(work)`
+  program: read `executed.py` too), hard-coded bounds and "compare with the entry's program" (model
+  programs), and program rewrites (gp).
 - **Files**: buttons open the artifact's text files (`.md`, `.txt`, `.csv`, `.json`, `.gp`, `.py`) in
   an inline viewer.
 - **Read-only**: the page shows the command to change status (`oeisbot review set <id> ...`).

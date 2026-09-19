@@ -113,23 +113,32 @@ def lfs_pointer(a_number: str) -> LfsPointer | None | bool:
     return LfsPointer(fields["oid"].removeprefix("sha256:"), int(fields["size"]))
 
 
+def cached(a_number: str) -> tuple[bool, BFile | None]:
+    """What `fetch` (without `refresh`) returns, when that is decided without a request: (True, the b-file or
+    None). (False, None) when only a download could tell. `fetch` uses this, so the two cannot disagree."""
+    pointer = lfs_pointer(a_number)
+    if pointer is None:
+        return True, None
+    path = cache_path(a_number)
+    if path.exists() and (pointer is False or hashlib.sha256(path.read_bytes()).hexdigest() == pointer.sha256):
+        return True, parse_bfile(a_number, path.read_text(encoding="utf-8", errors="replace"))
+    if pointer is False and not path.exists() and path.with_suffix(".absent").exists():
+        return True, None
+    return False, None
+
+
 def fetch(a_number: str, *, refresh: bool = False) -> BFile | None:
     """The b-file from cache, or from oeis.org. None if the sequence has no b-file.
 
     Without `refresh`, the oeisdata LFS pointer decides: no pointer means no b-file (no request);
     a cached copy is reused only while its sha256 matches the pointer. With `refresh`, always asks
     oeis.org (the snapshot can lag the live site)."""
+    if not refresh:
+        decided, bf = cached(a_number)
+        if decided:
+            return bf
     path = cache_path(a_number)
     absent = path.with_suffix(".absent")
-    if not refresh:
-        pointer = lfs_pointer(a_number)
-        if pointer is None:
-            return None
-        if path.exists():
-            if pointer is False or hashlib.sha256(path.read_bytes()).hexdigest() == pointer.sha256:
-                return parse_bfile(a_number, path.read_text(encoding="utf-8", errors="replace"))
-        elif pointer is False and absent.exists():
-            return None
     body = http_get(bfile_url(a_number))
     path.parent.mkdir(parents=True, exist_ok=True)
     if body is None:

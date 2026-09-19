@@ -3,8 +3,8 @@
 Guidance for coding agents working in this repository.
 
 **Start here:** `docs/status.md` has the current state, decisions made with the user, open offers and
-next steps. Read it before doing anything, and update it before ending a working session. As of
-2026-09-17 nothing is committed and the user has asked not to commit for now.
+next steps. Read it before doing anything, and update it before ending a working session. The user
+commits the work themselves; do not commit or push unless asked.
 
 ## What this is
 
@@ -17,7 +17,7 @@ Windows-only in practice: the sandbox is a Job Object + AppContainer (`oeisbot/s
 ## Commands
 
 ```
-.venv\Scripts\python -m pytest                 # 145 tests, ~25 s; sandbox tests skip if `oeisbot setup` has not run
+.venv\Scripts\python -m pytest                 # 256 tests, ~50 s; sandbox tests skip if `oeisbot setup` has not run
 .venv\Scripts\python -m pytest tests/test_sandbox.py
 .venv\Scripts\oeisbot setup                    # sandbox runtimes + AppContainer grants + database (idempotent)
 .venv\Scripts\oeisbot sync --no-pull           # rebuild the candidate table from the local oeisdata clone
@@ -50,7 +50,11 @@ The full list with rationale is in `docs/development.md#invariants`.
 - New terms count only after every known term is reproduced as consecutive (index, value) pairs starting
   at the offset.
 - Known terms beyond `codegen.shown_indices` are held out from the model (always at least 2; sequences
-  with fewer than 3 known terms never reach the model), and held-out values never appear in retry prompts.
+  with fewer than 3 known terms never reach the model), and the failure described in a retry prompt never
+  carries a held-out value: not the correct one, and not a program value that equals one the prompt does
+  not already show, either sign (`describe_failure`). Text the program wrote itself is passed on as it
+  is: a crash's error message, the stderr tail, and a line it printed that became a `protocol` stop (see
+  `docs/known-limitations.md`).
 - Every run is recorded; wins are re-checked against oeis.org before an artifact is written. A run with
   new terms is recorded as `recheck_pending` and saved to `data/pending/` *before* its re-check starts,
   so an interrupted or failed re-check leaves it pending (never published unchecked, never lost).
@@ -68,6 +72,9 @@ The full list with rationale is in `docs/development.md#invariants`.
 - `gp.exe` commits its whole `parisizemax` at startup; job peak memory for gp is meaningless (the driver
   reports stack size instead).
 - There are no database migrations; schema changes need `ALTER TABLE` on existing databases.
+- `tests/test_verify.py::test_extension_stops_when_next_term_is_projected_infeasible` is timing-sensitive
+  and fails intermittently (about one run in four to eight); rerun it alone before blaming a change.
+  Fixing it is the first next step in `docs/status.md`.
 
 ## Docs
 

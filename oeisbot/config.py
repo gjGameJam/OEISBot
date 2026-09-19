@@ -41,14 +41,16 @@ MiB = 1 << 20
 
 @dataclass(frozen=True)
 class Budgets:
-    verify_wall_s: float = 600.0            # reproduce every known term within this
+    # reproduce every known term within this. Short on purpose: it is the quick first pass, and a program
+    # that fails it is not run again at the same budget (db.is_dead_end); a larger --verify-s revisits it
+    verify_wall_s: float = 60.0
     extend_wall_s: float = 3 * 3600.0       # then keep going for new terms up to this
     session_attempt_cap: int = 25
     mem_bytes: int = 6 * GiB                # hard commit cap for a job
     reserve_phys_bytes: int = 3 * GiB       # keep this much physical RAM free: never page
     disk_bytes: int = 512 * MiB             # scratch dir cap
     reserve_disk_bytes: int = 8 * GiB       # stop any job if free disk drops below this
-    over_prediction_factor: float = 2.0     # kill a term running this far past its projection
+    over_prediction_factor: float = 2.0     # kill a term running this far past a trusted projection
     max_new_terms: int = 200
 
 

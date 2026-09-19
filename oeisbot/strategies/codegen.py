@@ -1,11 +1,15 @@
 """Local-model code generation (build step 7).
 
   1. classify: ask the model which approach fits (brute force, search, DP / transfer matrix, formula)
-     or whether to skip
-  2. generate one Python function `terms(work)` with a fixed contract (see runners/py_runner.py)
+     or whether to skip; when the known terms strictly increase, also whether the sequence is a list of
+     numbers with a property or a(n) as a function of n (FORM)
+  2. generate one Python function with a fixed contract: `terms(work)` yielding (n, a(n)) pairs (see
+     runners/py_runner.py), or, for a list with strictly increasing known terms, `members(work)` yielding
+     the members themselves, which a driver numbers from the offset (MEMBERS_DRIVER)
   3. static checks (defense in depth; the sandbox is the real boundary)
   4. run through the verification harness; on failure, retry with the actual error text
-     (at most config.CODEGEN_ATTEMPTS generations)
+     (at most config.CODEGEN_ATTEMPTS generations; a program that already failed in the stage in a way
+     that would recur there, REPEATS_IN_STAGE, is not run again)
 
 Generated programs are marked as AI-generated everywhere they appear. OEIS policy forbids submitting
 programs the submitter does not understand; the review artifact is where that understanding happens.
@@ -18,11 +22,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable
 
-from .. import config
+from .. import config, db
 from ..ingest.seqfile import Entry
 from ..model import ModelClient
 from ..terms import KnownTerms, Program
-from ..verify import AttemptResult, Stop
+from ..verify import AttemptResult, Stop, _short
 
 ALLOWED_IMPORTS = {"math", "itertools", "functools", "collections", "heapq", "bisect", "fractions", "operator",
                    "array", "gmpy2", "sympy", "numbers", "decimal"}
@@ -44,10 +48,43 @@ def shown_indices(known: KnownTerms) -> list[int]:
     return ns[: max(0, min(SHOWN_MAX, max(3, int(len(ns) * SHOWN_FRACTION)), len(ns) - config.CODEGEN_HELD_OUT_MIN))]
 
 
-def _context(entry: Entry, known: KnownTerms, limit: int = 2500) -> str:
+# starts the reviewer note; artifact.write and the dashboard's Review inbox look for it
+ENTRY_PROGRAM_NOTE = "the entry's own program"
+
+
+@dataclass
+class VerifiedRun:
+    """A run of the entry's own program that reproduced every known term but found no new one: in this
+    attempt, or in an earlier one that is now a dead end (then `verified_s` is not known)."""
+    origin: str
+    known_count: int
+    stop: str
+    detail: str
+    attempt_id: int
+    verified_s: float | None = None
+
+    def describe(self) -> str:
+        when = f"in {self.verified_s:.1f} s, " if self.verified_s is not None else ""
+        return f"{self.origin}, {when}attempt #{self.attempt_id}"
+
+
+def slow_program_note(v: VerifiedRun) -> str:
+    """For the model, when the entry's own program already verified but found nothing new. Timing and the
+    stop reason only, never a term value."""
+    head = f"The entry's own program ({v.describe()}) already reproduces all {v.known_count} known terms"
+    if v.stop == Stop.FINISHED.value:
+        # it ended by itself: it may only cover the known range (a table, a fixed search limit)
+        return (f"{head}, but then ended without a further term ({v.stop}: {v.detail}). It may only cover the "
+                "known range: write a program that keeps going, using a fast method.")
+    return (f"{head}, but then found no new term ({v.stop}: {v.detail}). A Python translation of it will be no "
+            "faster: the goal is a fundamentally faster method.")
+
+
+def _context(entry: Entry, known: KnownTerms, limit: int = 2500, note: str | None = None) -> str:
     shown = shown_indices(known)
     held = known.count - len(shown)
     parts = [f"Sequence {entry.a_number}: {entry.name}",
+             *([note] if note else []),      # near the top: the truncation below cuts from the end
              f"Offset: the first term has index n = {known.first_index}.",
              f"Known terms: the first {len(shown)} of {known.count} are shown."
              f" Your program is checked against all {known.count}, including {held} you cannot see, so it must"
@@ -72,17 +109,21 @@ Answer with one JSON object and nothing else:
 {{"approach": one of {approaches}, "reason": "<one sentence>", "plan": "<two or three sentences on the algorithm>"}}
 Use "skip" when further terms clearly need a research breakthrough or huge computation."""
 
+# Asked on its own, only when the known terms strictly increase. Folded into CLASSIFY, the model called two
+# real lists (A129250, A057246) functions 4 times out of 4; asked alone, lists 4 times out of 4, and it
+# matched the label on all 44 sequences it was tried on.
+FORM = """{context}
+
+Is this sequence a list of numbers that have some property, in increasing order (like "Numbers k such that
+k^2 + 1 is prime" or "Primes p such that p + 2 is also prime"), or is a(n) a function of n (like "Number of
+graphs on n nodes" or "Smallest prime with n digits")?
+Answer with one JSON object and nothing else: {{"form": "list" or "function", "reason": "<one sentence>"}}"""
+
 GENERATE = """{context}
 
 Approach: {approach}. {plan}
 
-Write Python 3.11 code defining exactly this generator:
-
-def terms(work):
-    # yields (n, a(n)) for n = {first}, {first}+1, {first}+2, ... in order, forever
-
-Rules:
-- Yield tuples (n, value) where value is a Python int or gmpy2.mpz. Start at n = {first}. Never skip an index.
+{contract}
 - Do not stop after the known terms; keep yielding until the process is killed.
 - Call work(k) to report k units of real work (candidates tested, nodes visited, states expanded),
   batched, e.g. work(1000) once per 1000 inner-loop steps.
@@ -99,8 +140,68 @@ RETRY = """Your last program did not get through verification:
 
 {guidance}
 
-Keep the same contract (def terms(work) yielding (n, a(n)) from n = {first}).
+{keep}
 Output a single ```python code block and nothing else."""
+
+
+@dataclass(frozen=True)
+class Contract:
+    """What the model is asked to write. `spec` opens the generation prompt's rules; `keep` closes a retry."""
+    function: str
+    spec: str
+    keep: str
+
+
+TERMS = Contract("terms", """Write Python 3.11 code defining exactly this generator:
+
+def terms(work):
+    # yields (n, a(n)) for n = {first}, {first}+1, {first}+2, ... in order, forever
+
+Rules:
+- Yield tuples (n, value) where value is a Python int or gmpy2.mpz. Start at n = {first}. Never skip an index.""",
+                 "Keep the same contract (def terms(work) yielding (n, a(n)) from n = {first}).")
+
+# For a list of numbers with a property. Mixing up the index n with the candidate k caused every bad_index
+# failure the model had on such sequences (17 of 45 generations), so here the runner does the numbering.
+MEMBERS = Contract("members", """This sequence is a list of numbers, in increasing order. Write Python 3.11 code defining exactly
+this generator:
+
+def members(work):
+    # yields the members of the sequence themselves, smallest first, in increasing order, forever
+
+The runner numbers what you yield: your first value becomes a({first}), the second a({second}), and so on.
+Rules:
+- Yield each member itself (for "Numbers k such that ...", yield k; for "Primes p such that ...", yield p),
+  as a Python int or gmpy2.mpz: never a pair, never an index. Start from the smallest member, never skip
+  one, and make each value larger than the one before.""",
+                   "Keep the same contract (def members(work) yielding the members themselves, in increasing "
+                   "order; the runner numbers them from a({first})).")
+
+# appended to a `members` program; `terms` is the entry point py_runner calls. Its errors are
+# verify.CONTRACT_ERROR (a test holds the two names together), which ends the run as `protocol` and, after
+# verification, voids the run's new terms: a value arriving late means earlier ones may be misplaced. They
+# name positions only, never a value: a value the program got right at a held-out index must not reach a
+# retry prompt.
+MEMBERS_DRIVER = """
+
+# ---- OEISBot driver (not model-written): numbers the members from the offset ----
+class OEISBotContractError(Exception):
+    pass
+
+
+def terms(work):
+    index, previous = {first}, None
+    for value in members(work):
+        if isinstance(value, tuple):
+            raise OEISBotContractError("members() must yield the members themselves, not (index, value) pairs")
+        if previous is not None and not value > previous:
+            raise OEISBotContractError(f"members() must yield increasing values: the value after a({{index - 1}}) "
+                                       "was not larger than it")
+        yield index, value
+        index, previous = index + 1, value
+"""
+# starts the reviewer note on a `members` program; artifact.write and the dashboard's Review inbox look for it
+MEMBERS_NOTE = "list contract"
 
 # Named when a program crashes on an API that does not exist. These are the useful ones, not the full
 # modules; `tests/test_codegen.py` checks every name against the sandbox runtime, because a hint list that
@@ -121,6 +222,12 @@ API_HINTS = ("Useful functions that do exist:\n"
 
 DEFINITION_GUIDANCE = ("Re-read the sequence definition and the first known terms, find where your "
                        "program's reading of the definition differs, and fix it.")
+REPEAT_GUIDANCE = ("It was not run again: it would fail the same way every time. Change the program where the "
+                   "failure points.")
+# failures that recur if the same program runs again in one model stage: the deterministic ones, and a
+# verify_timeout, since every generation of a stage runs under the same verify budget (db.is_dead_end
+# treats a verify_timeout the same way across attempts, for verify budgets up to the time it ran)
+REPEATS_IN_STAGE = (*db.DETERMINISTIC_FAILURES, Stop.VERIFY_TIMEOUT.value)
 
 
 @dataclass
@@ -128,6 +235,7 @@ class Plan:
     approach: str
     reason: str
     plan: str
+    form: str = "function"      # 'list' | 'function': the answer to FORM, asked after the plan
 
 
 @dataclass
@@ -154,11 +262,31 @@ def parse_plan(text: str) -> Plan:
     return Plan(approach, str(data.get("reason", "")), str(data.get("plan", "")))
 
 
-def extract_code(text: str) -> str | None:
+def parse_form(text: str) -> str:
+    """The answer to FORM: 'list' only when the reply says so plainly, 'function' otherwise."""
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    try:
+        data = json.loads(m.group(0)) if m else {}
+    except json.JSONDecodeError:
+        data = {}
+    return "list" if isinstance(data, dict) and str(data.get("form", "")).strip().lower() == "list" else "function"
+
+
+def strictly_increasing(known: KnownTerms) -> bool:
+    values = [known.values[n] for n in sorted(known.values)]
+    return all(b > a for a, b in zip(values, values[1:]))
+
+
+def contract_for(form: str, known: KnownTerms) -> Contract:
+    """`members` only for a list whose known terms strictly increase, as a list's members must."""
+    return MEMBERS if form == "list" and strictly_increasing(known) else TERMS
+
+
+def extract_code(text: str, function: str = "terms") -> str | None:
     blocks = re.findall(r"```(?:python|py)?\s*\n(.*?)```", text, re.DOTALL)
     if blocks:
         return max(blocks, key=len).strip() + "\n"
-    return text.strip() + "\n" if "def terms" in text else None
+    return text.strip() + "\n" if f"def {function}" in text else None
 
 
 def _literal_ints(tree: ast.AST) -> set[int]:
@@ -182,6 +310,23 @@ def copied_terms(code: str, known_values) -> int:
     return len(big & _literal_ints(tree))
 
 
+def _int_value(node: ast.AST, depth: int = 0) -> int | None:
+    """An integer literal, or a constant expression of them such as 10**7 or 2*10**6; otherwise None.
+    Expressions nested deeper than 32 levels are not evaluated (the recursion must stay bounded)."""
+    if isinstance(node, ast.Constant):
+        return node.value if type(node.value) is int else None
+    if depth < 32 and isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Pow, ast.Mult, ast.Add, ast.Sub, ast.LShift)):
+        a, b = _int_value(node.left, depth + 1), _int_value(node.right, depth + 1)
+        if a is None or b is None:
+            return None
+        if isinstance(node.op, ast.Pow):
+            return a ** b if 0 <= b <= 64 and abs(a) <= 10**6 else None
+        if isinstance(node.op, ast.LShift):
+            return a << b if 0 <= b <= 256 else None
+        return a * b if isinstance(node.op, ast.Mult) else a + b if isinstance(node.op, ast.Add) else a - b
+    return None
+
+
 def fixed_bounds(code: str) -> list[str]:
     """Hard-coded limits that verification cannot see past: new terms beyond them may be silently wrong."""
     try:
@@ -190,35 +335,74 @@ def fixed_bounds(code: str) -> list[str]:
         return []
     found = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) and type(node.value.value) is int \
-                and node.value.value >= 100:
+        if isinstance(node, ast.Assign) and (v := _int_value(node.value)) is not None and v >= 100:
             for t in node.targets:
                 if isinstance(t, ast.Name) and re.search(r"limit|max|bound|upper|size|cap|sieve|^n$", t.id, re.I):
-                    found.append(f"{t.id} = {node.value.value}")
+                    found.append(f"{t.id} = {v}")
         elif isinstance(node, ast.Call) and isinstance(node.func, (ast.Name, ast.Attribute)):
             name = node.func.id if isinstance(node.func, ast.Name) else node.func.attr
             if name in ("range", "primerange", "sieve", "primepi", "divisors_up_to"):
                 for arg in node.args:
-                    if isinstance(arg, ast.Constant) and type(arg.value) is int and arg.value >= 1000:
-                        found.append(f"{name}(..., {arg.value})")
+                    if (v := _int_value(arg)) is not None and v >= 1000:
+                        found.append(f"{name}(..., {v})")
     return sorted(set(found))
 
 
-def static_check(code: str, known_values=()) -> str | None:
-    """None if acceptable, otherwise why not."""
+def _binds_global(tree: ast.Module, name: str) -> bool:
+    """Whether the module binds `name` at module level (a def, class, assignment, import or loop target, or
+    a `global` declaration anywhere); names local to a function or class body do not count."""
+    if any(isinstance(n, ast.Global) and name in n.names for n in ast.walk(tree)):
+        return True
+    stack: list[ast.AST] = list(tree.body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name == name:
+                return True
+            # the body is another scope; decorators and defaults are evaluated at module level
+            stack.extend(node.decorator_list + node.args.defaults + [d for d in node.args.kw_defaults if d])
+            continue
+        if isinstance(node, ast.ClassDef):
+            if node.name == name:
+                return True
+            stack.extend(node.decorator_list + node.bases + node.keywords)
+            continue
+        if isinstance(node, ast.Lambda):
+            continue
+        if isinstance(node, ast.alias) and (node.asname or node.name.split(".")[0]) == name:
+            return True
+        if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, (ast.Store, ast.Del)):
+            return True
+        if isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and node.name == name:
+            return True
+        if isinstance(node, ast.MatchMapping) and node.rest == name:
+            return True
+        stack.extend(ast.iter_child_nodes(node))
+    return False
+
+
+def static_check(code: str, known_values=(), function: str = "terms") -> str | None:
+    """None if acceptable, otherwise why not. `function` is the contract's generator (`terms` or `members`)."""
     try:
         tree = ast.parse(code)
     except SyntaxError as e:
         return f"SyntaxError: {e.msg} (line {e.lineno})"
+    except (ValueError, RecursionError, MemoryError) as e:      # a null byte, or nesting too deep to parse
+        return f"the program cannot be parsed ({type(e).__name__})"
     copied = copied_terms(code, known_values)
     if copied >= HARDCODE_LIMIT:
         return (f"the program contains {copied} known term values as literals; it must compute the terms, "
                 "not copy them (it is checked against terms you have not seen)")
-    fn = next((n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "terms"), None)
+    fn = next((n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == function), None)
     if fn is None:
-        return "no top-level function `terms` defined"
+        return f"no top-level function `{function}` defined"
     if len(fn.args.args) != 1:
-        return "`terms` must take exactly one argument (work)"
+        return f"`{function}` must take exactly one argument (work)"
+    if function != "terms" and _binds_global(tree, "terms"):
+        # the driver defines `terms`, replacing whatever the program bound to that name: a reviewer would
+        # read code that never ran, and the program would break in a way it cannot see
+        return (f"do not use the name `terms` at module level: the runner supplies `terms` and numbers the "
+                f"members itself; define only `{function}(work)` and helpers with other names")
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             bad = [a.name for a in node.names if a.name.split(".")[0] not in ALLOWED_IMPORTS]
@@ -234,12 +418,45 @@ def static_check(code: str, known_values=()) -> str | None:
     return None
 
 
-def describe_failure(r: AttemptResult, shown_last_index: int | None = None) -> str:
+def _at_most(shown: str, bound: int) -> bool:
+    """Whether a value as the harness printed it (long ones abbreviated, so unreadable) is at most `bound`."""
+    try:
+        return int(shown) <= bound
+    except ValueError:
+        return False
+
+
+def _held_out_forms(known: KnownTerms, shown_last_index: int) -> set[str]:
+    """Every way a failure detail could print a held-out known term the prompt does not also show: either
+    sign, abbreviated as the harness abbreviates long values (verify._short) or in full."""
+    shown = {v for n, v in known.values.items() if n <= shown_last_index}
+    return {form for n, v in known.values.items() if n > shown_last_index and v not in shown
+            for form in (_short(v), _short(-v), str(v), str(-v))}
+
+
+def describe_failure(r: AttemptResult, shown_last_index: int | None = None, contract: Contract = TERMS) -> str:
     detail = r.detail
+    # a program's own value can happen to be a held-out term (an off-by-one program), or one with its sign
+    # flipped; the retry must not carry it (CLAUDE.md), so such a value is left out under either contract
+    held = _held_out_forms(r.known, shown_last_index) if shown_last_index is not None else set()
     m = re.match(r"a\((-?\d+)\) = (.*?), known value ", detail)
     if r.stop is Stop.WRONG_TERM and m and shown_last_index is not None and int(m.group(1)) > shown_last_index:
-        # a held-out term: never reveal its value, or the next program could special-case it
-        detail = f"a({m.group(1)}) = {m.group(2)} is wrong (the correct value is not shown; fix the computation)"
+        # a held-out term: never reveal its value, or the next program could special-case it. For a list, not
+        # the program's value either: that would say the number is not in the list, and it could be excluded
+        if contract is MEMBERS or m.group(2) in held:
+            detail = f"a({m.group(1)}) is wrong (neither your value nor the correct one is shown; fix the computation)"
+        else:
+            detail = f"a({m.group(1)}) = {m.group(2)} is wrong (the correct value is not shown; fix the computation)"
+    elif r.stop is Stop.WRONG_TERM and m and shown_last_index is not None and (
+            (contract is MEMBERS and not _at_most(m.group(2), r.known.values[shown_last_index])) or m.group(2) in held):
+        # a shown index, but the program's value is a held-out term, or (for a list) lies past the last term
+        # shown, where it may be a held-out member: the correct value is in the prompt anyway
+        detail = f"a({m.group(1)}) is wrong: it is {detail.split('known value ', 1)[1]} (your value is not shown)"
+    b = re.match(r"program emitted n=(-?\d+), (expected n=.*)", detail)
+    if r.stop is Stop.BAD_INDEX and b and b.group(1) in held:
+        # the program put a value where the index belongs, and that value is a held-out term (saying so
+        # would say it is a term)
+        detail = f"program emitted a wrong index (not shown), {b.group(2)}"
     lines = [f"{r.stop.value}: {detail}"]
     if r.stop is Stop.BAD_INDEX:
         lines.append(f"The first yielded index must be n = {r.known.first_index}, then n+1, n+2, ...")
@@ -297,12 +514,15 @@ def retry_guidance(stop: Stop | None) -> str:
 def generate_and_verify(entry: Entry, known: KnownTerms, model: ModelClient,
                         runner: Callable[[Program], AttemptResult], *,
                         log: Callable[[str], None] = print,
-                        max_generations: int = config.CODEGEN_ATTEMPTS) -> CodegenOutcome:
-    """runner(program) runs one program through the verification harness (and records it)."""
+                        max_generations: int = config.CODEGEN_ATTEMPTS,
+                        verified_elsewhere: VerifiedRun | None = None) -> CodegenOutcome:
+    """runner(program) runs one program through the verification harness (and records it).
+    `verified_elsewhere`: a run of the entry's own program that reproduced every known term but found no new
+    one. The model is told so, and each generated program carries it as a note for the reviewer."""
     if known.count < config.CODEGEN_MIN_KNOWN_TERMS:
         raise ValueError(f"{known.a_number}: {known.count} known terms; at least {config.CODEGEN_MIN_KNOWN_TERMS} "
                          f"are needed to hold {config.CODEGEN_HELD_OUT_MIN} out from the model")
-    context = _context(entry, known)
+    context = _context(entry, known, note=slow_program_note(verified_elsewhere) if verified_elsewhere else None)
     plan = parse_plan(model.chat([{"role": "system", "content": SYSTEM},
                                   {"role": "user", "content": CLASSIFY.format(context=context, approaches=list(APPROACHES))}],
                                  max_tokens=400))
@@ -311,35 +531,74 @@ def generate_and_verify(entry: Entry, known: KnownTerms, model: ModelClient,
     if plan.approach == "skip":
         out.skipped = f"model judged infeasible: {plan.reason}"
         return out
+    if strictly_increasing(known):
+        plan.form = parse_form(model.chat([{"role": "system", "content": SYSTEM},
+                                           {"role": "user", "content": FORM.format(context=context)}],
+                                          temperature=0.2, max_tokens=200))
+        log(f"model form: {plan.form}")
+    contract = contract_for(plan.form, known)
+    if contract is MEMBERS:
+        log("asking for members(work), numbered by the runner")
+    first = known.first_index
+    keep = contract.keep.format(first=first)
 
     base = [{"role": "system", "content": SYSTEM},
             {"role": "user", "content": GENERATE.format(context=context, approach=plan.approach, plan=plan.plan,
-                                                        first=known.first_index, imports=", ".join(sorted(ALLOWED_IMPORTS)))}]
+                                                        contract=contract.spec.format(first=first, second=first + 1),
+                                                        imports=", ".join(sorted(ALLOWED_IMPORTS)))}]
     messages = list(base)
     shown_last = shown_indices(known)[-1]
+    # programs that ran and failed in a way that would repeat in this stage (REPEATS_IN_STAGE), by their syntax
+    # tree (comments and layout aside): the model often sends the same program back, and running it again
+    # cannot help
+    failed_before: dict[str, tuple[int, AttemptResult]] = {}
     for gen in range(1, max_generations + 1):
         # retries at the same low temperature tend to repeat the same mistake
         reply = model.chat(messages, temperature=min(0.2 + 0.3 * (gen - 1), 0.9), max_tokens=2048)
-        code = extract_code(reply)
-        problem = "no ```python code block in the reply" if code is None else static_check(code, known.values.values())
+        code = extract_code(reply, contract.function)
+        problem = ("no ```python code block in the reply" if code is None
+                   else static_check(code, known.values.values(), contract.function))
         # retries carry only the latest attempt and its failure, so the prompt stays inside the context window
         messages = base + [{"role": "assistant", "content": reply}]
         if problem:
             out.rejected.append(problem)
             log(f"generation {gen}: rejected before running: {problem}")
-            messages.append({"role": "user", "content": RETRY.format(failure=problem, first=known.first_index,
+            messages.append({"role": "user", "content": RETRY.format(failure=problem, keep=keep,
                                                                      guidance=retry_guidance(None))})
             continue
+        try:
+            shape = ast.dump(ast.parse(code))
+        except RecursionError:          # ast.dump recurses; a deep expression still parses
+            shape = code
+        if shape in failed_before:
+            g, earlier = failed_before[shape]
+            out.rejected.append(f"the same program as generation {g}, which failed with {earlier.stop.value}")
+            log(f"generation {gen}: not run: the same program as generation {g}, which failed with {earlier.stop.value}")
+            messages.append({"role": "user", "content": RETRY.format(
+                failure=f"It is the same program as the one you sent in generation {g} (comments and layout "
+                        f"aside), which failed:\n{describe_failure(earlier, shown_last, contract)}",
+                keep=keep, guidance=f"{REPEAT_GUIDANCE} {retry_guidance(earlier.stop)}")})
+            continue
         notes = [f"AI-generated by {model.name}; approach {plan.approach}"]
+        if contract is MEMBERS:
+            notes.append(f"{MEMBERS_NOTE}: the program yields the members; the runner's driver (in the executed "
+                         f"program) numbers them from a({first}) and stops if they do not increase")
         notes += [f"fixed bound {b}: terms beyond what it covers may be wrong" for b in fixed_bounds(code)]
-        prog = Program("python", code, origin=f"model {model.name}, generation {gen} (AI-generated)",
-                       strategy="python:model", notes=notes)
+        if verified_elsewhere is not None:
+            v = verified_elsewhere
+            notes.append(f"{ENTRY_PROGRAM_NOTE} ({v.describe()}) reproduced all {v.known_count} known terms and "
+                         f"found no new term ({v.stop}: {v.detail}); check any new terms against it")
+        how = "; members(work), numbered by the runner" if contract is MEMBERS else ""
+        prog = Program("python", code, origin=f"model {model.name}, generation {gen} (AI-generated{how})",
+                       strategy="python:model", notes=notes,
+                       script=code + MEMBERS_DRIVER.format(first=first) if contract is MEMBERS else None)
         result = runner(prog)
         out.attempts.append(result)
         log(f"generation {gen}: {result.outcome}: {result.stop.value} ({result.detail[:120]})")
         if result.verified:
             break
-        messages.append({"role": "user", "content": RETRY.format(failure=describe_failure(result, shown_last),
-                                                                 first=known.first_index,
-                                                                 guidance=retry_guidance(result.stop))})
+        if result.stop.value in REPEATS_IN_STAGE:
+            failed_before.setdefault(shape, (gen, result))
+        messages.append({"role": "user", "content": RETRY.format(failure=describe_failure(result, shown_last, contract),
+                                                                 keep=keep, guidance=retry_guidance(result.stop))})
     return out

@@ -10,6 +10,7 @@ import math
 import random
 import sqlite3
 from dataclasses import dataclass
+from typing import Callable
 
 from . import config, db
 
@@ -120,10 +121,17 @@ def _too_few_for_model(row: sqlite3.Row) -> bool:
     return max(row["bfile_terms"] or 0, row["data_terms"]) < config.CODEGEN_MIN_KNOWN_TERMS
 
 
-def candidates(conn: sqlite3.Connection, *, alpha: float = 1.0, require_langs: set[str] | None = None) -> list[Candidate]:
-    """Eligible 'more' sequences with effective difficulty (features x failure history)."""
-    failures = {r["a_number"]: r["c"] for r in conn.execute(
-        "SELECT a_number, COUNT(*) AS c FROM attempts WHERE outcome IN ('failed', 'verified') GROUP BY a_number")}
+def candidates(conn: sqlite3.Connection, *, alpha: float = 1.0, require_langs: set[str] | None = None,
+               keep: Callable[[sqlite3.Row], bool] | None = None) -> list[Candidate]:
+    """Eligible 'more' sequences with effective difficulty (features x failure history). `keep`, if given,
+    is asked last about each row that passed every other check (attempt.Runnable is the one sessions use)."""
+    # one per attempt, however many programs it ran: the rows of one attempt_sequence call share
+    # extra.attempt_call. A row without the key, or with an unreadable extra, counts on its own
+    failures = {r["a_number"]: r["c"] for r in conn.execute("""
+        SELECT a_number, COUNT(DISTINCT CASE WHEN json_valid(extra)
+                                             THEN COALESCE(json_extract(extra, '$.attempt_call'), 'row:' || id)
+                                             ELSE 'row:' || id END) AS c
+        FROM attempts WHERE outcome IN ('failed', 'verified') GROUP BY a_number""")}
     blocked = {r["a_number"] for r in conn.execute(
         f"SELECT DISTINCT a_number FROM reviews WHERE status IN ({','.join('?' * len(db.OPEN_REVIEW_STATUSES))})",
         db.OPEN_REVIEW_STATUSES)}
@@ -138,6 +146,8 @@ def candidates(conn: sqlite3.Connection, *, alpha: float = 1.0, require_langs: s
             continue
         if "pari" not in langs and _too_few_for_model(row):
             continue     # no PARI program and the model would refuse it: it could only be skipped
+        if keep is not None and not keep(row):
+            continue
         d = difficulty(row) * min(MAX_FAILURE_PENALTY, FAILURE_PENALTY ** failures.get(a, 0))
         out.append(Candidate(a, row["name"], d, weight(d, alpha), row["program_langs"]))
     return out

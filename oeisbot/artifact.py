@@ -24,6 +24,7 @@ from pathlib import Path
 
 from . import config
 from .config import Budgets
+from .strategies import codegen
 from .terms import format_bfile
 from .verify import AttemptResult
 
@@ -88,7 +89,11 @@ def write(result: AttemptResult, attempt_id: int, entry_name: str, budgets: Budg
     if result.program.strategy == "python:model":
         notes.append(f"**AI-generated program** ({result.program.origin}). OEIS does not accept AI-generated "
                      "programs the submitter does not understand; treat it as a lead, not a result.")
+        notes += [f"**Numbered by the runner ({n}):** read `executed.{ext}` too, where the driver sits."
+                  for n in result.program.notes if n.startswith(codegen.MEMBERS_NOTE)]
         notes += [f"**Hard-coded {n}**" for n in result.program.notes if n.startswith("fixed bound")]
+        notes += [f"**Compare with the entry's program:** {n}" for n in result.program.notes
+                  if n.startswith(codegen.ENTRY_PROGRAM_NOTE)]
     else:
         notes += [f"**Program was rewritten:** {n}" for n in result.program.notes]
     warnings = "\n" + "\n\n".join(notes) + "\n" if notes else ""

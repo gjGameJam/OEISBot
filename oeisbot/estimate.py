@@ -10,7 +10,8 @@ Rules implemented here, from the design:
     exponential fit badly underestimates -> use the ratio model
   * odd and even n fitted separately when their costs alternate
   * report a range: the same model fitted with and without the newest point; large
-    disagreement -> risky (or skip)
+    disagreement (or too few points) -> untrustworthy and risky: neither the over-prediction kill nor
+    the infeasibility check on time acts on it
   * flag value-dependent cost ("smallest k such that ...") -> a budgeted open search
   * bound the bit size of the next term before running
 """
@@ -24,7 +25,6 @@ from dataclasses import dataclass, field
 WINDOW = 12                  # fit on the most recent points only
 MIN_POINTS = 3
 TRUST_DISAGREEMENT = 3.0     # with/without newest point may differ by this factor and still be trusted
-SKIP_DISAGREEMENT = 10.0
 WORK_FLOOR = 50              # below these the per-term cost is dominated by overhead and noise
 CPU_FLOOR_S = 0.05
 MIN_GRACE_S = 10.0
@@ -71,16 +71,35 @@ class Assessment:
     value_dependent: bool
     next_bits_high: int | None
     reasons: list[str] = field(default_factory=list)
+    # wall seconds per cost unit projected to term n, over the rate the seconds were converted with
+    rate_drift: float | None = None
 
     @property
     def exceeds_int64(self) -> bool:
         return self.next_bits_high is not None and self.next_bits_high >= 63
 
+    def trusted(self, factor: float) -> bool:
+        """Whether a kill at `factor` times the high estimate may act on it: the cost fit is trustworthy, and
+        the conversion to seconds is not heading past `factor` by itself. When each cost unit keeps getting
+        dearer (a primality test on a growing number), the rate alone would carry a sound term past the kill."""
+        return (self.cost is not None and self.cost.trustworthy
+                and (self.rate_drift is None or self.rate_drift <= factor))
+
     def kill_after_s(self, factor: float) -> float | None:
-        """How long term n may run before it counts as 'way over prediction'. None: budget only."""
-        if self.value_dependent or self.seconds_high is None:
+        """How long term n may run before it counts as 'way over prediction'. None: budget only.
+
+        Only a trusted projection can kill a term: one the estimator itself doubts is no evidence
+        that the term went wrong, and at the edge of the known terms it is usually low."""
+        if self.value_dependent or not self.trusted(factor) or self.seconds_high is None:
             return None
         return max(MIN_GRACE_S, factor * self.seconds_high)
+
+    def drift_note(self, factor: float) -> str | None:
+        """Why a trustworthy cost fit is still not trusted to kill, if that is the case."""
+        if self.cost is None or not self.cost.trustworthy or self.trusted(factor):
+            return None
+        return (f"seconds per {self.unit} unit projected at {self.rate_drift:.3g}x the rate used, "
+                f"over the {factor:g}x kill factor: not trusted to kill")
 
 
 # ------------------------------------------------------------------ fitting primitives
@@ -260,20 +279,28 @@ def assess(points: list[Point], n_next: int, *, unit: str, time_budget_s: float,
 
     recent = fit[-5:]
     rate = sum(p.wall_s for p in recent) / sum(p.cost for p in recent)   # wall seconds per cost unit
+    # the same points' own rates, fitted in log space and projected to n_next: a rate that keeps climbing
+    # makes the estimate in seconds low, however well the cost itself is fitted
+    ra, rb = _ols([p.n for p in recent], [math.log(p.wall_s / p.cost) for p in recent])
+    rate_drift = math.exp(min(ra + rb * n_next - math.log(rate), 700))
     s_point, s_low, s_high = proj.point * rate, proj.low * rate, proj.high * rate
     reasons += proj.notes
     risky = value_dep or not proj.trustworthy or proj.climbing
     feasible = True
     if proj.disagreement > TRUST_DISAGREEMENT:
         reasons.append(f"fits with/without newest point disagree {proj.disagreement:.1f}x")
-    if not value_dep:
-        if s_high > time_budget_s:
+    # only a trustworthy cost fit can judge a term infeasible on time: one the estimator itself doubts is no
+    # evidence either way (replayed on the real term logs, such fits were often far off in both directions).
+    # The fit's own trust, not Assessment.trusted: a drifting rate only makes the seconds lower still
+    if not value_dep and s_high > time_budget_s:
+        if proj.trustworthy:
             feasible = False
             reasons.append(f"projected {s_high:.3g} s exceeds remaining budget {time_budget_s:.3g} s")
-        elif proj.disagreement > SKIP_DISAGREEMENT and s_high > 0.1 * time_budget_s:
-            feasible = False
-            reasons.append("projection untrustworthy and not negligible against the budget")
+        else:
+            reasons.append(f"projected {s_high:.3g} s exceeds remaining budget {time_budget_s:.3g} s, but the fit "
+                           "is untrustworthy: not judged infeasible on time")
     if mem_high is not None and mem_high > mem_budget:
         feasible = False
         reasons.append(f"projected memory {mem_high / 2**30:.2f} GiB exceeds cap {mem_budget / 2**30:.2f} GiB")
-    return Assessment(n_next, unit, proj, s_point, s_low, s_high, mem_high, feasible, risky, value_dep, bits, reasons)
+    return Assessment(n_next, unit, proj, s_point, s_low, s_high, mem_high, feasible, risky, value_dep, bits, reasons,
+                      rate_drift)

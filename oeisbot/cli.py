@@ -73,13 +73,21 @@ def cmd_stats(args):
             print(f"  {form:<34} {c:>6}")
 
 
-def cmd_queue(args):
+def _session_pool(conn, args):
+    """The pool `oeisbot run` would pick from with default budgets (`--all` = the `--model` pool)."""
     from . import select
+    from .attempt import Runnable
+    keep = Runnable(conn, config.DEFAULT_BUDGETS, model=not args.pari)
+    return select.candidates(conn, alpha=args.alpha, require_langs={"pari"} if args.pari else None, keep=keep), keep
+
+
+def cmd_queue(args):
     conn = db.connect()
-    pool = select.candidates(conn, alpha=args.alpha, require_langs={"pari"} if args.pari else None)
+    pool, keep = _session_pool(conn, args)
     total_w = sum(c.weight for c in pool) or 1
     key = {"difficulty": lambda c: c.difficulty, "weight": lambda c: -c.weight, "a": lambda c: c.a_number}[args.sort]
-    print(f"{len(pool)} candidates; alpha={args.alpha}")
+    summary = keep.summary()
+    print(f"{len(pool)} candidates; alpha={args.alpha}" + (f"; {summary}" if summary else ""))
     print(f"{'A-number':<9} {'difficulty':>10} {'pick %':>8}  {'programs':<24} name")
     for c in sorted(pool, key=key)[: args.limit]:
         print(f"{c.a_number:<9} {c.difficulty:>10.3f} {100 * c.weight / total_w:>8.4f}  {c.program_langs[:24]:<24} {c.name[:70]}")
@@ -88,7 +96,7 @@ def cmd_queue(args):
 def cmd_pick(args):
     from . import select
     conn = db.connect()
-    pool = select.candidates(conn, alpha=args.alpha, require_langs={"pari"} if args.pari else None)
+    pool, _ = _session_pool(conn, args)
     for c in select.pick(pool, args.k, random.Random(args.seed)):
         print(f"{c.a_number}  d={c.difficulty:.3f}  {c.program_langs:<20} {c.name[:80]}")
 
@@ -224,7 +232,8 @@ def main(argv: list[str] | None = None) -> int:
                             ("pick", cmd_pick, "weighted random pick")):
         s = sub.add_parser(name, help=help_)
         s.add_argument("--alpha", type=float, default=1.0)
-        s.add_argument("--all", dest="pari", action="store_false", help="include sequences without a PARI program")
+        s.add_argument("--all", dest="pari", action="store_false",
+                       help="the `run --model` pool: include sequences without a PARI program")
         if name == "queue":
             s.add_argument("--limit", type=int, default=40)
             s.add_argument("--sort", choices=["difficulty", "weight", "a"], default="difficulty")

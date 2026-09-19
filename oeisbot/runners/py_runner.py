@@ -1,6 +1,7 @@
 """Sandbox-side driver for Python candidates. Copied into the scratch dir; runs under the sandbox interpreter.
 
-Contract for a candidate module (this is what generated code must implement):
+Contract for a candidate module (what the executed program must provide; a model program for a list of
+numbers defines `members(work)` instead, and strategies/codegen.py appends a driver that defines `terms`):
 
     def terms(work):
         '''Yield (n, a(n)) pairs for n = offset, offset+1, ... in order, forever or until done.

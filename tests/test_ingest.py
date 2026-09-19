@@ -82,15 +82,36 @@ def test_fetch_uses_lfs_pointer_and_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(bfile, "http_get", lambda url, timeout=60: calls.append(url) or body)
 
     assert bfile.fetch("A999998") is None and calls == []          # no pointer: no b-file, no request
+    assert bfile.cached("A999998") == (True, None)
     import hashlib
     (tmp_path / "oeisdata" / "files" / "A999" / "b999999.txt").write_text(
         f"version https://git-lfs.github.com/spec/v1\noid sha256:{hashlib.sha256(body).hexdigest()}\nsize {len(body)}\n")
+    assert bfile.cached("A999999") == (False, None)                 # pointer, nothing cached: needs a request
     assert bfile.fetch("A999999").values == {1: 1, 2: 2} and len(calls) == 1
     assert bfile.fetch("A999999").values == {1: 1, 2: 2} and len(calls) == 1   # cache hit
+    decided, bf = bfile.cached("A999999")
+    assert decided and bf.values == {1: 1, 2: 2} and len(calls) == 1          # the same answer, offline
     (tmp_path / "oeisdata" / "files" / "A999" / "b999999.txt").write_text(
         "version https://git-lfs.github.com/spec/v1\noid sha256:" + "0" * 64 + "\nsize 9\n")
+    assert bfile.cached("A999999") == (False, None)                 # stale cache: cannot decide offline
     bfile.fetch("A999999")
     assert len(calls) == 2                                          # pointer changed: refetch
+
+
+def test_cached_without_a_snapshot(tmp_path, monkeypatch):
+    """No oeisdata mirror: a cached b-file is trusted as is, an `.absent` marker means no b-file, and
+    anything else needs a request -- the same branches `fetch` takes before downloading."""
+    monkeypatch.setattr(config, "OEISDATA", tmp_path / "no mirror")
+    monkeypatch.setattr(config, "BFILE_CACHE", tmp_path / "bfiles")
+    monkeypatch.setattr(bfile, "http_get", lambda url, timeout=60: pytest.fail("fetch made a request"))
+    assert bfile.cached("A999999") == (False, None)
+    path = bfile.cache_path("A999999")
+    path.parent.mkdir(parents=True)
+    path.with_suffix(".absent").touch()
+    assert bfile.cached("A999999") == (True, None) and bfile.fetch("A999999") is None
+    path.write_text("1 5\n2 6\n")               # a cached file wins over the marker
+    decided, bf = bfile.cached("A999999")
+    assert decided and bf.values == {1: 5, 2: 6} and bfile.fetch("A999999").values == {1: 5, 2: 6}
 
 
 def test_fetch_rejects_an_html_page(tmp_path, monkeypatch):

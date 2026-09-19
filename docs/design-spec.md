@@ -141,7 +141,7 @@ Status: **Done** = implemented as specified. **Changed** = implemented different
 |---|---|---|---|
 | Cheap-feature difficulty score | Done | `select.difficulty` | Program present (PARI ×0.3, Python ×0.45, Sage ×0.5, else Mathematica ×0.6, Maple ×0.7), `hard` ×6, large last term, "More terms" credits, plus two extra features: value-dependent name ×1.5 and number of known terms. |
 | Pick ∝ 1/d^α, α tunable | Done | `select.weight`, `--alpha` | |
-| Sum tree when weights update after failures | Partial | `select.SumTree`, `select.candidates` | The sum tree is used for weighted sampling without replacement. Failure penalties (×2 per earlier failed/verified-without-new attempt, capped ×64) are applied when the pool is built, so they take effect in the **next** session, not during the current one. |
+| Sum tree when weights update after failures | Partial | `select.SumTree`, `select.candidates` | The sum tree is used for weighted sampling without replacement. Failure penalties (×2 per earlier attempt with a failed or verified-without-new run, counted once per attempt however many programs it ran, capped ×64) are applied when the pool is built, so they take effect in the **next** session, not during the current one. |
 
 ### 3. Strategy and code generation
 
@@ -150,20 +150,20 @@ Status: **Done** = implemented as specified. **Changed** = implemented different
 | Classify; choose rerun / brute force / smarter method / skip | Changed | `attempt.attempt_sequence`, `strategies/codegen.py` | No up-front classifier for the whole sequence. The entry's own PARI programs are always tried first; the model's classification step (brute_force, search, dp_or_transfer_matrix, formula, skip) happens only on the model path. |
 | PARI/GP first-class, `gp -q -f`, `parisizemax` | Done | `strategies/pari.py`, `verify.Harness.argv` | `gp.exe -q -f -D parisizemax=<80% of the job memory cap> program.gp`. Supports `a(n)` functions, predicates, and single print loops (rewritten). |
 | Wolfram Engine deferred; measure program types first | Done | `oeisbot stats` | Measured on the 2026-09-17 snapshot: of 26,814 `more` candidates, 54% have no program, 31% Mathematica, 20% PARI; 5,282 have Mathematica but not PARI. Wolfram Engine not integrated. |
-| Model emits one generator with a fixed signature | Done | `runners/py_runner.py` | `def terms(work)` yielding `(n, a(n))`; `work(k)` reports instrumented work. |
-| Retry with actual error text, cap 2–3 | Done | `codegen.generate_and_verify` | 3 generations. Retries carry only the latest attempt and its failure; temperature rises 0.2 → 0.5 → 0.8. |
+| Model emits one generator with a fixed signature | Done | `runners/py_runner.py` | `def terms(work)` yielding `(n, a(n))`; `work(k)` reports instrumented work. For a sequence the model judges to be a list of numbers with a property (known terms strictly increasing), `def members(work)` yielding the members instead, which an appended driver (`codegen.MEMBERS_DRIVER`) numbers into `terms(work)`. |
+| Retry with actual error text, cap 2–3 | Done | `codegen.generate_and_verify` | 3 generations. Retries carry only the latest attempt and its failure; temperature rises 0.2 → 0.5 → 0.8. A program repeating one that already failed in the stage in a way that would recur there (the same way every time, or by running out of the stage's verify budget) is not run, and uses up its generation. |
 | Hard gate: reproduce every known term with correct offset | Done, extended | `verify.py`, `codegen.py` | Extended after the model was caught hard-coding known terms: the model is shown at most 30 terms, at most `max(3, ⌊0.6 × count⌋)`, and always at least 2 fewer than are known; sequences with fewer than 3 known terms are not given to the model. Programs with ≥6 known values as literals are rejected, and held-out values are never revealed in retries. |
 
 ### 4. Feasibility estimation
 
 | Spec point | Status | Where | Notes |
 |---|---|---|---|
-| Fit work counts vs n; convert via measured rate | Done | `estimate.assess` | Work counts when the program reports them, CPU seconds otherwise. Rate = wall seconds per cost unit over the last 5 fitted terms. |
+| Fit work counts vs n; convert via measured rate | Done | `estimate.assess` | Work counts when the program reports them, CPU seconds otherwise. Rate = wall seconds per cost unit over the last 5 fitted terms. The rate is also projected to the next term (`rate_drift`); it is not used to correct the estimate, only to withhold trust (next rows). |
 | Extrapolate memory; feasible only if both fit | Done | `estimate.assess` | |
 | Examine ratios; climbing ratio = super-exponential | Done | `estimate._is_climbing` | Switches to a ratio-extrapolation model. |
 | Fit odd and even n separately | Done | `estimate._parity_series` | Only when the two parities' costs actually differ (median residuals > ×1.5 apart). |
-| Range from fits with/without the newest point; disagreement → risky/skip | Done | `estimate.project`, `estimate.assess` | Disagreement > 3× → untrustworthy (risky); > 10× and not negligible against the budget → infeasible. |
-| Re-estimate at checkpoints; kill > 2× over prediction | Done | `verify.Harness._project_next`, `on_tick` | Re-estimated after every new term. A term running longer than max(10 s, 2 × high estimate) is killed. |
+| Range from fits with/without the newest point; disagreement → risky/skip | Changed | `estimate.project`, `estimate.assess` | Disagreement > 3× (or fewer than 4 fitted points) → untrustworthy (risky), and then no over-prediction kill (next row) and no infeasible stop on time: "skip" was dropped on 2026-09-19 (offer F), after a replay showed such fits stopping terms that finished within the budget (the rule was: > 10× and not negligible against the budget → infeasible). |
+| Re-estimate at checkpoints; kill > 2× over prediction | Changed | `verify.Harness._project_next`, `on_tick`, `estimate.Assessment.kill_after_s` | Re-estimated after every new term. A term running longer than max(10 s, 2 × high estimate) is killed, but only when that projection is trusted (since 2026-09-18): its cost fit is trustworthy (in session 5 the kill ended two of three verified runs within half a minute, both on untrustworthy projections), and its rate is not projected to drift more than 2× by the next term (a replay of the real term logs showed trustworthy work-unit projections killing terms that took 14× and 66× their high estimate). Otherwise only the extension budget stops the term. |
 | Flag value-dependent cost; budgeted open search | Done | `estimate.name_suggests_search`, `_value_dependent_by_data` | Value-dependent terms are never judged infeasible by time and never killed for over-prediction; only the extension budget stops them. |
 | Bound the next term's size | Partial | `estimate._bits_bound` | Computed on every projection but not stored or acted on. Both runtimes use arbitrary-precision integers (Python int, gmpy2, PARI), so int64 overflow cannot happen in the programs the pipeline runs today. |
 
@@ -174,7 +174,7 @@ Status: **Done** = implemented as specified. **Changed** = implemented different
 | Subprocess with `setrlimit(RLIMIT_AS)` + wall timeout | Changed | `sandbox/windows.py` | The machine runs Windows 11 without WSL or Docker, where `setrlimit` does not exist. A Windows Job Object enforces a hard commit-charge cap, one process, kill-on-close and below-normal priority; the harness enforces wall clock. A `setrlimit` backend exists (`sandbox/posix.py`) but has never run. |
 | Never reach swap | Done | `sandbox/windows.py` | Job cap = min(6 GiB, free physical RAM − 3 GiB) at launch; any job is stopped if free physical RAM falls below 1.5 GiB. |
 | Filesystem/network isolation (low-privilege user or container) | Changed (stronger) | `sandbox/windows.py`, `setup_tools.grant_access` | AppContainer with no capabilities: no network (loopback included), filesystem access only where the container SID is granted (read: sandbox runtimes; write: scratch). |
-| Budgets: ~10 min verify, a few hours extend, session cap | Done | `config.Budgets` | 600 s, 3 h, 25 sequences per session. |
+| Budgets: ~10 min verify, a few hours extend, session cap | Changed | `config.Budgets` | 60 s, 3 h, 25 sequences per session. Verification was 600 s until 2026-09-18; real runs showed that time past a minute bought almost nothing (the programs that passed did so within 2.6 s), so the verify budget is now a quick first pass and a program that times out is revisited only with a larger `--verify-s`. |
 | Memory-lean approaches | Partial | model prompt | Stated as rules in the code-generation prompt; not enforced (the memory cap is the enforcement). |
 | Symmetry reduction; up-front state counts | Not done | | Would belong in specific strategies; none implement it. |
 | Checkpoint long runs to disk | Partial | `verify.Harness._log` | Every term is appended to `data/runs/*.jsonl` as it arrives, so finished terms survive a kill. Program state is not checkpointed and runs cannot be resumed. |
@@ -183,9 +183,9 @@ Status: **Done** = implemented as specified. **Changed** = implemented different
 
 | Spec point | Status | Where | Notes |
 |---|---|---|---|
-| SQLite WAL; one row per attempt with the listed fields | Done | `db.py` | Plus `predictions` (per projected term), `reviews`, `sessions`, `sequences`, `meta`. |
+| SQLite WAL; one row per attempt with the listed fields | Changed | `db.py` | One row per program run: an attempt of a sequence writes one per PARI run or model generation and at most one skip row, which has no key; its run rows share `extra.attempt_call`, which is what the failure penalty counts. Plus `predictions` (per projected term), `reviews`, `sessions`, `sequences`, `meta`. |
 | Feeds difficulty weights | Done | `select.candidates` | Failure penalty (applied at next session). |
-| Prevents repeating dead ends | Done | `db.is_dead_end` | Same program (sha256) + same number of known terms + deterministic failure, or verified-but-infeasible under an extension time and memory budget at least as large as the current run's. |
+| Prevents repeating dead ends | Done | `db.is_dead_end`, `attempt.Runnable` | Same program (sha256) + same number of known terms + deterministic failure, or verified-but-infeasible under an extension time and memory budget at least as large as the current run's, or verified with its whole extension time (at least the current run's) used up without a new term, on at least 80% CPU, or a verify timeout after at least the current verify budget. Neither verified kind holds back the entry's other PARI programs (since 2026-09-19): they get their turn in later attempts. Selection also leaves out sequences whose programs are all dead ends. |
 | Data to check the estimator | Done | `predictions` table, dashboard | |
 | Harness writes; dashboard reads | Done | `dashboard/app.py` | Dashboard opens `mode=ro` connections; tested to never write. |
 

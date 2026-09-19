@@ -9,15 +9,15 @@ Each stage names the function that implements it. Deeper pages:
 flowchart TD
     setup["oeisbot setup<br/>runtimes, AppContainer ACLs, database"] --> sync
     sync["oeisbot sync<br/>oeisdata clone → sequences table"] --> pick
-    pick["select.candidates + select.pick<br/>weight = 1/d^α, sum tree"] --> gates
+    pick["select.candidates + select.pick<br/>weight = 1/d^α, sum tree<br/>minus what could only be skipped"] --> gates
     gates{"entry loaded?<br/>keyword more?<br/>no open review?<br/>no pending re-check?"}
     gates -- no --> skip["record skip"]
     gates -- yes --> bfile["bfile.fetch<br/>LFS pointer → cache or oeis.org"]
     bfile --> known{"bfile.known_terms<br/>b-file + DATA consistent?"}
     known -- no --> skip
-    known -- yes --> pari["PARI programs from the entry<br/>up to 3 runs"]
+    known -- yes --> pari["PARI programs from the entry<br/>minus dead ends and out-of-reach searches<br/>up to 3 runs"]
     pari --> run["verify.run_attempt<br/>in the sandbox"]
-    pari -. "nothing finished and --model" .-> model["local model code generation<br/>up to 3 generations"]
+    pari -. "no new terms and --model" .-> model["local model code generation<br/>up to 3 generations"]
     model --> run
     run --> record["record attempt + predictions"]
     run -- "verified with new terms" --> pending["record as recheck_pending<br/>save result to data/pending/"]
@@ -81,9 +81,30 @@ then picks sequences with `select.candidates` and `select.pick`.
   (`config.CODEGEN_MIN_KNOWN_TERMS`, counting the larger of `bfile_terms` and `data_terms`), which the
   model stage would refuse. That exclusion applies only once the b-file lookup has run
   (`bfile_status` is `present` or `absent`), since a b-file can add terms.
+- **Nothing to run.** `attempt.Runnable` then leaves out every PARI-bearing sequence that an attempt
+  could only skip: it runs the attempt's own `attempt.pari_plan` (below, in
+  [stage 4a](#4a-the-entrys-own-pari-programs-always-first)) and drops the sequence when no program is
+  left to run, unless `--model` is on and the sequence has at least 3 known terms (the model stage would
+  still take it; with fewer, the model stage would record `too_few_known_terms`, and that is the reason
+  counted). Known terms are built exactly as the attempt would build them but without any request
+  (`bfile.cached`: no LFS pointer means no b-file, or a cached b-file whose sha256 matches its pointer).
+  Where the attempt's own gates would record a skip -- the entry missing from the mirror, a b-file that
+  cannot be decided offline (not cached) or whose lookup raises, inconsistent known terms -- the sequence
+  is kept and the attempt records what happens. An error the attempt has no gate for (an entry file that
+  cannot be parsed, a failure inside `pari_plan`) would stop the whole session, so that sequence is left
+  out instead and the first such error is shown in the session log. The log reports how many were left
+  out, by the skip reason an attempt would have recorded. On the 2026-09-18 database after session 5, at
+  the default 60 s verify budget and without `--model`, this left out 1,748 of the 5,316 PARI-bearing
+  candidates (1,326 `no_supported_program`, 393 `verify_out_of_reach`, 29 `all_programs_dead_ends`; 12
+  before session 5's 17 timeouts) in about 3 seconds;
+  with `--model` it left out 10, all `too_few_known_terms`. `oeisbot queue` and `oeisbot pick` apply the same check
+  with the default budgets (`--all` standing for the `--model` pool); `fetch-bfiles` and the dashboard's
+  Queue tab do not.
 - **Difficulty.** Recomputed from the current row at pick time (so b-file facts gathered since the last
   sync count), then multiplied by a failure penalty of 2^k, capped at 64, where k is the number of earlier
-  attempts on that sequence whose outcome was `failed` or `verified`.
+  attempts on that sequence with a row whose outcome was `failed` or `verified`, each attempt (one
+  `attempt_sequence` call) counted once however many programs it ran (see
+  [strategies](strategies.md#failure-penalty)).
 - **Weight.** `difficulty ** -alpha` (α defaults to 1; 0 is uniform).
 - **Draw.** `min(N, 25)` distinct sequences, each draw proportional to weight, using a sum tree and
   setting a picked leaf's weight to zero. `--seed` makes the draw reproducible.
@@ -147,21 +168,56 @@ Produces a `KnownTerms` object: index → value, the offset, a source (`bfile` o
 this order: `a(n)` functions, predicates such as `isok(k)`, then single print loops; within each form,
 programs that appear later in the entry go first. Details: [strategies](strategies.md#parigp).
 
-Up to 3 candidates are run (`MAX_PROGRAMS_PER_SEQUENCE`). A candidate is skipped without running when
-`db.is_dead_end` finds an earlier attempt with the same executed script (sha256), the same number of
-known terms, and either a deterministic failure (`wrong_term`, `bad_index`, `protocol`, `crash`,
-`incomplete`) or a verified run with no new terms judged `infeasible` under an extension time
-(`extend_wall_s`) and memory budget (`mem_bytes`) at least as large as the current ones. Those two
-budgets are stored in each attempt's `extra`; attempts without them never count as infeasible dead ends.
+`attempt.pari_plan` sorts the candidates before anything runs; selection uses the same function (see
+[stage 2](#2-selection-oeisbot-run--n-n---alpha-a---seed-s---model)). A candidate is not run when:
 
-The loop stops early once the sequence is **finished**: a run found new terms (whatever the re-check
-decides, including `recheck_pending`), or a run verified every known term but produced no new terms.
+- **it is a dead end**: `db.is_dead_end` finds an earlier attempt with the same executed script
+  (sha256) and the same number of known terms that
+  - failed deterministically (`wrong_term`, `bad_index`, `protocol`, `crash`, `incomplete`); or
+  - verified with no new terms and was judged `infeasible` under an extension time (`extend_wall_s`) and
+    memory budget (`mem_bytes`) at least as large as the current ones (both are stored in each attempt's
+    `extra`; attempts without them never count here); or
+  - verified with no new terms and stopped at `extend_budget` after an extension time at least as large as
+    the current one (from `extra`, as above; memory is not compared, because running out of memory never
+    ends a run this way), provided the job had the CPU for at least 80% of its wall time
+    (`db.EXTEND_DEAD_END_MIN_CPU_SHARE`), so a run starved by a busy machine does not count. A larger
+    `--extend-s` makes the program eligible again (since 2026-09-18); or
+  - stopped at `verify_timeout` after running at least the current `verify_wall_s` (its `runtime_s`).
+    Keyed on the measured runtime, so attempts from before this rule count too. A larger `--verify-s`
+    makes the program eligible again.
+- **it is out of reach** (`pari.out_of_reach`): a predicate program's driver calls the predicate once
+  for every k from its start (1, or the first known term when that is below 1) up to the last known
+  term, so reproducing the known terms takes at least that many calls. When that exceeds
+  `pari.PREDICATE_MAX_RATE` (2 × 10^7 calls/s, over 3 times the 5.8 × 10^6 measured for the cheapest
+  predicate, a single comparison) times `verify_wall_s`, the program cannot pass and is not run. Only the
+  predicate form has such a bound.
+
+Each is logged. Up to 3 of the remaining candidates are run (`MAX_PROGRAMS_PER_SEQUENCE`), in order.
+
+A dead end holds nothing back (since 2026-09-19, offer E; from 2026-09-18 an `infeasible` or
+`extend_budget` dead end held the entry's other programs back at that budget). Within one attempt a
+verified run ends the PARI stage (below), but in a later attempt at the same budget that program is
+skipped as a dead end and the next one runs, with its own full extension. At a longer `--extend-s` the
+first program is no longer a dead end, so it runs first again.
+
+The loop stops early when a run found new terms (whatever the re-check decides, including
+`recheck_pending`), or when a run verified every known term but produced no new terms. Only the first
+also rules out the model stage.
 
 ### 4b. Local model code generation (`--model` only)
 
 Runs only when `--model` was given, the model server answered the availability check at startup, and
-the PARI stage did not finish the sequence. `strategies.codegen.generate_and_verify` asks the model to
-classify the sequence, then generates up to 3 programs, each run through the same path as a PARI program.
+no PARI run found new terms. That includes a sequence whose PARI program reproduced every known term but
+produced nothing new (stopped by the extension budget or an infeasible projection, or it ended by
+itself), in this attempt or in an earlier one that made it a dead end: what such a sequence needs is a
+faster program, or one that keeps going. The model is then told so, and every program it writes carries
+a note for the reviewer (see [strategies](strategies.md#what-the-model-is-shown)).
+`strategies.codegen.generate_and_verify` asks the model to classify the sequence (and, when the known
+terms strictly increase, whether it is a list of numbers with a property), then generates up to 3
+programs, each run through the same path as a PARI program. For a list whose known terms strictly increase the model writes `members(work)` and a
+driver numbers the members; a program identical to one that already failed in the stage in a way that
+would recur there (a failure that repeats every time, or running out of the stage's verify budget) is
+not run again.
 Details: [strategies](strategies.md#local-model-code-generation).
 
 - Fewer than 3 known terms (`config.CODEGEN_MIN_KNOWN_TERMS`) → skip row `too_few_known_terms` (strategy
@@ -174,8 +230,21 @@ Details: [strategies](strategies.md#local-model-code-generation).
 
 ### 4c. Nothing ran
 
-If no program ran: skip `all_programs_dead_ends` when every candidate was a known dead end, otherwise
-`no_supported_program` with the reasons each PARI block was rejected.
+If no program ran (`PariPlan.nothing_to_run`):
+
+- `verify_out_of_reach` when every candidate was out of reach, with the calls each would need;
+- `all_programs_dead_ends` when at least one was a dead end (detail: "N already tried: failed the same
+  way, or verified and found nothing new with no smaller budget", plus a count of any out of reach). The
+  log names each one: "failed the same way before (attempt #N: mode)"; for `extend_budget` "verified
+  before and found nothing new in no less time"; for `infeasible` "verified before and judged the next
+  term infeasible with no less time and memory";
+- otherwise `no_supported_program`, with the reasons each PARI block was rejected.
+
+A skip row from the model stage takes precedence: with `--model` and fewer than 3 known terms, a
+sequence whose PARI programs were all out of reach is recorded as `too_few_known_terms`. A sequence whose
+PARI program verified and then went on to the model can also end with a model-stage skip row
+(`too_few_known_terms`, `model_skip`, `model_no_runnable_code`), so `SequenceReport.skipped` is set even
+though a program ran.
 
 ## 5. Running a program: `verify.run_attempt`
 
@@ -183,12 +252,14 @@ Every program, from either strategy, goes through the verification harness in th
 
 - A fresh working directory `data/scratch/<A-number>-<language>-<8 hex>/` is created, and deleted after
   the run.
-- The sandbox wall clock is `verify_wall_s + extend_wall_s + 30` seconds (defaults: 600 + 10,800 + 30).
+- The sandbox wall clock is `verify_wall_s + extend_wall_s + 30` seconds (defaults: 60 + 10,800 + 30).
 - Each emitted term is checked as an (index, value) pair as it arrives, logged to
   `data/runs/<A-number>-<YYYYmmdd-HHMMSS>-<sha8>.jsonl`, and new terms are accepted only after every known
   term matched.
 - After verification and after each new term, the next term's cost and memory are projected. The run
-  stops before an infeasible term, or kills a term running far past its projection.
+  stops before an infeasible term (on time only when the cost fit is trustworthy; on memory always), or
+  kills a term running far past a trusted projection (see
+  [verification](verification-and-estimation.md#assessment-estimateassess)).
 - Generated Python programs are also saved next to the log as `<same stem>.py`.
 
 Full rules: [verification and estimation](verification-and-estimation.md).
@@ -199,7 +270,8 @@ Every run, successful or not, writes one `attempts` row (strategy, program origi
 count and source, reproduced count, new-term count, runtime, CPU, peak memory, cost unit, the last
 projection, outcome, stop reason, detail) and one `predictions` row per projected term. The `extra` JSON
 column holds the log path, the program form, rewrite notes, the weak-verification flag, the run's
-`extend_wall_s` and `mem_bytes` budgets and, whenever new terms were found, the re-check note.
+`extend_wall_s` and `mem_bytes` budgets, the attempt's key (`attempt_call`, shared by every row of one
+`attempt_sequence` call) and, whenever new terms were found, the re-check note.
 
 Outcomes: `extended` (verified with new terms, still new on oeis.org), `verified` (verified, no new
 terms), `failed`, `superseded` (new terms already on oeis.org), `recheck_pending` (new terms whose

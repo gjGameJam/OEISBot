@@ -269,8 +269,14 @@ export function ReviewsView() {
             {r.name && <div className="secondary" style={{ marginTop: 4 }}>{r.name}</div>}
             {r.weak_verification && <div className="warn">Weak verification: only {r.known_terms} known terms to check against.</div>}
             {r.strategy === "python:model" && <div className="warn">AI-generated program. Do not submit a program you do not fully understand.</div>}
-            {r.rewrites.filter((w) => r.strategy !== "python:model" || w.startsWith("fixed bound")).map((w) => (
-              <div className="warn" key={w}>{r.strategy === "python:model" ? `Hard-coded ${w}` : `Program rewritten: ${w}`}</div>
+            {/* "the entry's own program" is codegen.ENTRY_PROGRAM_NOTE and "list contract" codegen.MEMBERS_NOTE;
+                keep them in step */}
+            {r.rewrites.filter((w) => r.strategy !== "python:model" || w.startsWith("fixed bound")
+                                      || w.startsWith("the entry's own program") || w.startsWith("list contract")).map((w) => (
+              <div className="warn" key={w}>{r.strategy !== "python:model" ? `Program rewritten: ${w}`
+                : w.startsWith("fixed bound") ? `Hard-coded ${w}`
+                : w.startsWith("list contract") ? `Numbered by the runner (${w}): read executed.py too`
+                : `Compare with the entry's program: ${w}`}</div>
             ))}
             <div className="filters" style={{ marginTop: 8, marginBottom: 0 }}>
               {r.files.map((f) => (
