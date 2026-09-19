@@ -17,7 +17,7 @@ Windows-only in practice: the sandbox is a Job Object + AppContainer (`oeisbot/s
 ## Commands
 
 ```
-.venv\Scripts\python -m pytest                 # 256 tests, ~50 s; sandbox tests skip if `oeisbot setup` has not run
+.venv\Scripts\python -m pytest                 # 257 tests, ~50 s; sandbox tests skip if `oeisbot setup` has not run
 .venv\Scripts\python -m pytest tests/test_sandbox.py
 .venv\Scripts\oeisbot setup                    # sandbox runtimes + AppContainer grants + database (idempotent)
 .venv\Scripts\oeisbot sync --no-pull           # rebuild the candidate table from the local oeisdata clone
@@ -72,9 +72,9 @@ The full list with rationale is in `docs/development.md#invariants`.
 - `gp.exe` commits its whole `parisizemax` at startup; job peak memory for gp is meaningless (the driver
   reports stack size instead).
 - There are no database migrations; schema changes need `ALTER TABLE` on existing databases.
-- `tests/test_verify.py::test_extension_stops_when_next_term_is_projected_infeasible` is timing-sensitive
-  and fails intermittently (about one run in four to eight); rerun it alone before blaming a change.
-  Fixing it is the first next step in `docs/status.md`.
+- Real timings on this machine are noisy: a term of a few milliseconds can take 0.2-0.4 s more wall time
+  than CPU time. Do not assert on sub-second timings in a test; drive the harness in memory with
+  controlled times instead, as the harness tests in `tests/test_estimate.py` do.
 
 ## Docs
 

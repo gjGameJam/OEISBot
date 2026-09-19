@@ -25,7 +25,7 @@ uv venv .venv --python 3.11
 uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
 .venv\Scripts\oeisbot setup
 .venv\Scripts\oeisbot sync
-.venv\Scripts\python -m pytest            # 256 tests, about 50 s; confirms the sandbox works on this machine
+.venv\Scripts\python -m pytest            # 257 tests, about 50 s; confirms the sandbox works on this machine
 ```
 
 Optional dashboard: see [dashboard](dashboard.md#running-it).

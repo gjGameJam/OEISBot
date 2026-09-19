@@ -186,18 +186,22 @@ DOUBLING = py("""
 POW2_KNOWN = KnownTerms("A000079", 0, {n: 2 ** n for n in range(0, 19)}, "bfile")
 
 
-def test_extension_stops_when_next_term_is_projected_infeasible():
-    r = run_attempt(DOUBLING, POW2_KNOWN, Budgets(verify_wall_s=60, extend_wall_s=2.0, max_new_terms=50))
+def test_infeasible_stop_ends_the_sandboxed_run():
+    # the real program with no extension time: a(19)'s projection (about 17 ms here) is over the budget whatever the
+    # timing, since every fitted term took some time, and the decision comes in the callback that verifies a(18), so
+    # no tick comes between. The whole extension, stopping after new terms, is tested in memory with controlled times
+    # (test_estimate.py::test_extension_stops_when_next_term_is_projected_infeasible): real millisecond timings stall
+    # by up to 0.4 s on this machine, which made that test flaky when it ran here
+    r = run_attempt(DOUBLING, POW2_KNOWN, Budgets(verify_wall_s=60, extend_wall_s=0, max_new_terms=50))
     assert r.verified and r.stop is Stop.INFEASIBLE, (r.stop, r.detail)
-    assert "exceeds remaining budget" in r.detail
-    # it stopped *before* running the term it judged infeasible, rather than timing out on it
-    assert r.run.wall_s < r.verified_at_s + 2.0
-    last = r.predictions[-1]
-    assert not last.feasible and last.actual_s is None and last.censored_s is None
-    checked = [p for p in r.predictions if p.actual_s is not None and p.seconds]
-    assert checked, "expected some predictions with actual outcomes"
-    for p in checked:  # doubling work is easy to predict
-        assert 0.25 < p.actual_s / p.seconds < 4, (p.n, p.actual_s, p.seconds)
+    assert "exceeds remaining budget 0 s" in r.detail
+    # nothing past the known terms recorded, and the sandbox ended the run on the harness's stop (left alone, the
+    # program never ends, and the harness's next tick would stop it as extend_budget). How soon the kill comes is
+    # test_sandbox.py::test_on_tick_can_stop's to check
+    assert r.records[-1].n == 18 and r.new_terms == [] and r.outcome == "verified"
+    assert r.run.status is sandbox.Status.STOPPED and r.run.stop_reason.startswith("infeasible:")
+    [p] = r.predictions
+    assert p.n == 19 and not p.feasible and p.actual_s is None and p.censored_s is None
 
 
 def test_term_far_over_prediction_is_killed(monkeypatch):

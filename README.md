@@ -32,7 +32,7 @@ uv venv .venv --python 3.11
 uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
 .venv\Scripts\oeisbot setup        # sandbox runtimes in tools/, AppContainer grants, database
 .venv\Scripts\oeisbot sync         # clone oeisdata (about 2.3 GB) and build the candidate table
-.venv\Scripts\python -m pytest     # 256 tests; proves the sandbox works on this machine
+.venv\Scripts\python -m pytest     # 257 tests; proves the sandbox works on this machine
 .venv\Scripts\oeisbot run -n 5     # pick and attempt 5 sequences that have PARI programs
 .venv\Scripts\oeisbot review list  # anything found
 ```
@@ -49,7 +49,7 @@ Dashboard: `cd dashboard && npm install && npm run build`, then `.venv\Scripts\o
 
 ## Status
 
-- All eight build steps from the [design spec](docs/design-spec.md) are implemented, and 256 tests pass.
+- All eight build steps from the [design spec](docs/design-spec.md) are implemented, and 257 tests pass.
 - The sandbox runs on Windows only. A Linux `setrlimit` backend exists but has never run, and the rest
   of the project assumes Windows.
 - Real runs so far (47 sequences, 88 program runs, about 3 machine-hours) found no new terms; see

@@ -5,8 +5,9 @@ import pytest
 from oeisbot import estimate, sandbox
 from oeisbot.config import Budgets
 from oeisbot.estimate import Point, assess, project
+from oeisbot.sandbox import RunResult, Status
 from oeisbot.terms import KnownTerms, Program
-from oeisbot.verify import Harness, Prediction
+from oeisbot.verify import Harness, Prediction, Stop, run_attempt
 
 
 def series(f, ns):
@@ -380,6 +381,66 @@ def test_harness_runs_on_past_an_untrustworthy_projection_over_the_budget(monkey
     h.on_line(f"@T 19 {2 ** 19} {int(t * 1e6)} {int(work + 1000 * 2 ** 19)} 8000000", t)
     assert [(r.n, r.kind) for r in h.records[-2:]] == [(18, "known"), (19, "new")]
     assert h.predictions[0].actual_s == pytest.approx(h.records[-1].dt)
+
+
+def test_extension_stops_when_next_term_is_projected_infeasible(monkeypatch, tmp_path):
+    # test_verify.py's doubling program through run_attempt, with sandbox.run replaced by a replay of its term lines at
+    # controlled times: real millisecond timings stall by up to 0.4 s on this machine, which made this test flaky when
+    # it ran in the sandbox. After 0.05 s of start-up, a(n) takes 2^n * 32 ns, as it does here, and reports 2^n work
+    # units, so each projection is the term's own time and the stop cannot depend on the machine. The replay ticks
+    # before each line (the sandbox ticks every 0.25 s) and, like the sandbox, stops at the first reason it is given
+    monkeypatch.setattr(sandbox, "avail_phys_bytes", lambda: 64 * 2 ** 30)   # the memory cap must not depend on free RAM
+    start_s, per_unit, extend_s = 0.05, 32e-9, 2.0
+    stopped_by = []
+
+    def scratch(label):
+        d = tmp_path / label
+        d.mkdir()
+        return d
+
+    def replay(argv, *, cwd, limits, on_line=None, on_tick=None, **kw):
+        t, work = start_s, 0
+        for n in range(40):
+            t += 2 ** n * per_unit
+            work += 2 ** n
+            if reason := on_tick(t):
+                stopped_by.append(("tick", n, reason))
+            elif reason := on_line(f"@T {n} {2 ** n} {int(t * 1e6)} {work} 8000000", t):
+                stopped_by.append(("line", n, reason))
+            if reason:
+                # stopped with a kill latency, so a censored time, were one recorded, would not be 0
+                return RunResult(Status.STOPPED, exit_code=1, wall_s=t + 0.05, cpu_s=t, peak_mem_bytes=8_000_000,
+                                 mem_cap_bytes=limits.mem_bytes, stop_reason=reason)
+        raise AssertionError("the replay ran out of terms without being stopped")
+
+    monkeypatch.setattr(sandbox, "new_scratch_dir", scratch)
+    monkeypatch.setattr(sandbox, "run", replay)
+    # the first new term that would take longer than what is left of the extension when it starts
+    spent, stop_n = 0.0, 19
+    while spent + 2 ** stop_n * per_unit <= extend_s:
+        spent += 2 ** stop_n * per_unit
+        stop_n += 1
+    assert stop_n == 25          # a(19)..a(24) take 1.057 s; a(25) would take 1.074 s with 0.943 s left
+
+    known = KnownTerms("A000079", 0, {n: 2 ** n for n in range(19)}, "bfile")
+    prog = Program("python", "", origin="test", strategy="python:test")
+    r = run_attempt(prog, known, Budgets(verify_wall_s=60, extend_wall_s=extend_s, max_new_terms=50))
+    assert r.verified and r.stop is Stop.INFEASIBLE, (r.stop, r.detail)
+    assert "exceeds remaining budget" in r.detail and r.outcome == "extended"
+    # the stop came with a(24)'s line, so a(25) never started: the sandbox was asked to stop there
+    assert stopped_by == [("line", stop_n - 1, r.run.stop_reason)] and r.run.stop_reason.startswith("infeasible:")
+    assert [(t.n, t.value) for t in r.new_terms] == [(n, 2 ** n) for n in range(19, stop_n)]
+    *ran, last = r.predictions
+    assert [p.n for p in ran] == list(range(19, stop_n))
+    for p in ran:
+        # each term's own time recorded as its outcome, and projected exactly
+        assert p.actual_s == pytest.approx(2 ** p.n * per_unit, rel=1e-9)
+        assert p.seconds == pytest.approx(p.actual_s, rel=1e-9) and p.feasible
+    assert last.n == stop_n and not last.feasible
+    assert last.seconds_high == pytest.approx(2 ** stop_n * per_unit, rel=1e-9)
+    assert last.seconds_high > extend_s - spent
+    # stopped before its term started: no actual time, and none censored either
+    assert last.actual_s is None and last.censored_s is None
 
 
 def test_next_term_bit_bound_flags_int64_overflow():

@@ -1,20 +1,20 @@
 # Project status and handoff
 
 Snapshot as of **2026-09-19**, written at the end of session 5 and updated after offer B, the
-extension dead end and offers A, C, G, H, F, D and E (history items 21 to 29). This page exists so work can resume in a new session
+extension dead end, offers A, C, G, H, F, D and E and the flaky-test fix (history items 21 to 30). This page exists so work can resume in a new session
 without the history of the one that built the project. Update it at the end of each working session.
 
-**No task is in progress.** The last one, offers D and E one at a time (the user, 2026-09-19: "Tackle D
-and E next. Go one item at a time and slow. Break down items into subitems when possible and use a critic
-agent to avoid defects"), is finished, in the same sections as the G, H, F task below with one critic
-agent per item: D (history item 28; the database backfilled) and E (item 29), each audited and
-re-checked. No offers are waiting for an answer. No background jobs, no pending re-checks, nothing
-committed since `1b6881d`. The working tree is green apart from one known flaky test: 256 tests, of which
-`tests/test_verify.py::test_extension_stops_when_next_term_is_projected_infeasible` fails about one run in
-four to eight on this machine (timing; offer F added one of its failure modes; fixing it is
-[next step 1](#open-offers-and-next-steps)); `scripts/check_docs.py` reports no link problems. Every
-decision made so far is in the table below; what could come next is in
-[next steps](#open-offers-and-next-steps).
+**No task is in progress.** The last one, the flaky test (the user, 2026-09-19: "Yes start in step 1";
+the step said "The fix belongs in the test (...), not in the rule; plan it with a critic like the
+offers"), is finished, in the
+same sections as the G, H, F task below with one critic agent: history item 30. The test was split into
+an in-memory test with controlled times and a sandbox test with no extension time; neither depends on
+timing. Its diagnosis corrects an earlier one: offer F did not add a failure mode (item 27 said it did).
+No offers are waiting for an answer. No background jobs, no pending re-checks. At the user's request
+("Commit and push before we start", then "commit and push" again after the fix), everything up to offer E
+was committed and pushed as `5e4665a`, and the flaky-test fix is a second commit on top of it, so the
+working tree is clean. 257 tests pass and `scripts/check_docs.py` reports no link problems. Every decision made so far is in the
+table below; what could come next is in [next steps](#open-offers-and-next-steps).
 
 ## Offers G, H and F, one at a time (done)
 
@@ -72,7 +72,16 @@ Working files from the session that did offers H, F, D and E, in
   `e_reach.py` (which of them the rule can reach), `planE.md` (sections 4 and 5: the revision after the
   critic, the user's decision), `mutateE.py`, `offerE.diff` and `offerE_v2.diff`, and the critic's scripts
   in `criticE\` (its `test_longer_budget.py` shows the old rule's sibling never running).
-- `flaky_compare.py`: the flaky test run N times with the current and the pre-F `estimate.py` (next step 1).
+- `flaky_compare.py`: the flaky test run N times with the current and the pre-F `estimate.py` (history
+  item 30; it kept only the first failing line of each run).
+
+Working files from the session that fixed the flaky test (history item 30), in
+`C:\Users\GRANTB~1\AppData\Local\Temp\claude\C--gtest-OEISBot\7399237c-5c71-49f3-a34e-77da7ccb7057\scratchpad`:
+`planT.md` (section 8: the revision after the critic; section 9: the user's decision), `flaky_evidence.py`
+(the old test's call run N times, every assertion evaluated on its own, every assessment kept),
+`flaky_show.py`, `flaky_under_load.py` (the same with one CPU burner per core), the data
+`flaky_evidence_all.jsonl` (210 idle runs) and `flaky_evidence_load.jsonl` (18 under load), `mutateT.py`,
+`repeatT.py` (the new tests N times, optionally under load), and the critic's scripts in `criticT\`.
 
 
 ## Resuming in a new session
@@ -84,8 +93,7 @@ Working files from the session that did offers H, F, D and E, in
 3. **Confirm the machine is still set up** (every command should succeed without reinstalling):
 
    ```
-   .venv\Scripts\python -m pytest            # expect 256 passed; test_extension_stops_when_next_term_is_projected_infeasible
-                                             # (test_verify.py) fails intermittently (next step 1): rerun it alone
+   .venv\Scripts\python -m pytest            # expect 257 passed (on an otherwise idle machine: history item 30)
    .venv\Scripts\oeisbot model-check         # expect 'ready' (first call loads the model, about a minute)
    .venv\Scripts\oeisbot stats               # expect 26,814 candidates (14,436 with no program)
    .venv\Scripts\oeisbot attempts --limit 200 # expect 111 rows, ids 1-111
@@ -103,9 +111,12 @@ Working files from the session that did offers H, F, D and E, in
    decisions that are theirs, implement with tests, break each new behaviour on purpose to prove a test
    fails (restore files byte for byte; line endings differ per file), have a separate agent audit the
    change without being told it looks right, fix, and send the fixes back to the same auditor. Check every
-   number a reviewer reports before repeating it. Before a real run, write the expected results down.
+   number a reviewer reports before repeating it, re-deriving it from the raw data by your own method:
+   in item 30 the check used the reviewer's method and inherited its bug (distinct run ids over a file
+   whose ids repeat). Before calling something a test gap, run the mutant against the whole suite, not
+   only the test you have in mind. Before a real run, write the expected results down.
    Every stage so far found something the previous one missed (history items 11, 18, 21, 22, 23, 24,
-   25, 26, 27, 28, 29). The user's latest instructions: "Implement G, H, and F one at a time. Break each
+   25, 26, 27, 28, 29, 30). The user's latest instructions: "Implement G, H, and F one at a time. Break each
    item down into sections. Use a critic agent to stay on task" and, for D and E, "Go one item at a time
    and slow. Break down items into subitems when possible and use a critic agent to avoid defects" (the
    sections are in [the G, H, F task](#offers-g-h-and-f-one-at-a-time-done); one critic agent per item,
@@ -116,7 +127,7 @@ Working files from the session that did offers H, F, D and E, in
 
 ## Where things stand
 
-- **Build:** all eight steps of the [design spec](design-spec.md) are implemented, with 256 passing tests.
+- **Build:** all eight steps of the [design spec](design-spec.md) are implemented, with 257 passing tests.
 - **Selection and the model after PARI** (session 5, 2026-09-18): the verify budget is a 60 s first pass,
   timed-out programs are dead ends up to the time they already ran, provably hopeless predicate searches
   are not run, sessions no longer pick sequences an attempt could only skip, and with `--model` a PARI
@@ -147,6 +158,11 @@ Working files from the session that did offers H, F, D and E, in
   rows were backfilled once, after a backup. History item 28.
 - **No hold-back** (offer E, 2026-09-19): once one of an entry's PARI programs is a budget dead end, a
   later attempt at that budget runs the next one, with its own extension. History item 29.
+- **The flaky test fixed** (2026-09-19): the extension's infeasible stop is now tested in memory with
+  controlled times (`test_estimate.py`), and the sandbox only has to end a run on that stop, with no
+  extension time (`test_verify.py::test_infeasible_stop_ends_the_sandboxed_run`); no test asserts on
+  sub-second real timings any more. Nothing under `oeisbot/` changed. History item 30, which also
+  corrects item 27's claim that offer F had made the test flakier.
 - **Extension dead end** (2026-09-18): a verified run that used its whole extension without a new term,
   on at least 80% CPU, is not repeated at the same or a smaller `--extend-s`; the entry's other PARI
   programs get their turn in later attempts (since offer E; it held them back until then). History items
@@ -155,7 +171,7 @@ Working files from the session that did offers H, F, D and E, in
   an independent audit of those fixes was addressed, the `fini` mismatch is fixed and the test suite grew
   from 92 to 141 tests. See history items 10 and 11.
 - **Docs:** complete and independently audited against the code (23 findings, all fixed), and updated
-  and audited with every change since (session 3, session 5, offer B, the extension dead end, offers A, C, G, H, F, D and E).
+  and audited with every change since (session 3, session 5, offer B, the extension dead end, offers A, C, G, H, F, D and E, and the flaky-test fix).
 - **Real runs:** 47 sequences attempted, 108 program runs, 0 wins. Database session 4 showed that
   verification, not extension, is the binding constraint (history item 16). Session 5 measured the
   quick-first-pass selection: 0 wasted picks, 3.6× the program runs per hour of the earlier PARI-only
@@ -167,10 +183,11 @@ Working files from the session that did offers H, F, D and E, in
   term (item 24). Details in
   [known limitations](known-limitations.md#observations-from-real-runs).
 - **Git:** the user committed and pushed everything up to session 4 themselves (`1b6881d` "started oeis
-  bot", on `main`, in sync with `origin/main` at the start of session 5). **Session 5's changes are
-  uncommitted** on top of it (source, tests, docs, `dashboard/src/views.tsx`), and so are offer B, the
-  extension dead end and offers A, C, G, H, F, D and E: 32 modified files in all. Do not commit or push unless the user asks. `.gitignore`
-  excludes the local state below.
+  bot", on `main`). On 2026-09-19, at the user's request ("Commit and push before we start"), session 5,
+  offer B, the extension dead end and offers A, C, G, H, F, D and E were committed and pushed as
+  `5e4665a` (after 256 tests passed and `origin/main` was checked unchanged). The flaky-test fix (history
+  item 30; tests and docs only) is a second commit on top of it, pushed the same day at the user's
+  request. Do not commit or push unless the user asks. `.gitignore` excludes the local state below.
 - **Background processes:** none. The Ollama tray app keeps its server running on port 11434.
 
 ### Local state on this machine (not in git)
@@ -247,6 +264,8 @@ Working files from the session that did offers H, F, D and E, in
 | Offer D: the failure penalty counts attempts (one `attempt_sequence` call each), not rows, and the existing rows are backfilled once (rather than grouping only session rows at query time, leaving model rows out, or no change) | user ("Per attempt + backfill (Recommended)") | [strategies](strategies.md#failure-penalty) |
 | D's attempt key is a uuid in `extra.attempt_call` (not a column, not `extra.attempt`, which would read as a row id); a row without it or with an unreadable `extra` counts on its own; the backfill is a one-off scratch script in one transaction, after a `VACUUM INTO` backup, not added to the repo | assistant, reviewed by the critic (the transaction after its audit) | [data and schema](data-and-schema.md#attempts-one-row-per-program-run-or-per-skip) |
 | Offer E: reverse the hold-back rule, so after a budget dead end the entry's other PARI programs get their turn in later attempts (rather than keeping it, or keeping it only after `extend_budget`) | user ("Reverse: siblings get a turn (Recommended)"), on the assistant's recommendation, which the critic's review had turned from confirming | [pipeline](pipeline.md#4a-the-entrys-own-pari-programs-always-first), [known limitations](known-limitations.md#pipeline-and-recording) |
+| The flaky test: drop the 4× accuracy check on real timings (rather than keep one with terms of about 1 s) | user ("Drop it (Recommended)") | [development](development.md#tests), history item 30 |
+| Split it into the extension's infeasible stop in memory with controlled times (`test_estimate.py`) and the sandbox ending a run on that stop with no extension time (`test_verify.py`); fix the test, not the rule | assistant, from the step's own wording; the critic's review made the zero extension and the stop-source checks | [development](development.md#tests), history item 30 |
 | F's trust is the cost fit's (`Projection.trustworthy`), not `Assessment.trusted`, so a fit withdrawn from the kill only by the rate drift is still judged on its high end; the disagreement-over-10 rule and its constant removed; an untrustworthy projection over the budget gets a reason saying it was not judged on time; memory unchanged | assistant, reviewed by the critic | [verification](verification-and-estimation.md#assessment-estimateassess) |
 
 ## History (condensed)
@@ -719,7 +738,9 @@ Working files from the session that did offers H, F, D and E, in
     now spends its whole remaining extension when the term does not come. Found later the same day:
     `test_verify.py::test_extension_stops_when_next_term_is_projected_infeasible`, already flaky on
     timing, gained a failure mode from F (a noisy run whose deciding projection is untrustworthy ends
-    `extend_budget` instead of `infeasible`); it passed during F's tests and audit. Next step 1.
+    `extend_budget` instead of `infeasible`); it passed during F's tests and audit. (Corrected in item 30:
+    F cannot affect that test, whose cost fits are always trustworthy; the `extend_budget` ending likely
+    came from a starved machine, as it did under load.)
 28. **Offer D: the failure penalty counts attempts, not rows (2026-09-19).** The user asked for D and E
     "one item at a time and slow", in subitems, with a critic. The evidence: the 111 rows form 63
     attempts (one `attempt_sequence` call each: session rows by session and sequence, the 40 standalone
@@ -769,40 +790,69 @@ Working files from the session that did offers H, F, D and E, in
     the next sibling won; that sibling now fails, so the one after it must run too. The audit also
     corrected "up to three extensions" (the cap of 3 is per attempt; across attempts every runnable
     program gets one) and "indices over 1000" (numbers of over 1000 digits). The re-check found nothing
-    new. Found on the way, not changed: a flaky timing check in `test_verify.py` (next steps).
+    new. Found on the way, not changed: a flaky timing check in `test_verify.py` (fixed in item 30).
+30. **The flaky test fixed (2026-09-19).** `test_verify.py::test_extension_stops_when_next_term_is_projected_infeasible`
+    ran a doubling brute-force program (known terms a(0)..a(18)) through the sandbox with a 2 s extension
+    and asserted the run stopped `infeasible` (line 191) inside the extension (194), with every finished
+    term within 4× of its projection (200). The evidence: the test's call run 210 times, every assertion
+    evaluated on its own and every assessment kept. 35 runs failed (1 in 6): line 200 in 32, line 194 in 6
+    (3 both), line 191 in none. The cause is wall time the program did not spend computing: in 64 runs a
+    term of 1-140 ms (a(15)..a(22), 0.06-0.22 s into the run) took 0.2-0.4 s more wall time than CPU time
+    (in 3 more line-200 failures, 0.16-0.19 s), with the next term normal, so the program was held up, not
+    the parent's reading. That term's projection was up to 21× short, and since the rate is taken from the
+    last five fitted terms, the next three or four were up to 18× long. Line 194 failed when the kill took
+    longer than what was left of the extension (-0.06 to 0.38 s left; the kill took 0.02-0.40 s, 0.07 s
+    at the median over all runs). Under full CPU load (one burner per core, 18 runs) verification took
+    24-40 s, the kill 2.4-5.2 s, and line 191 failed twice: a(19), projected at 0.017 s, was still running
+    when the 2 s extension ran out, and the run ended `extend_budget` 2.44 and 2.52 s after a(19) started. This corrects item 27: offer F
+    cannot affect the test. Its cost unit is `work`, reported exactly as 2^n, so the cost fits of all
+    1,463 projections (and all 18 under load) were trustworthy, with disagreement 1.00 and 12 points, and
+    F changes only what happens on untrustworthy cost fits. The 2 line-191 failures of 30 after F (0 of 30 before, a
+    difference within chance) likely came from a busier machine; `flaky_compare.py` kept only the first
+    failing line, so they cannot be checked. The fix, in the test only: the extension's infeasible stop
+    moved to `test_estimate.py` under the same name, through `run_attempt` with `sandbox.run` replaced by
+    a replay at controlled times (after 0.05 s of start-up, a(n) takes 2^n × 32 ns, as on this machine), so each
+    projection is exact and the stop comes on a(24)'s line (a(19)..a(24) take 1.057 s; a(25) would take
+    1.074 s with 0.943 s left), before a(25) starts, with no censored time. In the sandbox,
+    `test_verify.py::test_infeasible_stop_ends_the_sandboxed_run` runs the real program with no extension
+    time, so the stop is certain (a fitted term always took some time) and comes in the callback that
+    verifies a(18): it asserts the sandbox ended the run on that stop. The 4× accuracy check on real
+    timings was dropped (the user's choice); the in-memory test checks each projection exactly, and
+    accuracy on clean data was already tested. Tests: 256 → 257. The critic corrected the evidence (a
+    projection count, the stalls on the longer terms, the causes' list), and found two mutants the plan
+    said were caught that its tests as written let through (a stop recorded but not requested to the
+    sandbox, stopped by the next tick instead; `dt` as time since start, compared with itself), and a
+    0.001 s extension a burst of late reads could have met; all adopted. 10 deliberate mutations, each
+    caught: a missing kill by `test_sandbox.py::test_on_tick_can_stop` (the new tests leave the kill's
+    timing to it), and lines still passed on after a stop by `test_verify.py`'s
+    `test_correct_program_is_verified_and_extended` and `test_gp_program_verified` (3 of 3 runs each; the new sandbox test catches it only when a(19) arrives before the kill, 2 of 7). The
+    audit found that last mutant covered after all (the first report called it a gap), a stall count of
+    56 that should be 64 (run ids repeat in the joined data), and a claim the data did not hold (that
+    a(19) got no CPU under load); its own four mutants were caught. The new tests passed 50 of 50 runs
+    each, and the sandbox one 3 of 3 under full CPU load. Found on the way, not changed: on terms of 0.3-0.8 s wall time runs about
+    1.5× CPU time at the median; the sandbox runs programs at below-normal priority.
 
 ## Open offers and next steps
 
-Offers waiting for an answer: none (D and E were decided and done on 2026-09-19).
+Offers waiting for an answer: none. The previous next step 1, the flaky test, was done on 2026-09-19
+(history item 30).
 
 Suggested next steps, roughly by value:
 
-1. **Fix the flaky test** `tests/test_verify.py::test_extension_stops_when_next_term_is_projected_infeasible`
-   (a doubling brute-force program, known terms a(0)..a(18), a 2 s extension; it asserts the run stops
-   `infeasible` (line 191), well inside the extension (194), and every finished term within 4× of its
-   projection (200)). Measured on 2026-09-19 with `flaky_compare.py` (30 runs each, the test alone):
-   with the current `estimate.py` 7 failures (191: 2, 194: 2, 200: 3), with the pre-F `estimate.py` 4
-   (194: 2, 200: 2). So 194 and 200 were flaky before (timing: a slow moment on one of the millisecond
-   terms the rate is taken from inflates a projection, or delays the stop), and offer F added 191: when
-   the deciding projection is untrustworthy on a noisy run it no longer stops the run, which then ends
-   `extend_budget` ("extension budget 2 s used"), as F intends. The F audit missed it because the test
-   passed at the time. The fix belongs in the test (for example drive the harness in memory with
-   controlled times, as `test_estimate.py`'s harness tests do, or make the terms slow enough that noise
-   cannot matter), not in the rule; plan it with a critic like the offers.
-2. A session like session 5 (`run -n 20 --verify-s 60 --extend-s 1800`, PARI only) to see what
+1. A session like session 5 (`run -n 20 --verify-s 60 --extend-s 1800`, PARI only) to see what
    verified runs do with their full extension now that offers B, A and F no longer stop them early on an
    untrustworthy projection. Proposed to the user, not started. Write the expected results down first,
    as for session 5 (about 3 of 20 picks verify; those now run their whole 1800 s unless they find a
    term; about 1–2 h in all). At 1800 s the extension dead end leaves A247883 and A323252 out of the pool.
-3. Smaller follow-ups ([known limitations](known-limitations.md#pipeline-and-recording)): save pending
+2. Smaller follow-ups ([known limitations](known-limitations.md#pipeline-and-recording)): save pending
    re-checks as JSON instead of pickles; give up on (or flag) a pending win whose re-check fails the same
    way every time; key the infeasible dead end on the effective memory cap. The five remaining documented
    mismatches ([known limitations](known-limitations.md#differences-from-the-design-intent)).
-4. A second, slower pass (`run --verify-s 600`) would revisit the 24 PARI programs that timed out at 60 s
+3. A second, slower pass (`run --verify-s 600`) would revisit the 24 PARI programs that timed out at 60 s
    (17) or 120 s (7); the 6 that already ran 600 s stay dead ends below `--verify-s` 601. The evidence so
    far says it will rarely pay.
-5. Decide on Wolfram Engine: 5,282 candidates have Mathematica but no PARI program.
-6. Commit session 5's work, offer B, the extension dead end and offers A, C, G, H, F, D and E when the user asks.
+4. Decide on Wolfram Engine: 5,282 candidates have Mathematica but no PARI program.
+5. Commit the flaky-test fix when the user asks (everything before it is in `5e4665a`).
 
 ## Helper scripts
 
