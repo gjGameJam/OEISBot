@@ -1,19 +1,29 @@
 # Project status and handoff
 
-Snapshot as of **2026-09-19**, written at the end of session 5 and updated after offer B, the
-extension dead end, offers A, C, G, H, F, D and E and the flaky-test fix (history items 21 to 30). This page exists so work can resume in a new session
+Snapshot as of **2026-09-20**, written at the end of session 5 and updated after offer B, the
+extension dead end, offers A, C, G, H, F, D and E, the flaky-test fix, session 6 and items 2 and 3
+(history items 21 to 33). This page exists so work can resume in a new session
 without the history of the one that built the project. Update it at the end of each working session.
 
-**No task is in progress.** The last one, the flaky test (the user, 2026-09-19: "Yes start in step 1";
-the step said "The fix belongs in the test (...), not in the rule; plan it with a critic like the
-offers"), is finished, in the
-same sections as the G, H, F task below with one critic agent: history item 30. The test was split into
-an in-memory test with controlled times and a sandbox test with no extension time; neither depends on
-timing. Its diagnosis corrects an earlier one: offer F did not add a failure mode (item 27 said it did).
-No offers are waiting for an answer. No background jobs, no pending re-checks. At the user's request
-("Commit and push before we start", then "commit and push" again after the fix), everything up to offer E
-was committed and pushed as `5e4665a`, and the flaky-test fix is a second commit on top of it, so the
-working tree is clean. 257 tests pass and `scripts/check_docs.py` reports no link problems. Every decision made so far is in the
+**No task is in progress.** The last one, next step 3 (the user, 2026-09-20: "tackle item 3 now. go slow
+and review work as you go to avoid defects"), is finished: a PARI block that calls a helper belonging to
+another OEIS entry is now rejected before it can waste a pick (history item 33). Before it, next step 2
+(the user: "tackle item 2 next. I want to get more functionality in place before more runs occur") made a
+failed run record *why* it failed (history item 32). Before it, next step 1 was done as **session 6**, a 2 h 15 m PARI-only run
+at the session-5 budgets, planned with a written prediction, reviewed by a critic before the run and
+audited by the same critic afterwards (history item 31). All eleven written hypotheses held, including
+the exact 20 picks in order. Its headline had to be **reversed by the audit**: the run does *not* show
+that offers B, A and F work, because none of its verified runs produced a cost fit at all, and the
+pre-offer-B code would have behaved identically. What it did produce are two corpus-wide findings that
+need no further runs (the 10-known-term ceiling and the never-fittable cost history) and one new
+limitation — a gp program that errors but exits 0 losing its stderr tail — which is what item 32 fixed.
+No offers are waiting for an answer. No background jobs, no pending re-checks. **The working tree is
+clean and everything is pushed.** At the user's request ("update documentation so I can clear context
+without losing progress and commit/push the changes"), session 6's write-up and items 32 and 33 were
+committed together on top of `63cc9ae` — the last commit before them — and pushed to `origin/main`.
+Session 6 itself changed no code; it added database rows, `data/session6_pari.log` and a pre-run backup,
+all of them local state that git ignores. The user commits: do not commit or push unless asked.
+274 tests pass and `scripts/check_docs.py` reports no link problems. Every decision made so far is in the
 table below; what could come next is in [next steps](#open-offers-and-next-steps).
 
 ## Offers G, H and F, one at a time (done)
@@ -93,11 +103,11 @@ Working files from the session that fixed the flaky test (history item 30), in
 3. **Confirm the machine is still set up** (every command should succeed without reinstalling):
 
    ```
-   .venv\Scripts\python -m pytest            # expect 257 passed (on an otherwise idle machine: history item 30)
+   .venv\Scripts\python -m pytest            # expect 274 passed (on an otherwise idle machine: history item 30)
    .venv\Scripts\oeisbot model-check         # expect 'ready' (first call loads the model, about a minute)
    .venv\Scripts\oeisbot stats               # expect 26,814 candidates (14,436 with no program)
-   .venv\Scripts\oeisbot attempts --limit 200 # expect 111 rows, ids 1-111
-   .venv\Scripts\oeisbot queue --limit 0    # expect 3568 candidates; left out 1748 (1326 / 393 / 29)
+   .venv\Scripts\oeisbot attempts --limit 200 # expect 132 rows, ids 1-132
+   .venv\Scripts\oeisbot queue --limit 0    # expect 3494 candidates; left out 1822 (1391 / 388 / 43)
    .venv\Scripts\oeisbot recheck             # expect "no wins are waiting for a re-check"
    .venv\Scripts\python scripts\check_docs.py  # expect 0 link problems; the 7 IDENT lines are the expected ones
    ```
@@ -113,21 +123,38 @@ Working files from the session that fixed the flaky test (history item 30), in
    change without being told it looks right, fix, and send the fixes back to the same auditor. Check every
    number a reviewer reports before repeating it, re-deriving it from the raw data by your own method:
    in item 30 the check used the reviewer's method and inherited its bug (distinct run ids over a file
-   whose ids repeat). Before calling something a test gap, run the mutant against the whole suite, not
-   only the test you have in mind. Before a real run, write the expected results down.
+   whose ids repeat), and in item 33 the first sizing of a change was measured against the wrong pool.
+   Before calling something a test gap, run the mutant against the whole suite, not only the test you
+   have in mind -- and read the mutated line back, because a mutant that does nothing (item 33: a ``
+   that became a literal backspace) looks exactly like an untested branch. Before a real run, write the
+   expected results down. Where a measurement decides a design, make the measurement call the production
+   function: in item 33 a separate scan of the same rule disagreed with it and the scan was the wrong one.
    Every stage so far found something the previous one missed (history items 11, 18, 21, 22, 23, 24,
-   25, 26, 27, 28, 29, 30). The user's latest instructions: "Implement G, H, and F one at a time. Break each
+   25, 26, 27, 28, 29, 30, 32, 33). The user's latest instruction (2026-09-20, item 33): "go slow and
+   review work as you go to avoid defects"; earlier, "Implement G, H, and F one at a time. Break each
    item down into sections. Use a critic agent to stay on task" and, for D and E, "Go one item at a time
    and slow. Break down items into subitems when possible and use a critic agent to avoid defects" (the
    sections are in [the G, H, F task](#offers-g-h-and-f-one-at-a-time-done); one critic agent per item,
-   reused through SendMessage for the audit and the re-check). A change to the database itself (history
+   reused through SendMessage for the audit and the re-check). Items 32 and 33 each ran a critic on the
+   plan, mutation checks on every branch, and a separate auditor on the finished diff; both auditors
+   found real defects, so keep all three stages. A change to the database itself (history
    item 28): a scratch script with a dry run on a `VACUUM INTO` copy, its rollback proven there, the
    critic's review of the script, a `VACUUM INTO` backup in `data/`, then one `BEGIN IMMEDIATE`
    transaction holding every read, write and check.
 
 ## Where things stand
 
-- **Build:** all eight steps of the [design spec](design-spec.md) are implemented, with 257 passing tests.
+- **Build:** all eight steps of the [design spec](design-spec.md) are implemented, with 274 passing tests.
+- **A run that produced nothing says why** (item 32, 2026-09-20): `verify._stderr_tail` puts the last
+  three stderr lines that say something into the `detail` of an `incomplete`, and of any other
+  `verify._TAIL_STOPS` stop that produced no term. A gp program can fail and still exit 0, so without it
+  nothing recorded said why. `extra.log` is left unset when no term log was written, the kept Python
+  program is named as `extra.program`, and a session log line carries 300 characters of a detail.
+- **PARI blocks calling another entry's helper are rejected** (item 33, 2026-09-20):
+  `pari.undefined_a_numbers` finds an A-number a program calls or indexes but never defines — those
+  helpers live in a different OEIS entry and gp errors as soon as it reaches one. 65 sequences leave the
+  PARI-only pool (1.97% of its pick weight, ~0.39 picks per 20-pick session) and 5 more lose one of two
+  programs. All 71 rejected candidates were run first: none reproduced its known terms.
 - **Selection and the model after PARI** (session 5, 2026-09-18): the verify budget is a 60 s first pass,
   timed-out programs are dead ends up to the time they already ran, provably hopeless predicate searches
   are not run, sessions no longer pick sequences an attempt could only skip, and with `--model` a PARI
@@ -172,7 +199,7 @@ Working files from the session that fixed the flaky test (history item 30), in
   from 92 to 141 tests. See history items 10 and 11.
 - **Docs:** complete and independently audited against the code (23 findings, all fixed), and updated
   and audited with every change since (session 3, session 5, offer B, the extension dead end, offers A, C, G, H, F, D and E, and the flaky-test fix).
-- **Real runs:** 47 sequences attempted, 108 program runs, 0 wins. Database session 4 showed that
+- **Real runs:** 67 sequences attempted, 129 program runs, 0 wins. Database session 4 showed that
   verification, not extension, is the binding constraint (history item 16). Session 5 measured the
   quick-first-pass selection: 0 wasted picks, 3.6× the program runs per hour of the earlier PARI-only
   sessions and about 3× the runs past the known terms per hour, but the same per-run pass rate (3 of 22)
@@ -180,7 +207,10 @@ Working files from the session that fixed the flaky test (history item 30), in
   9 generations, 8 of them on index bookkeeping (item 20). After offer B, session 5's two killed
   sequences ran again and each used its whole 300 s extension (item 21). With the list contract the
   model verified two sequences at the first try and had no `bad_index` in 20 runs, but found no new
-  term (item 24). Details in
+  term (item 24). Session 6 ran the full-extension probe at the same budgets: 4 of 20 picks verified and
+  each used its whole 1800 s, but none had a fittable cost history, so it neither confirms nor challenges
+  offers B, A and F; its lasting results are the 10-known-term ceiling and the never-trustworthy
+  projection (item 31). Details in
   [known limitations](known-limitations.md#observations-from-real-runs).
 - **Git:** the user committed and pushed everything up to session 4 themselves (`1b6881d` "started oeis
   bot", on `main`). On 2026-09-19, at the user's request ("Commit and push before we start"), session 5,
@@ -199,11 +229,12 @@ Working files from the session that fixed the flaky test (history item 30), in
 | `tools/pari/gp.exe` | PARI/GP 2.17.4 standalone |
 | AppContainer `OEISBot.Sandbox` | profile created; read grants on `tools/python`, `tools/pari`; modify grant on `data/scratch` |
 | `data/oeisdata/` | synced to commit `956668977564dbec38a657dafa875f021b4d052b` at 2026-09-17 13:06 UTC; the candidate table was rebuilt from that same checkout after the `fini` fix (`sync --no-pull`) |
-| `data/oeisbot.sqlite3` | 26,814 candidates; 5 sessions; 111 attempt rows (108 program runs: 43 PARI, 11 of them verified, and 65 model, 2 verified; 3 skips) over 47 distinct sequences; 13 predictions; 0 reviews. 40 rows have no `session_id`: standalone `oeisbot attempt` runs, including the A129250 re-attempt, the 12 rows of the step-2 run (history item 20), the 2 rows of the offer-B check (item 21) and the 20 rows of the offer-C measurement (item 24). A copy taken just before session 5 is in that session's scratchpad only, not in the repo. Since offer D (2026-09-19) the 108 run rows carry `extra.attempt_call` (`legacy-<first row id>`, 60 distinct attempts), backfilled once; see the backup below |
+| `data/oeisbot.sqlite3` | 26,814 candidates; 6 sessions; 132 attempt rows (129 program runs: 64 PARI, 15 of them verified, and 65 model, 2 verified; 3 skips) over 67 distinct sequences; 17 predictions; 0 reviews. 40 rows have no `session_id`: standalone `oeisbot attempt` runs, including the A129250 re-attempt, the 12 rows of the step-2 run (history item 20), the 2 rows of the offer-B check (item 21) and the 20 rows of the offer-C measurement (item 24). A copy taken just before session 5 is in that session's scratchpad only, not in the repo. Since offer D (2026-09-19) the run rows carry `extra.attempt_call` (`legacy-<first row id>` for the pre-D ones), 80 distinct attempts; see the backups below |
 | `data/oeisbot-before-offerD.sqlite3` | a copy of the database (`VACUUM INTO`, checked table by table) taken just before offer D's backfill wrote `extra.attempt_call` into the 108 run rows on 2026-09-19; nothing else in the database was changed. Safe to delete once D is accepted |
-| `data/runs/` | 140 files (term logs and generated programs from the runs above; a run that stopped at its first term has no term log) |
+| `data/oeisbot-before-session6.sqlite3` | a copy (`VACUUM INTO`, integrity-checked: 111 attempt rows, 26,814 sequences) taken just before session 6 on 2026-09-19, so the pre-run pool can still be rebuilt now that the run has changed it (history item 31 uses it for the H10 pool comparison and the wasted-pick sizing). Safe to delete once item 31 is accepted |
+| `data/runs/` | 159 files (term logs and generated programs from the runs above; a run that stopped at its first term has no term log, so 35 of the 129 run rows name one that was never created. Rows written since the item-32 fix leave `extra.log` out instead) |
 | `data/pending/` | does not exist yet (created only when a re-check fails) |
-| `data/*.log` | `clone.log`, `session1.log`, `session2_model.log`, `session3_real.log`, `session5_probe.log`, `session5_model_step2.log`, `offerB_check.log`, `offerC_measure.log`, `bfile_sweep.log`, `model_smoke2.log`, `ollama_pull.log` (console output of earlier runs; safe to delete) |
+| `data/*.log` | `clone.log`, `session1.log`, `session2_model.log`, `session3_real.log`, `session5_probe.log`, `session5_model_step2.log`, `session6_pari.log`, `offerB_check.log`, `offerC_measure.log`, `bfile_sweep.log`, `model_smoke2.log`, `ollama_pull.log` (console output of earlier runs; safe to delete). `session6_pari.err` was created empty and stays empty |
 | `data/bfiles/` | 68 b-files in 55 subfolders. `fetch-bfiles` has resolved every candidate: 68 have a b-file, 26,746 do not |
 | `artifacts/` | empty (no wins) |
 | `dashboard/node_modules/`, `oeisbot/dashboard/static/` | installed and built |
@@ -831,28 +862,251 @@ Working files from the session that fixed the flaky test (history item 30), in
     a(19) got no CPU under load); its own four mutants were caught. The new tests passed 50 of 50 runs
     each, and the sandbox one 3 of 3 under full CPU load. Found on the way, not changed: on terms of 0.3-0.8 s wall time runs about
     1.5× CPU time at the median; the sandbox runs programs at below-normal priority.
+31. **Session 6: the full-extension PARI run (2026-09-19).** The user: "Tackle item 1 now." Next step 1,
+    run as `run -n 20 --verify-s 60 --extend-s 1800 --seed 206`, no `--model`; 22:35:35Z to 00:50:45Z,
+    **8,110 s wall**, 21 program runs over 20 picks, **4 verified, 15 `verify_timeout`, 2 `incomplete`,
+    0 skips, 0 new terms**. Console in `data/session6_pari.log`; the pre-run database copy is
+    `data/oeisbot-before-session6.sqlite3`.
+
+    **Predicted in advance, then checked.** Because `run_session` draws every pick before the first
+    attempt, the exact 20 A-numbers were computed read-only beforehand and written down with eleven
+    hypotheses. All eleven held: the picks and their order were **identical**, the console's pool line was
+    byte-identical to the predicted string, 21 runs matched "20 or 21" (A101011 ran both its programs),
+    the 15 timeouts ran 60.14–60.53 s, the four verified runs used 1800.47–1801.91 s at 0.98–0.99 CPU
+    share, and the pool moved 3,566 → **3,546** with dead ends 31 → **51** — the pre-registered "both
+    A101011 programs fail" branch. Wall clock came to 8,110 s against a predicted 8,100 s (+0.12%).
+    4 verified sat inside the predicted 90% range 1–7, above the point estimate 3.
+
+    **The audit reversed the headline.** The first write-up claimed the run showed offers B, A and F
+    working, because 4 of 4 verified runs used their whole extension where 2 of session 5's 3 were killed
+    early. That is wrong: none of the four produced a cost fit, so `seconds_high` was `None`, and the
+    **pre-offer-B** `kill_after_s` (`1b6881d`) already returned `None` in exactly that case. The old code
+    would have produced the same four rows, and the database already held two pre-offer-B full-extension
+    runs (#55, #56), both with 0 points above the noise floor. Session 5's kills happened on runs that did
+    produce fits (npoints 3, disagreement 4.76 and 5.19), conditions session 6 never recreated. **Session 6
+    neither confirms nor challenges offers B, A and F.** What it does constrain: 4 × 1800 s exercised
+    `estimate.assess`'s `proj is None` early return, where feasibility falls back to the memory test
+    alone, with no spurious `infeasible`, `finished` or resource-cap stop — the branch the plan review had
+    flagged as the live risk. The audit also withdrew H7's "+0.0 s session overhead" as vacuous
+    (`db.finish_session` *defines* `machine_s` as `SUM(runtime_s)`, so it is identically zero) and
+    corrected the structural mechanism below.
+
+    **Two corpus-wide findings, neither needing another run.** Over all 64 PARI program runs ever
+    recorded, **0 of the 31 with more than 10 known terms has ever verified, against 15 of 33 at or below
+    10** (verified median 6 known terms; timeouts median 12, range 2–72). The confound is ruled out: pick
+    weight tracks population share across known-term buckets, so this is the verify gate's doing, not
+    `select.difficulty`'s. And replaying every verified run's first projection from its term log:
+    **`project()` gave no fit in 11 of 15, the 4 fits all had `npoints = 3`, and `npoints >= 4` has never
+    been reached** — so no verified run has ever been *able* to produce a trustworthy projection
+    (`trustworthy` needs disagreement ≤ 3 **and** npoints ≥ 4). The cause is the cost cliff (item 16), not
+    the number of known terms: A277532 has 6 known terms and produced a fit, A247883 has 10 and had 0
+    points above the floor. Session 6's four verified in 0.063–1.544 s, far below `WORK_FLOOR`/`CPU_FLOOR_S`.
+
+    **A third finding and a new limitation.** Both `incomplete` rows (A147803, A147800, 0 terms in 0.0 s)
+    come from PARI blocks calling `A007947`, defined in another OEIS entry and nowhere in the block. The
+    diagnosis is inferred from the entry source, because the run records nothing: `verify._result` reaches
+    `INCOMPLETE` only on `exit_code == 0` and **discards `res.stderr_tail`** there, no term log is written,
+    and `extra.log` names a file that does not exist (new known limitation). Sizing over the pre-run pool
+    is method-sensitive but the conclusion is not: 54–60 affected entries, 1.85–2.05% of pick weight,
+    ~0.4 expected wasted picks per 20, so drawing 2 was a ~5% outcome; the affected entries cluster in
+    families (A147800, A147803 and A147805 all). The cost is one pick per sequence *ever*, since the row
+    is a deterministic dead end.
+
+    **Base rates for the next prediction**, superseding the 11/43 and 6/35 the plan used: **15 of 64 PARI
+    program runs verified (23.4%)**, **10 of 55 sequences with a PARI run (18.2%)** → about 3.7 verified
+    per 20 picks.
+
+32. **Item 2: a run that produced nothing now says why (2026-09-20).** The user: "tackle item 2 next. I
+    want to get more functionality in place before more runs occur." Next step 2 is done; no run was made.
+
+    **The premise was checked first.** The whole fix rests on gp writing its error to *stderr*, which the
+    limitation asserted but nothing had verified. Running a one-line file calling an undefined `A007947`
+    through `tools/pari/gp.exe` with the harness's own flags (`-q -f`) gives **exit code 0**, nothing on
+    stdout but a break-loop banner, and four stderr lines: `***   at top-level: ...`, a caret rule under
+    the offending call, `***   not a function in function call`, `... skipping file`. The sandbox closes
+    the child's stdin write end (`sandbox/windows.py:424`), so the break loop reads EOF immediately and
+    the run ends in 0.0 s — which is exactly what session 6's two rows recorded.
+
+    **The change.** `verify._stderr_tail(res, lines=3)` joins the last three stderr lines *that say
+    something* with `" | "`, dropping blank lines and rules: keeping gp's caret rule would push out the
+    line naming the call, the one line worth reading. Which stops carry a tail is an explicit list,
+    `verify._TAIL_STOPS`: `incomplete` always, and `verify_timeout`, `timeout`, `memory_cap`, `cpu_cap`,
+    `disk_cap` and `output_cap` when no term came out at all. `crash` keeps the tail in its
+    own detail as before, now through the same helper, and each line is capped at `STDERR_LINE_CHARS` = 400,
+    as every other program text in a detail is: a program may write the whole 64 KiB tail without one line
+    break. In `attempt.Attempt.run`, `extra.log` is written
+    only when the term log exists, the kept Python program is named as `extra.program` in its own right
+    (it was only findable by deriving it from `extra.log`, which this change removes), and the session
+    log prints `verify.CONSOLE_DETAIL_CHARS` = 300 characters of a detail instead of 160, through
+    `verify.brief_detail`, which `codegen` uses for its per-generation line too (it had a 120 of its own).
+
+    **Checked against the two rows that motivated it.** A147803 and A147800 were re-run through
+    `pari.build_candidates` and the harness as the bot would run them (20 s verify, no session, nothing
+    recorded). Both still stop `incomplete` at 0 terms with exit code 0, and their details are now 178
+    characters and self-explanatory — and better than the one-line probe above, because gp names the
+    entry's own function rather than the top level:
+    `program ended after 0 terms: ***   in function A147803: ...n);for(a=1,n\2,a%p||next;A007947(n-a)*A007947( | ***   not a function in function call | ... skipping file 'program.gp'`.
+    `A007947` appears at character 83 and the reason at 113, so 160 characters would have shown the cause
+    and cut the sentence; 300 carries the whole tail.
+
+    **The critic earned its place twice.** On the plan it found that the fix as written in the limitation
+    stops short of its own goal: a 0-term run killed at the verify budget or by a sandbox cap still
+    explained nothing, since only the `INCOMPLETE` branch was in scope. Extending the rule to those stops
+    is what `_TAIL_STOPS` is. It also found that `known-limitations.md`'s "Text the program wrote itself
+    reaches the retry as it is" ends "stderr is not stored, so that channel is unmeasured" — no longer
+    true once a tail reaches `attempts.detail`, the dashboard and the model, and a user decision
+    (not to scrub these texts) sits behind that paragraph, so it is updated rather than left to rot.
+    Two of its suggestions were declined deliberately: the duplicate stderr in a model retry prompt
+    (`describe_failure` adds 12 lines of its own) is left as it is, because that is already what `crash`
+    does and the 12-line block is the more useful one; and `" | "` is kept as the join although a detail
+    containing it would add phantom columns to the artifact README's table (`artifact.py:115`), since
+    artifacts are written only for wins, whose stops never carry a tail.
+
+    **The first attempt was wrong and the tests caught it.** Written as "any stop with no terms", the
+    rule appended a traceback to a `protocol` stop whose contract error fires on the very first yield,
+    breaking `test_the_driver_rejects_what_is_not_a_list`, which asserts that detail exactly. That stop
+    already carries the program's own message, so the allow-list replaced the blanket rule. Each half was
+    then mutation-checked: dropping the rule filter makes the gp test fail with the caret line in place of
+    the call; reverting the `incomplete` tail fails both new stop tests while the no-stderr test still
+    passes (so it is not over-asserting); dropping the `or not self.records` half lets a `verify_timeout`
+    that did produce terms collect stderr; and restoring the unconditional `extra.log` fails the new
+    0-term attempt test. **266 tests pass** (257 before, 9 added: six driven in memory with a fabricated
+    `RunResult`, two through the sandbox, one through `attempt_sequence`).
+
+    **The independent audit found nine defects, all real, none in the stop rule itself.** It walked every
+    member of `Stop` against `_TAIL_STOPS`, reproduced gp's behaviour and every database figure on its
+    own, and reported: the test count was stale in six places and is now 266 everywhere (`CLAUDE.md`,
+    `development.md` twice plus two rows of its per-file table, `operations.md`, `status.md` twice);
+    three pages said the run log is missing when a run "produced no term" when the rule is really *no
+    term accepted*, which is what 26 of the 35 rows above (`wrong_term` and `bad_index`) actually are;
+    this item claimed "a real row now reads" for an example no row had ever produced, which is why the
+    two real ones were measured and are quoted above; the reason given for widening the console line was
+    wrong (what runs past 160 characters is the end of the tail, not the name of the missing call);
+    `codegen` kept a 120-character cut of its own, so the documented 300 was not true of a model run's
+    line, now fixed by sharing `brief_detail`; the new limitation text said the tail reaches artifact
+    JSON, which it cannot, since an artifact is written only for a win and no win's stop carries a tail;
+    an unbounded stderr line could put 64 KiB in a detail, now capped; the `or not self.records` half of
+    the rule was covered by no test (deleting it left all tests green); and the `crash` branch this change
+    edited had no test of its own, before or after. The last three were fixed in code, the rest in the
+    docs. Two notes it raised but did not call defects were checked and acted on. `LAUNCH_ERROR` was dead
+    weight in `_TAIL_STOPS`: both of `sandbox/windows.py`'s launch failures (340, 418) build their
+    `RunResult` before any process exists, so `stderr_tail` is always `""` and the detail already names
+    the reason; it has been removed from the list. And `verify.py`'s mid-stream
+    `_halt(Stop.INCOMPLETE, "reproduced X of Y known terms")` is indeed unreachable: indices are strictly
+    consecutive from the offset, every known index lies in that range, and `KnownTerms.count` is
+    `len(values)`, so reaching the last known index implies every known term was reproduced. It is left
+    in place as a guard rather than removed under this item — see next steps.
+
+    **Not fixed retroactively.** 35 of the 129 run rows written before today name a run log that was never
+    created — 14 `wrong_term`, 12 `bad_index`, 6 `crash`, 2 `incomplete`, 1 `verify_timeout` — because a
+    term is logged only after it passes its checks, so a run whose very first term was wrong logs none.
+    That is more than the two `incomplete` rows item 31 counted; the condition was never specific to them.
+
+33. **Item 3: PARI blocks that call another entry's helper are rejected before they run (2026-09-20).**
+    The user: "tackle item 3 now. go slow and review work as you go to avoid defects." Next step 2 is
+    done; no session was run.
+
+    **What gp actually does decided the rule.** An unknown name is not an error in gp by itself — it is a
+    polynomial variable. Run directly against `tools/pari/gp.exe`: a **call** `A007947(n)` always errors
+    ("not a function in function call") and an **index** `A007947[n]` always errors ("incorrect type"),
+    but a bare mention often does not — `n + A007947` prints the expression unevaluated, `#A007947` returns
+    2. So
+    `pari.undefined_a_numbers` flags calls and indexes only. Bare mentions are left to fail later, where
+    item 32's stderr tail now explains them.
+
+    **Definedness is read generously on purpose.** A name wrongly called undefined throws away a program
+    that runs; a name wrongly called defined costs only the pick it would have cost anyway. So any
+    definition, assignment, parameter name or `my()`/`local()` declaration counts, and strings and
+    comments are masked out with the module's own `code_mask`. The check runs on `Program.executed`, the
+    text that actually runs — not the block — because driver statements are dropped for the function
+    forms, and a helper named only in a dropped statement is never called.
+
+    **Validated by running every program it rejects.** All 71 rejected candidates (65 entries that lose
+    every candidate, 5 that lose one of two) were run through the real harness at an 8 s verify budget
+    before the check was wired in: **none reproduced its known terms** — 70 `incomplete`, and A130288
+    `wrong_term`, which returns a wrong first term before it ever reaches its undefined call. 69 of the 71
+    details name the missing helper, which is exactly the cheap validation route item 32 predicted. So the
+    rule costs nothing: no working program is lost.
+
+    **Two sizing errors, both mine.** Item 31 said 54–60 entries, 1.9–2.1% of pick weight and ~0.4
+    wasted picks per 20. Its *entry count* was wrong — it matched block text instead of asking which
+    blocks produce a candidate; the real number is **65** that lose every candidate, 5 more that lose one
+    of two. Its *weight* was right, and my first attempt to "correct" it to 1.40% / 0.28 made it worse:
+    that is the share of the whole 5,316-candidate corpus, but a session draws from
+    `select.candidates(require_langs={"pari"}, keep=Runnable(...))`, which has already filtered the pool
+    to **3,552**. Against that pool the 65 are **1.97%** of the pick weight and **0.39** picks per 20, so
+    item 31's figure stood all along. With `--model` on it is 0.47% and 0.09, because nothing leaves that
+    pool — which is why the slip was easy to miss, those two numbers being right either way. The session
+    pool shrinks by 58 rather than 65: 5 of the entries were already `verify_out_of_reach` and 2
+    `all_programs_dead_ends`.
+    My first *entry* count was wrong too, at 59, because it treated every identifier inside a parameter
+    list or a `my()` as a *definition* — so `A242998(n, p = A000043[n])` counted `A000043` as defined when
+    it is the very thing being used. The critic's independent prototype said 65, the diff exposed the bug,
+    and measurement and production now share one implementation so they cannot drift again.
+
+    **The critic also caught four things the plan would have missed**: `oeisbot stats --forms` would have
+    filed these 65 under "no usable function (unsupported)", which is untrue of them, so `cli.py` gets a
+    bucket of its own and `strategies.md`'s coverage table moves 65 out of the runnable rows (15
+    predicate, 48 `a(n)`, 2 print loop: 3,990 runnable becomes 3,925); the payoff — removal from the pool
+    — is pinned by `test_attempt.py`'s parametrized selection test, not by anything in `test_pari.py`, so
+    a row was added there; `docs/pipeline.md`'s left-out snapshot and the `pari.py` module docstring both
+    needed the new reason; and `Rejected` carries only a block number while `split_signed_programs` cuts a
+    block into parts, so the reason says "not in this program" rather than implying the whole block —
+    A277317 really does define its helpers in a *different part* of the same block, and A383301 in a
+    different block entirely.
+
+    **Ten mutants, all caught**: dropping the index arm of the use regex; counting a default value's
+    identifiers as definitions (the bug above); not masking strings and comments; checking the raw block
+    instead of the script; reading `==` as a definition; removing the rejection altogether; dropping each
+    of the three parameter sources (named, by reference, closure); and honouring a bare `my(x)` as a
+    definition. **274 tests pass** (266 before, 8 added: 7 in `test_pari.py` and one row of the selection
+    test).
+
+    **The independent audit found eight defects and confirmed the rest.** It re-ran all 71 rejections
+    itself (0 verified) and reproduced every corpus figure, then reported: the pick-weight denominator
+    above; that `n + A007947` does not print what this item claimed; that "any parameter name counts as
+    defined" was untrue of closure parameters `(x) -> ...` and reference parameters `&x`, both of which
+    gp really does run — now handled in code, so the claim is true rather than softened; that the
+    `my()`/`local()` branch was dead weight, unreached by any test and able only to suppress correct
+    rejections, since a bare `my(x)` is exactly what gp still errors on — deleted, and the deletion is
+    pinned by a test; a misaligned column in `stats --forms`; a missing print-loop rejection test and an
+    assertion filed under the wrong test name; two code docstrings that claimed such a program "can never
+    reproduce the known terms" when eight of the 71 emit 1–5 terms first; and an example in
+    `verification-and-estimation.md` drawn from a sequence this item stops from ever running.
+    One of its mutants appeared to survive; the mutant was malformed — a `` had become a literal
+    backspace, so its regex matched nothing. Rebuilt properly, the test catches it.
 
 ## Open offers and next steps
 
-Offers waiting for an answer: none. The previous next step 1, the flaky test, was done on 2026-09-19
-(history item 30).
+Offers waiting for an answer: none. The previous next step 1, a session-5-like full-extension run, was
+done on 2026-09-19 as session 6 (history item 31), and its results reordered this list: what was next
+step 3 became the best-supported move, and another 60 s session is no longer worth running. The
+previous next steps 2 and 3, the `incomplete` stop that recorded no cause and the static check for
+PARI blocks calling another entry's helper, were both done on 2026-09-20 (items 32 and 33) and have been
+struck from the list.
 
 Suggested next steps, roughly by value:
 
-1. A session like session 5 (`run -n 20 --verify-s 60 --extend-s 1800`, PARI only) to see what
-   verified runs do with their full extension now that offers B, A and F no longer stop them early on an
-   untrustworthy projection. Proposed to the user, not started. Write the expected results down first,
-   as for session 5 (about 3 of 20 picks verify; those now run their whole 1800 s unless they find a
-   term; about 1–2 h in all). At 1800 s the extension dead end leaves A247883 and A323252 out of the pool.
+1. **A slower pass, `run --verify-s 600`** (was next step 3, now first on the evidence). **39** PARI
+   programs have timed out below 600 s (32 at 60 s, 7 at 120 s); the 6 that already ran 600 s stay dead
+   ends below `--verify-s` 601. Session 6 turned the old "it will rarely pay" into a concrete argument
+   *for* it: the sequences that verify at 60 s are precisely the ones whose known terms are too cheap to
+   fit, so they can never produce a trustworthy projection, while the many-known-term sequences that
+   might have a fittable cost history never verify at all (item 31). A 600 s pass is both the follow-up
+   that finding implies and the only realistic way to create the trustworthy projection that would
+   genuinely test offers B, A and F. Predict first, as for session 6; note that a verified run at
+   `--extend-s 1800` costs ~30 min, so budget accordingly.
 2. Smaller follow-ups ([known limitations](known-limitations.md#pipeline-and-recording)): save pending
    re-checks as JSON instead of pickles; give up on (or flag) a pending win whose re-check fails the same
    way every time; key the infeasible dead end on the effective memory cap. The five remaining documented
-   mismatches ([known limitations](known-limitations.md#differences-from-the-design-intent)).
-3. A second, slower pass (`run --verify-s 600`) would revisit the 24 PARI programs that timed out at 60 s
-   (17) or 120 s (7); the 6 that already ran 600 s stay dead ends below `--verify-s` 601. The evidence so
-   far says it will rarely pay.
-4. Decide on Wolfram Engine: 5,282 candidates have Mathematica but no PARI program.
-5. Commit the flaky-test fix when the user asks (everything before it is in `5e4665a`).
+   mismatches ([known limitations](known-limitations.md#differences-from-the-design-intent)). Also, from
+   item 32's audit: `verify.on_line`'s mid-stream `_halt(Stop.INCOMPLETE, "reproduced X of Y known
+   terms")` is unreachable (proof in item 32) — decide whether it is a guard worth keeping or dead code
+   to remove, and note that `incomplete` therefore always means "the program ended by itself".
+3. Decide on Wolfram Engine: 5,282 candidates have Mathematica but no PARI program.
+4. **Not recommended: another 60 s PARI session.** Session 6 showed it would mostly repeat itself — about
+   3.7 verified per 20 picks, each burning 30 minutes of extension on a sequence with no fittable cost
+   history, for no new terms.
 
 ## Helper scripts
 

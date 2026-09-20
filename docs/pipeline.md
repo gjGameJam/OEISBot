@@ -96,7 +96,8 @@ then picks sequences with `select.candidates` and `select.pick`.
   out, by the skip reason an attempt would have recorded. On the 2026-09-18 database after session 5, at
   the default 60 s verify budget and without `--model`, this left out 1,748 of the 5,316 PARI-bearing
   candidates (1,326 `no_supported_program`, 393 `verify_out_of_reach`, 29 `all_programs_dead_ends`; 12
-  before session 5's 17 timeouts) in about 3 seconds;
+  before session 5's 17 timeouts) in about 3 seconds; the helper check added on 2026-09-20 moves 65 more
+  sequences into `no_supported_program`;
   with `--model` it left out 10, all `too_few_known_terms`. `oeisbot queue` and `oeisbot pick` apply the same check
   with the default budgets (`--all` standing for the `--model` pool); `fetch-bfiles` and the dashboard's
   Queue tab do not.

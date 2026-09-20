@@ -25,7 +25,7 @@ uv venv .venv --python 3.11
 uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
 .venv\Scripts\oeisbot setup
 .venv\Scripts\oeisbot sync
-.venv\Scripts\python -m pytest            # 257 tests, about 50 s; confirms the sandbox works on this machine
+.venv\Scripts\python -m pytest            # 274 tests, about 50 s; confirms the sandbox works on this machine
 ```
 
 Optional dashboard: see [dashboard](dashboard.md#running-it).
@@ -114,7 +114,7 @@ Budget flags on `attempt` and `run`: `--verify-s` (60), `--extend-s` (10800), `-
 | `verify_timeout` | the program cannot reproduce the known terms in time (common: the last known terms were expensive for their authors too) | a longer `--verify-s`, or accept that the sequence is hard. Until then the program is a dead end: it is not re-run at a `--verify-s` no longer than the time it already ran |
 | `wrong_term` | wrong program, or the program computes a different sequence than the entry's DATA | nothing: recorded as a dead end for this program |
 | `bad_index` | the program starts at a different index than the offset | for PARI this points to an entry whose program and offset disagree |
-| `crash` / `incomplete` | program error, or it stopped early (often a built-in limit) | read `detail`; dead end |
+| `crash` / `incomplete` | program error, or it stopped early (often a built-in limit). A gp program that calls a function no one defined prints its error and still exits 0, so it lands on `incomplete`, not `crash` -- though since 2026-09-20 a PARI block calling another entry's helper is rejected before it runs (see [strategies](strategies.md#programs-that-call-another-entrys-helper)) | read `detail`: it ends with the last stderr lines the program wrote (see [verification](verification-and-estimation.md#the-stderr-tail-in-a-detail)); dead end |
 | `memory_cap` | job hit its memory cap, or the machine ran low on RAM | raise `--mem-gib` if RAM allows, or close memory-hungry apps (Ollama keeps several GB loaded) |
 | `infeasible` | verified; the next term's projection exceeds the remaining budget (time, judged only on a trustworthy cost fit since 2026-09-19, or memory: the reasons are in `detail`) | a longer `--extend-s` or a larger `--mem-gib`. Without a larger budget the program is a dead end and is not re-run for the same known terms |
 | `over_prediction` | verified; a new term ran far past a trusted projection | check the estimator view; the projection may be poor for this sequence. Since 2026-09-18 a projection whose seconds per cost unit are projected to exceed the rate it converted with by more than the kill factor (2 by default) is not trusted, so a likely cause now is a milder climb in that rate, or a term that is simply dearer than the cost fit expects, as at the edge of the known terms (see [known limitations](known-limitations.md#verification-and-estimation)) |
@@ -128,9 +128,11 @@ Skip reasons are listed in [pipeline](pipeline.md#3-per-sequence-gates-attemptat
 - `oeisbot attempts` for a quick list; the dashboard's Attempts tab for counts and filters.
 - `data/runs/<A>-<time>-<sha>.jsonl` for every term a run accepted. A term that failed a check (wrong
   value, wrong index, malformed line) stops the run before it is logged; the attempt's `detail` holds it.
+  A run that had no term accepted — a wrong first term counts — writes no such file, and its attempt row
+  then has no `extra.log` at all (rows written before 2026-09-20 name a file that was never created).
 - `data/runs/<same stem>.py` for model-generated programs that ran, including failed ones, as they ran
-  (a `members(work)` program with its driver). Generations rejected before running, including a repeat
-  of a program that already failed the same way, are not saved.
+  (a `members(work)` program with its driver); the attempt row names it as `extra.program`. Generations
+  rejected before running, including a repeat of a program that already failed the same way, are not saved.
 - The dashboard's Estimator accuracy tab once there are finished projections.
 
 ### A win whose re-check failed (`recheck_pending`)

@@ -639,6 +639,8 @@ def pool(conn, model=False, budgets=FAST):
 
 @pytest.mark.parametrize("program, data, reason", [
     ('lista(nn) = for(n=1, nn, if(isprime(n), print1(n, ", ")))', PRIMES, "no_supported_program"),
+    # a helper that lives in another OEIS entry: gp would run this, error and exit 0
+    ("a(n) = A007947(n)", PRIMES, "no_supported_program"),
     (FAR_PREDICATE, FAR_DATA, "verify_out_of_reach"),
 ])
 def test_selection_leaves_out_what_could_only_be_skipped(env, program, data, reason):

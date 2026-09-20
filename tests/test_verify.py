@@ -7,10 +7,11 @@ from dataclasses import replace
 
 import pytest
 
-from oeisbot import estimate, sandbox
+from oeisbot import estimate, sandbox, verify
 from oeisbot.config import Budgets
+from oeisbot.sandbox import RunResult, Status
 from oeisbot.terms import KnownTerms, Program
-from oeisbot.verify import Stop, run_attempt
+from oeisbot.verify import Harness, Stop, run_attempt
 
 pytestmark = [
     pytest.mark.sandbox,
@@ -142,6 +143,101 @@ def test_program_that_ends_early_is_incomplete():
     """)
     r = run_attempt(prog, FIB_KNOWN, FAST)
     assert r.stop is Stop.INCOMPLETE and not r.verified
+    assert r.detail == "program ended after 10 terms"      # it said nothing: there is nothing to add
+
+
+def test_incomplete_keeps_what_the_program_said_on_stderr():
+    prog = py("""
+        import sys
+        def terms(work):
+            print("gave up: no way to compute this", file=sys.stderr)
+            return
+            yield
+    """)
+    r = run_attempt(prog, FIB_KNOWN, FAST)
+    assert r.stop is Stop.INCOMPLETE and not r.verified
+    assert r.detail.startswith("program ended after 0 terms: ")
+    assert "gave up: no way to compute this" in r.detail
+
+
+def test_a_gp_program_that_errors_but_exits_cleanly_says_why():
+    """gp prints its error, skips the rest of the file and exits 0, so the run is `incomplete` rather than
+    a crash and the stderr tail is the only thing that says why no term came out. The caret rule gp puts
+    under the offending call is dropped, or it would push out the line naming the call."""
+    prog = Program("gp", "print(oeisbot_nowhere(3))\n", origin="test", strategy="gp:test")
+    r = run_attempt(prog, FIB_KNOWN, FAST)
+    assert r.stop is Stop.INCOMPLETE and not r.verified and r.run.exit_code == 0
+    assert "not a function" in r.detail and "oeisbot_nowhere" in r.detail
+
+
+def ended(stderr: str, *, status: Status = Status.EXITED, exit_code: int = 0) -> RunResult:
+    """A finished sandbox run, for driving Harness._result in memory."""
+    return RunResult(status, exit_code=exit_code, wall_s=1.0, cpu_s=1.0, peak_mem_bytes=0, mem_cap_bytes=0,
+                     stderr_tail=stderr)
+
+
+def test_stderr_tail_keeps_the_last_three_lines_that_say_something():
+    # gp's shape: the call, a caret rule under it, the reason, then the file it gave up on. Keeping the
+    # rule would cost the line that names the call, which is the one worth reading
+    res = ended("  ***   at top-level: print(A007947(3))\n"
+                "  ***                       ^------------------\n"
+                "  ***   not a function in function call\n"
+                "\n"
+                "... skipping file 'program.gp'\n")
+    assert verify._stderr_tail(res) == ("***   at top-level: print(A007947(3)) | "
+                                        "***   not a function in function call | "
+                                        "... skipping file 'program.gp'")
+    assert verify._stderr_tail(res, lines=1) == "... skipping file 'program.gp'"
+    assert verify._stderr_tail(ended("\n  ^^^^\n  ----\n")) == ""     # nothing but rules: nothing to say
+
+
+def test_a_stderr_line_is_capped():
+    """A program can write 64 KiB of stderr without a single line break; a detail is not the place for it."""
+    r = Harness(FIB_OK, FIB_KNOWN, FAST)._result(ended("x" * 70_000), None)
+    assert r.detail == "program ended after 0 terms: " + "x" * verify.STDERR_LINE_CHARS
+
+
+def test_brief_detail_cuts_a_long_detail_to_one_line():
+    assert verify.brief_detail("a" * verify.CONSOLE_DETAIL_CHARS) == "a" * verify.CONSOLE_DETAIL_CHARS
+    cut = verify.brief_detail("a" * (verify.CONSOLE_DETAIL_CHARS + 1))
+    assert len(cut) == verify.CONSOLE_DETAIL_CHARS and cut.endswith("...")
+
+
+def test_a_non_zero_exit_is_a_crash_carrying_the_stderr_tail():
+    """The `crash` detail keeps the shape it has always had, including the bare `: ` when a program that
+    failed said nothing at all."""
+    h = Harness(FIB_OK, FIB_KNOWN, FAST)
+    r = h._result(ended("Traceback (most recent call last):\n  File x, line 1\n    ^^^^\nBoom: 3\n",
+                        exit_code=1), None)
+    assert r.stop is Stop.CRASH
+    assert r.detail == "exit code 1: Traceback (most recent call last): | File x, line 1 | Boom: 3"
+    assert Harness(FIB_OK, FIB_KNOWN, FAST)._result(ended("", exit_code=2), None).detail == "exit code 2: "
+
+
+def test_a_stop_without_a_single_term_keeps_the_stderr_tail():
+    h = Harness(FIB_OK, FIB_KNOWN, FAST)
+    h._halt(Stop.VERIFY_TIMEOUT, f"reproduced 0 of {FIB_KNOWN.count} known terms within 20 s")
+    r = h._result(ended("*** the PARI stack overflows !\n"), None)
+    assert r.stop is Stop.VERIFY_TIMEOUT
+    assert r.detail == (f"reproduced 0 of {FIB_KNOWN.count} known terms within 20 s: "
+                        "*** the PARI stack overflows !")
+
+
+def test_stderr_is_not_added_to_a_run_that_produced_terms():
+    """After a term has arrived the terms are the evidence, whether or not the stop is in _TAIL_STOPS:
+    a stop outside the list never collects a tail, and one inside it collects a tail only with no terms."""
+    h = Harness(FIB_OK, FIB_KNOWN, FAST, extend=False)
+    for n in range(31):
+        h.on_line(f"@T {n} {fib(n)} {n * 1000} {n} 8000000", n * 0.01)
+    r = h._result(ended("*** noise the program wrote on its way out\n"), None)
+    assert r.stop is Stop.VERIFIED_ONLY and r.verified and "noise" not in r.detail
+
+    slow = Harness(FIB_OK, FIB_KNOWN, FAST)
+    for n in range(5):
+        slow.on_line(f"@T {n} {fib(n)} {n * 1000} {n} 8000000", n * 0.01)
+    slow._halt(Stop.VERIFY_TIMEOUT, f"reproduced 5 of {FIB_KNOWN.count} known terms within 20 s")
+    r = slow._result(ended("*** noise the program wrote while it ran\n"), None)
+    assert r.stop is Stop.VERIFY_TIMEOUT and r.detail.endswith("within 20 s")
 
 
 def test_slow_verification_times_out():

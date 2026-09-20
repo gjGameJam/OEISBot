@@ -62,6 +62,11 @@ _STATUS_TO_STOP = {
     Status.TIMEOUT: Stop.TIMEOUT, Status.MEMORY_CAP: Stop.MEMORY_CAP, Status.CPU_CAP: Stop.CPU_CAP,
     Status.DISK_CAP: Stop.DISK_CAP, Status.OUTPUT_CAP: Stop.OUTPUT_CAP, Status.LAUNCH_ERROR: Stop.LAUNCH_ERROR,
 }
+# stops that do not themselves say why the program produced what it did, so the stderr tail is kept
+# (see Harness._result). A stop added to `Stop` belongs here only if that is true of it too. `launch_error`
+# is deliberately absent: no process ran, so there is no stderr, and its detail names the reason already.
+_TAIL_STOPS = frozenset({Stop.INCOMPLETE, Stop.VERIFY_TIMEOUT, Stop.TIMEOUT, Stop.MEMORY_CAP, Stop.CPU_CAP,
+                         Stop.DISK_CAP, Stop.OUTPUT_CAP})
 
 
 @dataclass
@@ -146,6 +151,28 @@ class AttemptResult:
 def _short(v: int) -> str:
     s = str(v)
     return s if len(s) <= 60 else f"{s[:25]}...{s[-25:]} ({len(s)} digits)"
+
+
+_RULE_CHARS = set("*^-_=~ ")
+STDERR_LINE_CHARS = 400        # a program can write 64 KiB of stderr without a single line break
+CONSOLE_DETAIL_CHARS = 300     # how much of a detail a session log line carries
+
+
+def _stderr_tail(res: RunResult, lines: int = 3) -> str:
+    """The last few stderr lines that say something, as one line, for a failure detail.
+
+    Blank lines and rules are dropped: gp underlines the offending call with a caret rule on a line of
+    its own, and keeping it would push the line that names the call out of a three-line tail. Each line
+    is capped, as every other text a program writes into a detail is (`_short`, a malformed term line)."""
+    said = [s[:STDERR_LINE_CHARS] for s in (l.strip() for l in res.stderr_tail.strip().splitlines())
+            if set(s) - _RULE_CHARS]
+    return " | ".join(said[-lines:])
+
+
+def brief_detail(detail: str) -> str:
+    """A detail cut to one session-log line. A gp error runs to about 180 characters -- the call it could
+    not make, the reason, and the file it gave up on -- and is worth carrying whole."""
+    return detail if len(detail) <= CONSOLE_DETAIL_CHARS else detail[:CONSOLE_DETAIL_CHARS - 3] + "..."
 
 
 class Harness:
@@ -316,10 +343,18 @@ class Harness:
             elif self.verified_at is not None:
                 stop, detail = Stop.FINISHED, "program ended after verification"
             elif self.child_error or res.exit_code != 0:
-                tail = res.stderr_tail.strip().splitlines()[-3:]
-                stop, detail = Stop.CRASH, self.child_error or f"exit code {res.exit_code}: {' | '.join(tail)}"
+                stop, detail = Stop.CRASH, self.child_error or f"exit code {res.exit_code}: {_stderr_tail(res)}"
             else:
                 stop, detail = Stop.INCOMPLETE, f"program ended after {len(self.records)} terms"
+        # A program can fail and still exit 0 -- gp prints its error, skips the rest of the file and leaves
+        # with status 0 -- so an `incomplete` says why only on stderr. The same holds for a run killed at
+        # the verify budget or by a sandbox cap before a single term: nothing else recorded says what it
+        # was doing. Every other stop already carries its own cause (`crash` puts the tail in its detail;
+        # `protocol`, `bad_index` and `wrong_term` name the line, index or value at fault), and after
+        # verification the terms are the evidence, so none of them collects stderr.
+        if stop in _TAIL_STOPS and (stop is Stop.INCOMPLETE or not self.records):
+            tail = _stderr_tail(res)
+            detail = f"{detail}: {tail}" if tail else detail
         verified = self.verified_at is not None and self.reproduced == self.known.count
         last = self.predictions[-1] if self.predictions else None
         # an infeasible projection stops the run before its term starts: there is no running time to censor

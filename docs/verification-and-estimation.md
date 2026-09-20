@@ -180,7 +180,44 @@ The sandbox's own `stopped` status (a program trying to start a child process) h
 is terminated with exit code 1, so the attempt is recorded as `crash` ("exit code 1"), or as `finished`
 after verification, and the child-process reason is lost; any exit after verification → `finished` (even a crash; its
 error text is not kept in the detail); `@ERR` or a non-zero exit before verification → `crash` (detail
-from `@ERR`, or the exit code and last three stderr lines); a zero exit before it → `incomplete`.
+from `@ERR`, or the exit code and last three stderr lines); a zero exit before it → `incomplete`
+(detail: how many terms came out, then those same three stderr lines when the program said anything).
+
+### The stderr tail in a detail
+
+Every tail comes from `verify._stderr_tail`, which keeps the last three lines that say something, joined
+with `" | "` and each cut to `STDERR_LINE_CHARS` (400). Blank lines and rules are dropped: gp underlines
+the offending call with a caret rule on a line of its own, and keeping it would push out the line that
+names the call. The per-line cap matters because the 64 KiB `stderr_tail` need not contain a line break
+at all, and a detail is stored, shown in the dashboard and sent to the model.
+
+Which stops carry one is a fixed list, `verify._TAIL_STOPS`: `incomplete` always, and `verify_timeout`,
+`timeout`, `memory_cap`, `cpu_cap`, `disk_cap` and `output_cap` when the run produced no term at all. Those are the stops that do not themselves say why the program produced what it did. The
+others are left alone deliberately — `crash` puts the tail in its own detail, `protocol`, `bad_index` and
+`wrong_term` name the line, index or value at fault, `launch_error` never ran a process so there is no
+stderr to keep, and after verification the terms are the evidence —
+and a stop added to `Stop` belongs in the list only if the same is true of it.
+
+`incomplete` is the case that needs this most, because a program can fail and still exit 0: gp prints its
+error to stderr, skips the rest of the file and leaves with status 0, so the run is `incomplete` rather
+than `crash` and, without the tail, nothing in the database, the artifact or the session log says why no
+term came out. A gp program calling a helper that is defined in some other OEIS entry reads:
+
+```
+incomplete: program ended after 0 terms: ***   at top-level: print(A007947(3)) | ***   not a function
+in function call | ... skipping file 'program.gp'
+```
+
+That particular family no longer reaches a run: since 2026-09-20 a PARI block calling another entry's
+helper is rejected statically (see [strategies](strategies.md#programs-that-call-another-entrys-helper)).
+The tail still earns its place on everything the static check cannot see — a helper reached only down a
+branch, an internal limit, a gp warning before a silent stop.
+
+A session log line carries `verify.brief_detail(detail)`: the first `CONSOLE_DETAIL_CHARS` (300)
+characters, with `...` when it had to cut. Both places that log a stop use it — the per-attempt line in
+`attempt` and the per-generation line in `codegen` — so a model run's failure is not cut shorter than a
+PARI one's. The real `incomplete` details of A147803 and A147800 are 178 characters, so they arrive
+whole; at 160 the cause was visible but the sentence was cut.
 
 ## Outcome
 

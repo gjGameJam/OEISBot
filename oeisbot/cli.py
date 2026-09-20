@@ -66,11 +66,13 @@ def cmd_stats(args):
                 forms[cands[0].form] += 1
             elif any("list-printing" in r.reason for r in rejected):
                 forms["list printer only (unsupported)"] += 1
+            elif any("another OEIS entry" in r.reason for r in rejected):
+                forms["calls another entry's helper (unrunnable)"] += 1
             else:
                 forms["no usable function (unsupported)"] += 1
         print("PARI-bearing candidates by the best supported program form:")
         for form, c in forms.most_common():
-            print(f"  {form:<34} {c:>6}")
+            print(f"  {form:<42} {c:>6}")
 
 
 def _session_pool(conn, args):

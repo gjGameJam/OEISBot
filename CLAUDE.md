@@ -17,7 +17,7 @@ Windows-only in practice: the sandbox is a Job Object + AppContainer (`oeisbot/s
 ## Commands
 
 ```
-.venv\Scripts\python -m pytest                 # 257 tests, ~50 s; sandbox tests skip if `oeisbot setup` has not run
+.venv\Scripts\python -m pytest                 # 274 tests, ~50 s; sandbox tests skip if `oeisbot setup` has not run
 .venv\Scripts\python -m pytest tests/test_sandbox.py
 .venv\Scripts\oeisbot setup                    # sandbox runtimes + AppContainer grants + database (idempotent)
 .venv\Scripts\oeisbot sync --no-pull           # rebuild the candidate table from the local oeisdata clone

@@ -26,7 +26,7 @@ from .. import config, db
 from ..ingest.seqfile import Entry
 from ..model import ModelClient
 from ..terms import KnownTerms, Program
-from ..verify import AttemptResult, Stop, _short
+from ..verify import AttemptResult, Stop, _short, brief_detail
 
 ALLOWED_IMPORTS = {"math", "itertools", "functools", "collections", "heapq", "bisect", "fractions", "operator",
                    "array", "gmpy2", "sympy", "numbers", "decimal"}
@@ -594,7 +594,7 @@ def generate_and_verify(entry: Entry, known: KnownTerms, model: ModelClient,
                        script=code + MEMBERS_DRIVER.format(first=first) if contract is MEMBERS else None)
         result = runner(prog)
         out.attempts.append(result)
-        log(f"generation {gen}: {result.outcome}: {result.stop.value} ({result.detail[:120]})")
+        log(f"generation {gen}: {result.outcome}: {result.stop.value} ({brief_detail(result.detail)})")
         if result.verified:
             break
         if result.stop.value in REPEATS_IN_STAGE:

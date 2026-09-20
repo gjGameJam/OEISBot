@@ -11,6 +11,10 @@ OEIS PARI programs come in a few shapes. Supported:
 Not yet supported (reported, so their frequency can be measured): list printers such as lista(nn),
 first(n) vector builders, triangle rows.
 
+Rejected as unrunnable whatever their shape: blocks that call or index an A-number the block never
+defines (`undefined_a_numbers`). Those helpers live in another OEIS entry, and gp errors as soon as
+such a call is reached, so the program can only waste a pick.
+
 Top-level driver statements in the entry (for(...), print(...), lista(1000), ...) are dropped for the
 function forms; only definitions, assignments and precision defaults are kept.
 """
@@ -33,6 +37,14 @@ _PRINT = re.compile(r"\bprint1?\s*\(")
 _LITERAL_BOUND = re.compile(r"^\s*\d+(\s*[*^]\s*\d+)*\s*$")
 _STRING = re.compile(r'^\s*"[^"]*"\s*$')
 SEARCH_BOUND = 1000
+
+# an OEIS A-number used as a function or a vector: A007947(n), a147798[n]. 6 digits is the OEIS form;
+# entries also write abbreviations such as A1969 for A001969
+_ANAME_USE = re.compile(r"\b([Aa]\d{4,7})\s*[(\[]")
+_DEFINES = re.compile(r"\b([A-Za-z_]\w*)\s*(?:\([^()]*\))?\s*=(?!=)")   # f(x) = ..., x = ..., my(x = ...)
+_PARAMS = re.compile(r"\b[A-Za-z_]\w*\s*\(([^()]*)\)\s*=(?!=)")         # f(x, &y) = ...
+_LAMBDA = re.compile(r"\(([^()]*)\)\s*->")                              # (x) -> ...
+_LEADING_NAME = re.compile(r"\s*&?\s*([A-Za-z_]\w*)")                   # a parameter, maybe by reference
 
 
 def _is_a_name(name: str, a_number: str) -> bool:
@@ -180,6 +192,46 @@ def strip_comments(text: str) -> str:
             out.append(c)
             i += 1
     return "".join(out).strip()
+
+
+def _declared(parts: list[str]) -> set[str]:
+    """The names a parameter list declares -- the name each entry starts with, `&` and a default value
+    aside: `f(n, p = A000043[n])` declares `n` and `p`, and *uses* `A000043`."""
+    return {m.group(1) for p in parts if (m := _LEADING_NAME.match(p))}
+
+
+def _defined_names(code: str, mask: list[bool]) -> set[str]:
+    """Every name this code could bind, read generously: a wrongly undefined name would reject a program
+    that runs, while a name counted as defined only costs the pick it would have cost anyway.
+
+    A `my(x)`/`local(x)` with no value is deliberately not a definition. It is the one declaration gp
+    still errors on when the name is then called or indexed, so counting it would only suppress a
+    correct rejection; `my(x = ...)` is covered, as an assignment like any other."""
+    names = {m.group(1) for m in _DEFINES.finditer(code) if mask[m.start()]}
+    for rx in (_PARAMS, _LAMBDA):
+        for m in rx.finditer(code):
+            if mask[m.start()]:
+                names |= _declared(split_top_level(m.group(1), ","))
+    return names
+
+
+def undefined_a_numbers(code: str) -> list[str]:
+    """A-numbers this code calls or indexes without ever defining them.
+
+    An OEIS `%o` block may use a helper that lives in a *different* entry (`A147803(n) = ... A007947(n) ...`,
+    `A147805` reads `a147798[n]`). gp accepts such a program and runs it, then errors as soon as it reaches
+    one -- "not a function in function call", or an incorrect type.
+
+    This over-approximates, deliberately: gp only errors on a use it *reaches*, so a helper called from a
+    branch the known terms never take, or from a function nothing calls, would be rejected although the
+    program might have run. No entry in the corpus is such a case, while 65 are genuinely broken.
+
+    A *bare* mention is not checked: gp leaves an unknown name as a polynomial variable and carries on, so
+    `n + A007947` prints the expression unevaluated and `#A007947` returns 2 rather than failing."""
+    mask = code_mask(code)
+    defined = _defined_names(code, mask)
+    return sorted({m.group(1) for m in _ANAME_USE.finditer(code)
+                   if mask[m.start()] and m.group(1) not in defined})
 
 
 def literal_value(bound: str) -> float:
@@ -406,6 +458,12 @@ def build_candidates(entry: Entry, known: KnownTerms) -> tuple[list[Candidate], 
                     rejected.append(Rejected(bi, f"list-printing form not supported (defines {names})"))
                 else:
                     rejected.append(Rejected(bi, f"no a(n), predicate, or single print loop (defines {names})"))
+                continue
+            # checked on the script, the text that actually runs: a driver statement calling another
+            # entry's helper is dropped for the function forms and must not count against the block
+            if missing := undefined_a_numbers(script):
+                rejected.append(Rejected(bi, f"uses {', '.join(missing)}, defined in another OEIS entry "
+                                             f"and not in this program"))
                 continue
             if script in seen:
                 continue

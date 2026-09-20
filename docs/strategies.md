@@ -158,20 +158,59 @@ verified and then found nothing new with no smaller budget (an `infeasible` or `
 a later attempt at that budget skips it and runs the entry's next program (since 2026-09-19, offer E;
 before that the others were held back).
 
-### Coverage (2026-09-17 snapshot)
+### Coverage (2026-09-20 snapshot)
 
 Of the 5,316 candidates with a PARI program, measured with `oeisbot stats --forms` (the best supported
 form per sequence):
 
 | Form | Sequences |
 |---|---|
-| predicate | 2,153 |
-| `a(n)` | 1,100 |
-| print loop | 737 |
+| predicate | 2,138 |
+| `a(n)` | 1,052 |
+| print loop | 735 |
 | list printer only (unsupported) | 434 |
+| calls another entry's helper (unrunnable) | 65 |
 | nothing usable (unsupported) | 892 |
 
-That is 3,990 runnable (75%).
+That is 3,925 runnable (74%). The helper row is new on 2026-09-20: those 65 sequences had a supported
+form and were counted as runnable until then (15 predicate, 48 `a(n)`, 2 print loop), but every one of
+them fails at its first call into another entry — see below.
+
+### Programs that call another entry's helper
+
+An OEIS `%o` block may use a helper defined in a *different* entry: `A147803(n) = ... A007947(n-a) ...`,
+or `A147805`, which reads `a147798[n]`. gp accepts the program, runs it and errors at the first such
+call or index, so it can never reproduce the known terms. `pari.undefined_a_numbers` finds them
+statically, and `build_candidates` rejects the block with reason `uses <names>, defined in another OEIS
+entry and not in this program`, which surfaces as the skip reason `no_supported_program`.
+
+- **What counts as a use:** a call `A007947(n)` or an index `a147798[n]`. A *bare* mention is left alone,
+  because gp does not fail on it — an unknown name is a polynomial variable, so `n + A007947` prints the
+  expression unevaluated and `#A007947` is 2. Those programs fail later, and their own stop reason says how.
+- **What counts as defined** is read generously, since wrongly calling a name undefined would throw away
+  a program that runs: any definition or assignment (`my(m = ...)` included), and any parameter name,
+  whether of a function `f(x, &y) = ...` or of a closure `(x) -> ...`. A default value only *uses* the
+  names in it, it does not define them: `my(m = A034386(p))` declares `m` and uses `A034386`, which is
+  how `A242998(n, p = A000043[n])` is caught. A bare `my(x)` with no value is deliberately *not* a
+  definition — it is the one declaration gp still errors on when the name is then called or indexed, so
+  honouring it could only suppress a correct rejection. Matches inside strings and comments are ignored
+  (`code_mask`).
+- **Checked on the script that runs**, not on the block: driver statements are dropped for the function
+  forms, so a helper named only in a dropped statement is never called and does not reject the block.
+- **Measured (2026-09-20):** 65 of the 3,990 sequences that used to produce a candidate lose all of them,
+  and 5 more lose one of two. That is **1.97% of the pick weight of a PARI-only session** and about
+  **0.39 wasted picks per 20** — measured on the pool a session actually draws from, which `Runnable` has
+  already filtered to 3,552 (the share of the unfiltered 5,316-candidate corpus is the smaller and less
+  meaningful 1.40%). With `--model` on it is 0.47% and 0.09 picks, because nothing leaves that pool.
+  The session pool shrinks by 58 rather than 65: 5 of the entries were already `verify_out_of_reach` and
+  2 `all_programs_dead_ends`.
+  All 71 rejected candidates were run through the harness before the check was written: none reproduced
+  the known terms, so the rule costs nothing (see [status](status.md), history item 33).
+- **Over-approximation:** gp only errors on a use it *reaches*. A block whose undefined call sits in a
+  branch the known terms never take, or in a function nothing calls, would be rejected although it might
+  have run; so would one whose helper is a closure parameter of a form not recognised here. No entry in
+  the corpus is such a case. Eight of the 71 do emit 1–5 terms before reaching the call (A087638,
+  A143700, A195264, A285331, A291786, A332081, A341715, A341717) — they still cannot reproduce the rest.
 
 ### Correctness caveats
 

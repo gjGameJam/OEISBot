@@ -108,6 +108,73 @@ def test_unsupported_shapes_rejected():
     assert "list-printing" in cands("lista(nn) = for(n=1, nn, print1(n))")[1][0].reason
 
 
+def test_undefined_a_numbers_finds_calls_and_indexes():
+    """A call or an index on an unknown name always errors in gp; a bare mention does not -- it stays a
+    polynomial variable, so `n + A007947` prints the expression unevaluated and `#A007947` is 2."""
+    assert pari.undefined_a_numbers("a(n) = A007947(n)") == ["A007947"]
+    assert pari.undefined_a_numbers("a(n) = my(m = a147798[n]); m") == ["a147798"]
+    assert pari.undefined_a_numbers("a(n) = A007947(n) + A007947(n+1)") == ["A007947"]   # named once
+    assert pari.undefined_a_numbers("a(n) = A1969[n]") == ["A1969"]                      # an abbreviation
+    assert pari.undefined_a_numbers("a(n) = n + A007947") == []
+    assert pari.undefined_a_numbers("a(n) = #A007947") == []
+    assert pari.undefined_a_numbers("a(n) = prime(n)") == []
+    assert pari.undefined_a_numbers("a(n) = A007947(n) == 3") == ["A007947"]      # `==` is not a definition
+
+
+def test_undefined_a_numbers_counts_every_way_a_name_is_defined():
+    """Read generously: a name wrongly called undefined would throw away a program that runs."""
+    assert pari.undefined_a_numbers("A007947(n) = n; a(n) = A007947(n)") == []
+    assert pari.undefined_a_numbers("A007947 = [1, 2]; a(n) = A007947[n]") == []
+    assert pari.undefined_a_numbers("A007947 = (n) -> n; a(n) = A007947(n)") == []
+    assert pari.undefined_a_numbers("a(n) = my(A007947 = [1]); A007947[n]") == []
+    assert pari.undefined_a_numbers("a(n, A007947) = A007947(n)") == []
+    assert pari.undefined_a_numbers("a(n, &A007947) = A007947[n]") == []          # by reference
+    assert pari.undefined_a_numbers("g = (A007947) -> A007947[1]; a(n) = g([n])") == []   # a closure's
+    # a `my(x)` with no value is not a definition: gp errors on calling or indexing x just the same
+    assert pari.undefined_a_numbers("a(n) = {my(A007947); A007947(n)}") == ["A007947"]
+    # several definitions in one statement, the shape A087636 uses
+    assert pari.undefined_a_numbers("A87636 = []; A087636(n) = {A87636[n] = A087636(n-1)}") == []
+    # a default value *uses* a name, it does not define it: A242998 reads A000043[n] that way
+    assert pari.undefined_a_numbers("a(n, p = A000043[n]) = p") == ["A000043"]
+    assert pari.undefined_a_numbers("a(n) = my(m = A034386(n)); m") == ["A034386"]
+
+
+def test_undefined_a_numbers_ignores_strings_and_comments():
+    assert pari.undefined_a_numbers('a(n) = print("A007947(n)")') == []
+    assert pari.undefined_a_numbers("a(n) = n  \\\\ see A007947(n)") == []
+    assert pari.undefined_a_numbers("a(n) = n  /* A007947[n] */") == []
+
+
+def test_a_block_calling_another_entrys_helper_is_rejected():
+    cs, rej = cands("a(n) = A007947(n)")
+    assert not cs and "A007947" in rej[0].reason and "another OEIS entry" in rej[0].reason
+    cs, rej = cands("isok(k) = A007947(k) == k")          # the predicate form too
+    assert not cs and "A007947" in rej[0].reason
+    # and the print-loop form, which reaches the check through a different branch (A101759, A287915)
+    cs, rej = cands("for(n=1, 999, if(A007947(n) == n, print1(n, \", \")))")
+    assert not cs and "A007947" in rej[0].reason
+
+
+def test_a_helper_the_block_defines_itself_is_not_rejected():
+    cs, rej = cands("A007947(n) = factorback(factor(n)[, 1])\na(n) = A007947(n)")
+    assert [c.form for c in cs] == ["a(n)"] and not rej
+    assert "A007947(n) = factorback" in cs[0].program.executed
+
+
+def test_a_call_in_a_dropped_driver_statement_does_not_reject_the_block():
+    """Only the text that runs is checked: top-level driver statements are dropped for the function
+    forms, so a helper named in one is never called."""
+    cs, rej = cands("a(n) = prime(n)\nfor(n=1, 10, print(A007947(n)))")
+    assert [c.form for c in cs] == ["a(n)"] and not rej
+    assert "A007947" not in cs[0].program.executed
+
+
+def test_one_rejected_block_leaves_the_entrys_other_block_runnable():
+    cs, rej = cands("a(n) = A007947(n)", "a(n) = prime(n)")
+    assert [c.form for c in cs] == ["a(n)"] and "A007947" not in cs[0].program.executed
+    assert len(rej) == 1 and rej[0].block == 1
+
+
 runtime = pytest.mark.skipif(bool(sandbox.runtime_problems()), reason="sandbox runtime missing")
 FAST = Budgets(verify_wall_s=30, extend_wall_s=5, max_new_terms=5)
 PRIMES_AFTER_47 = [53, 59, 61, 67, 71]

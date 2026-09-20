@@ -1,7 +1,7 @@
 # Known limitations
 
 Current behavior that is incomplete, surprising, or differs from the design intent, with where it lives
-and a suggested fix. Last reviewed 2026-09-18 against the code at that date.
+and a suggested fix. Last reviewed 2026-09-20 against the code at that date.
 
 ## Differences from the design intent
 
@@ -60,6 +60,39 @@ with `--model` the model stage runs next and is told the entry's program is corr
   (see [operations](operations.md#a-win-whose-re-check-failed-recheck_pending)). The new terms remain in
   the run log.
   **Fix:** serialize the result as JSON, or rebuild the artifact from the run log.
+- **(Fixed 2026-09-20) A program that errored but exited 0 was recorded as `incomplete` with its cause
+  discarded.** `verify._result` reached the `INCOMPLETE` branch only when the child's `exit_code == 0`,
+  and that branch kept only "program ended after N terms" — unlike the `CRASH` branch, it dropped
+  `res.stderr_tail`. A run that produced no term also writes no term log, while `extra.log` still named
+  the path one would have had, so that file did not exist. Nothing in the database, the artifact or the
+  session log said *why* the program produced nothing. gp does this routinely: a call to an undefined
+  function prints `*** at top-level: ... not a function in function call` and still exits 0. Session 6
+  spent two of its twenty picks on such rows (A147803, A147800) and the cause — a PARI block calling
+  `A007947`, which is defined in a different OEIS entry and nowhere in the block — had to be inferred by
+  reading the entry source afterwards.
+  **Fixed by** keeping the tail for `incomplete` and for any other `verify._TAIL_STOPS` stop that came
+  without a term, leaving `extra.log` unset when no term log was written, naming the kept Python program
+  as `extra.program` instead of deriving it from `extra.log`, and printing 300 rather than 160 characters
+  of a detail in the session log (see [verification](verification-and-estimation.md#the-stderr-tail-in-a-detail)).
+  Nothing is fixed retroactively: 35 of the 129 run rows written before that date name a run log that
+  was never created (14 `wrong_term`, 12 `bad_index`, 6 `crash`, 2 `incomplete`, 1 `verify_timeout` — a
+  term is logged only once it has passed its checks, so a run whose very first term was wrong logs none).
+- **(Fixed 2026-09-20) PARI blocks could call helpers that only exist in another OEIS entry.** An entry's
+  `%o` block may call `A007947(...)` or similar, defined in that other entry and never in this one; the
+  program was accepted, ran, emitted nothing and was recorded as `incomplete` — whose detail now names the
+  missing call (above), so such a row diagnoses itself, but only after a pick has been spent on it.
+  Affected entries cluster in families (A147798 to A147805 are eight of them).
+  **Fixed by** `pari.undefined_a_numbers`, a static check for an A-number a program calls or indexes but
+  never defines, rejected in `build_candidates` so it surfaces as `no_supported_program` and never reaches
+  a pick (see [strategies](strategies.md#programs-that-call-another-entrys-helper)). It covers undefined
+  *arrays* too (A147805 reads `a147798[n]`), which a check for missing *functions* would have missed.
+  **The earlier entry count here was wrong**, though its weight figure was right: it said 54–60 entries,
+  from matching block text. Counting only blocks that actually produce a candidate, it is **65 entries
+  that lose every candidate** and 5 more that lose one of two. The weight it gave — 1.9–2.1%, about 0.4
+  wasted picks per 20 — stands: measured on the pool a PARI-only session draws from (3,552 candidates
+  after `Runnable`), the 65 are **1.97%** of the pick weight and **0.39** picks per 20. With `--model` on
+  it is 0.47% and 0.09, because nothing leaves that pool.
+  A *bare* mention of another entry's A-number is deliberately still allowed: gp does not fail on one.
 - **A re-check that fails the same way every time keeps a win pending forever.** Only transient errors
   are retried within the run, but every later `oeisbot run` tries again (up to two requests to oeis.org
   per pending win) and logs the same error, until someone intervenes as above.
@@ -263,8 +296,12 @@ with `--model` the model stage runs next and is told the entry's program is corr
   (`KeyError: 10031`); a `crash` or `incomplete` retry also carries the last 12 stderr lines; and a
   `protocol` detail repeats a line the program printed itself (a malformed `@T` line, or a forged
   `@ERR OEISBotContractError: ...`), which it can only do by printing, against the prompt's rules. None
-  of the 7 crash messages recorded so far holds a value; stderr is not stored, so that channel is
-  unmeasured. Scrubbing was considered and not chosen by the user. **Fix, if wanted:** scrub these texts,
+  of the 7 crash messages recorded so far holds a value. Since 2026-09-20 a stderr tail is also stored,
+  in the `detail` of a `crash` and of the stops in `verify._TAIL_STOPS`, so it is shown in the dashboard
+  and reaches a retry on its own line as well as in the 12-line block — and, for the first time, it can
+  be measured: `SELECT detail FROM attempts WHERE failure_mode IN (...)` now shows what that channel
+  carries. It never reaches an artifact: those are written only for wins, and no win's stop carries a
+  tail. Scrubbing was considered and not chosen by the user. **Fix, if wanted:** scrub these texts,
   knowing it cannot be complete (single digits, traceback line numbers, `1.0031e4`, hex).
 - **The generation prompt lists module names, not function names.** `GENERATE` interpolates
   `", ".join(sorted(ALLOWED_IMPORTS))`, so the model knows `gmpy2` and `sympy` are available but has to
@@ -333,11 +370,32 @@ at first (26,814 once `fini,more` entries were included on 2026-09-17).
 | Step-2 `attempt` | `--model`; verify 60 s, extend 120 s; A247883, A057246, A246855 | 3 | 12 | each PARI program verified again and found nothing in 120 s; the model stage then ran with the note: 9 generations, 8 `bad_index`, 1 `crash` |
 | Offer-B `attempt` | PARI only; verify 60 s, extend 300 s; A277532, A390295 | 2 | 2 | both verified again; their untrustworthy projections no longer killed the first new term, and both ran the whole 300 s (`extend_budget`) without a new term |
 | Offer-C `attempt` | `--model`; verify 60 s, extend 120 s; A247883, A057246, A246855, A253773, A272621, A253380, A345338, A383336, A095751, A320768 | 10 | 20 | no PARI program ran (dead ends or none); 8 of the 9 asked were judged lists, A383336 a function; 0 `bad_index`; A247883 and A057246 verified in generation 1 (then `extend_budget` and `infeasible`); 14 `verify_timeout`, 4 `wrong_term`; 5 repeats not run and 1 program rejected for copying known terms; 0 new terms |
+| Session 6 (db) | PARI only; verify 60 s, extend 1800 s; seed 206 (2026-09-19) | 20 | 21 | 0 skips; 15 `verify_timeout` (60.14–60.53 s), 2 `incomplete` (A147803, A147800, 0 terms in 0.0 s); 4 verified, each using its whole extension (A015766, A279795, A222206, A293756, 1800.5–1801.9 s at 0.98–0.99 CPU share); 0 new terms; 8,110 s of wall clock. All 20 picks and their order were predicted in advance; none of the 4 verified runs produced a cost fit, so the run could not test offers B, A and F (status history item 31) |
 
-Totals: 47 sequences, 108 program runs, **0 wins**, 3.2 machine-hours. (39 of the runs, and 1 skip, belong
+Totals: 67 sequences, 129 program runs, **0 wins**, 5.5 machine-hours. (39 of the runs, and 1 skip, belong
 to no session: standalone `oeisbot attempt` runs, including the A129250 re-attempt that checked the
 retry-prompt fix, the 12 runs of the step-2 attempt, the 2 of the offer-B check and the 20 of the
 offer-C measurement.)
+
+Two patterns hold across every PARI run recorded so far, not just one session (measured after session 6,
+status history item 31):
+
+- **Nothing with more than 10 known terms has ever verified.** Of the 64 PARI program runs, the 31 whose
+  sequence had more than 10 known terms produced **0** verified runs; the 33 with 10 or fewer produced
+  **15**. Verified runs' known-term counts are 3, 3, 4, 4, 5, 5, 6, 6, 6, 6, 8, 9, 9, 10, 10 (median 6);
+  `verify_timeout` runs span 2 to 72 (median 12). This is the verify gate, not the selection weighting:
+  pick weight tracks population share across known-term buckets. A larger `--verify-s` is the only lever
+  that can move it.
+- **No verified run has ever had a fittable cost history.** Replaying each verified run's first
+  projection from its term log: `estimate.project` returned no fit at all in **11 of 15**, and the 4 fits
+  all had `npoints = 3`. Since `Projection.trustworthy` needs `disagreement <= 3` *and* `npoints >= 4`,
+  **no verified run has ever been able to produce a trustworthy projection**, so neither the
+  over-prediction kill nor the infeasible-on-time stop has ever had grounds to fire on one. The cause is
+  the cost cliff below (these terms cost far under `WORK_FLOOR` / `CPU_FLOOR_S`), not the number of known
+  terms: A277532 has 6 known terms and produced a fit, A247883 has 10 and had 0 points above the floor.
+
+  A practical consequence: the rules added by offers B and F cannot be exercised by any run that verifies
+  at a 60 s budget, so testing them needs the slower pass, not another quick session.
 
 Sessions 1 and 2 used deliberately short budgets. Session 3 used a realistic verify budget (600 s) but
 still did not test it: 4 of its 5 picks had no usable PARI program, so 15 of 16 runs went to the model and

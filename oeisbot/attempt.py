@@ -33,7 +33,7 @@ from .ingest.seqfile import Entry, parse
 from .model import ModelClient, ModelUnavailable
 from .strategies import codegen, pari
 from .terms import KnownTerms, Program
-from .verify import AttemptResult, run_attempt
+from .verify import AttemptResult, brief_detail, run_attempt
 
 MAX_PROGRAMS_PER_SEQUENCE = 3
 RECHECK_RETRY_WAITS_S = (30.0, 120.0)   # pauses between re-check tries before a win is left pending
@@ -171,20 +171,29 @@ class _Attempter:
         runs = config.DATA / "runs"
         runs.mkdir(parents=True, exist_ok=True)
         log_path = runs / f"{self.known.a_number}-{time.strftime('%Y%m%d-%H%M%S')}-{prog.sha[:8]}.jsonl"
+        kept_program = None
         if prog.language == "python":
             # keep every generated program as it ran (with the driver of a members(work) program), byte for
             # byte, so its sha256 prefix is the recorded program_sha (text mode would write CRLF on Windows)
-            (runs / f"{log_path.stem}.py").write_bytes(prog.executed.encode("utf-8"))
+            kept_program = runs / f"{log_path.stem}.py"
+            kept_program.write_bytes(prog.executed.encode("utf-8"))
         self.say(f"running {prog.strategy} from {prog.origin}")
         result = run_attempt(prog, self.known, self.budgets, name=self.entry.name, log_path=log_path)
         new = result.new_terms
-        self.say(f"-> {result.outcome}: {result.stop.value} ({result.detail[:160]}); reproduced "
+        self.say(f"-> {result.outcome}: {result.stop.value} ({brief_detail(result.detail)}); reproduced "
                  f"{result.reproduced}/{self.known.count}, {len(new)} new, {result.run.wall_s:.1f} s, "
                  f"peak {result.peak_mem_bytes / 2**20:.0f} MiB")
-        extra = {"log": str(log_path), "form": form, "rewrites": prog.notes, "attempt_call": self.call,
+        extra = {"form": form, "rewrites": prog.notes, "attempt_call": self.call,
                  "weak_verification": result.weak_verification,
                  # the budgets a verified run without new terms is judged against (db.is_dead_end)
                  "extend_wall_s": self.budgets.extend_wall_s, "mem_bytes": self.budgets.mem_bytes}
+        # the harness creates the term log with the first term, so a run that produced none has no log to
+        # name and naming one anyway sends a reader to a file that was never written. The kept program is
+        # written whatever the run then does, so it is named on its own
+        if log_path.exists():
+            extra["log"] = str(log_path)
+        if kept_program is not None:
+            extra["program"] = str(kept_program)
         if not new:
             attempt_id = db.record_attempt(self.conn, result, started_at=started, session_id=self.session_id,
                                            extra=extra)

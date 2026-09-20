@@ -237,6 +237,22 @@ def test_generation_cap_and_static_rejections(env):
     assert "import not allowed: os" in model.calls[2][-1]["content"]
 
 
+@pytest.mark.sandbox
+@pytest.mark.skipif(bool(sandbox.runtime_problems()), reason="sandbox runtime missing")
+def test_a_run_without_a_term_names_the_program_it_ran_and_no_run_log(env):
+    """The term log is created by the first term, so a run that produced none must not name one. The
+    program that ran is kept either way, and is all a reader of such a row has."""
+    nothing = "```python\ndef terms(work):\n    return\n    yield\n```"
+    model = FakeModel([PLAN, nothing, nothing, nothing])
+    attempt.attempt_sequence(conn := env[0], "A999998", FAST, log=lambda m: None, model=model)
+    rows = conn.execute("SELECT failure_mode, detail, extra FROM attempts ORDER BY id").fetchall()
+    assert {r["failure_mode"] for r in rows} == {"incomplete"}
+    for row in rows:
+        extra = json.loads(row["extra"])
+        assert "log" not in extra and row["detail"] == "program ended after 0 terms"
+        assert Path(extra["program"]).read_text().endswith("    return\n    yield\n")
+
+
 def test_too_few_known_terms_never_reach_the_model(env, monkeypatch):
     conn, _ = env
     entry = parse("%S A999998 0,1\n%N A999998 Too short.\n%O A999998 0,2\n%K A999998 nonn,more\n")
@@ -525,8 +541,10 @@ def test_a_members_program_wins_and_is_reviewed_as_ai_generated(env, monkeypatch
     assert "AI-generated program" in readme and "Numbered by the runner" in readme and "executed.py" in readme
     assert (folder / "b999997.txt").read_text().splitlines()[15:] == ["16 53", "17 59", "18 61"]
     # the kept program is what ran, and its hash is the recorded one
-    kept = Path(json.loads(row["extra"])["log"]).with_suffix(".py").read_bytes()
+    extra = json.loads(row["extra"])
+    kept = Path(extra["program"]).read_bytes()
     assert kept == executed.encode() and hashlib.sha256(kept).hexdigest()[:16] == row["program_sha"]
+    assert Path(extra["log"]).exists()          # terms came out, so the run log is named and is there
 
 
 ORIGINAL_GENERATE = """CONTEXT
