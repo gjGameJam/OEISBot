@@ -28,7 +28,9 @@ cd dashboard && npm run build                  # frontend; output in oeisbot/das
 ```
 
 Installing Python packages behind this machine's TLS inspection needs `UV_SYSTEM_CERTS=1`; npm needs
-`NODE_USE_SYSTEM_CA=1`.
+`NODE_USE_SYSTEM_CA=1`; git needs `git -c http.sslBackend=schannel push` (the system config sets
+`openssl`, which fails with "unable to get local issuer certificate"). More in
+[operations](docs/operations.md#troubleshooting).
 
 ## Where things are
 
