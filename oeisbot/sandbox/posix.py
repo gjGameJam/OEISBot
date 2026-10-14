@@ -100,8 +100,13 @@ def run(argv: list[str], *, cwd: Path, limits: Limits, env: dict[str, str] | Non
             line = chunk.decode("utf-8", "replace").rstrip("\r\n")
             stdout_tail.append(line[:2000])
             if on_line:
-                with cb_lock:
-                    reason = on_line(line, time.perf_counter() - t0)
+                # a raise here would end the reader thread silently (item 51; windows.py has the same guard)
+                try:
+                    with cb_lock:
+                        reason = on_line(line, time.perf_counter() - t0)
+                except Exception as e:      # noqa: BLE001
+                    request(Status.CALLBACK_ERROR, f"on_line raised {type(e).__name__}: {e}")
+                    continue
                 if reason:
                     request(Status.STOPPED, reason)
 
@@ -138,8 +143,12 @@ def run(argv: list[str], *, cwd: Path, limits: Limits, env: dict[str, str] | Non
                     request(Status.MEMORY_CAP, "system physical RAM running low")
             if on_tick and elapsed >= next_tick and state["status"] is None:
                 next_tick = elapsed + tick_s
-                with cb_lock:
-                    reason = on_tick(elapsed)
+                try:
+                    with cb_lock:
+                        reason = on_tick(elapsed)
+                except Exception as e:      # noqa: BLE001
+                    request(Status.CALLBACK_ERROR, f"on_tick raised {type(e).__name__}: {e}")
+                    continue
                 if reason:
                     request(Status.STOPPED, reason)
         if state["status"] is not None:

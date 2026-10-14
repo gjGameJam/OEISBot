@@ -168,6 +168,35 @@ def test_sync_records_candidates_and_drops_entries_that_lost_more(tmp_path, monk
         conn.close()
 
 
+def test_sync_keeps_the_difficulty_the_b_file_facts_imply(tmp_path, monkeypatch):
+    """`sync` builds its rows from the entry alone, so without the refresh pass the column would lose
+    whatever `fetch-bfiles` folded in. Measured on the real table before the fix: 32 rows would have been
+    broken by the next sync, the worst by 98.7%."""
+    root = tmp_path / "oeisdata"
+    monkeypatch.setattr(config, "OEISDATA", root)
+    monkeypatch.setattr(oeisdata, "_git", lambda *args, **kwargs: "c0ffee1234")
+    write_seq(root, "A100001", "nonn,more")
+    conn = db.connect(tmp_path / "t.sqlite3")
+    try:
+        oeisdata.sync(conn, log=lambda m: None, pull=False)
+        plain = conn.execute("SELECT difficulty FROM sequences").fetchone()[0]
+
+        # a b-file lookup adds terms and a much larger last term, as `fetch-bfiles` does
+        db.update_bfile_info(conn, "A100001", "present", 400, 400, 120)
+        row = conn.execute("SELECT * FROM sequences").fetchone()
+        db.set_difficulty(conn, "A100001", select.difficulty(row))
+        with_bfile = conn.execute("SELECT difficulty FROM sequences").fetchone()[0]
+        assert with_bfile > plain                              # or the test below proves nothing
+
+        oeisdata.sync(conn, log=lambda m: None, pull=False)
+        row = conn.execute("SELECT * FROM sequences").fetchone()
+        assert row["bfile_terms"] == 400                       # the b-file facts survive the upsert
+        assert row["difficulty"] == pytest.approx(with_bfile)  # and the sync no longer discards them
+        assert row["difficulty"] == pytest.approx(select.difficulty(row))   # = what selection computes
+    finally:
+        conn.close()
+
+
 def test_sumtree_sampling_matches_weights():
     tree = select.SumTree([1.0, 0.0, 3.0, 6.0])
     rng = random.Random(0)

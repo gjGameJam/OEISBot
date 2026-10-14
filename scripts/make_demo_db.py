@@ -43,7 +43,8 @@ def main() -> None:
     db.set_meta(conn, "synced_at", "2026-09-17T13:06:08+00:00")
 
     failures = (["verify_timeout"] * 9 + ["wrong_term"] * 3 + ["crash"] * 4 + ["memory_cap"] * 2 + ["infeasible"] * 6
-                + ["extend_budget"] * 5 + ["over_prediction"] * 3 + ["max_new_terms"] * 2 + ["bad_index"] * 2)
+                + ["extend_budget"] * 5 + ["over_prediction"] * 3 + ["max_new_terms"] * 2 + ["bad_index"] * 2
+                + ["searched_bound"] * 3)
     skips = ["no_supported_program"] * 12 + ["inconsistent_known_terms"] * 2 + ["model_skip"] * 4 + ["all_programs_dead_ends"]
     days = ["2026-09-10", "2026-09-11", "2026-09-12", "2026-09-14", "2026-09-15", "2026-09-16", "2026-09-17"]
     sid = db.start_session(conn, "demo")
@@ -80,11 +81,41 @@ def main() -> None:
             if j == 6 or rng.random() < 0.08:
                 censored, actual = actual * rng.uniform(1.5, 4), None
             with conn:
+                # A fifth of the rows have no cost fit at all, as 22 of the real database's 40 do: then
+                # the model and every fit column is NULL together, which is the distinction these columns
+                # exist to make and the one a reader of this database most needs to see. `estimate.assess`
+                # returns early in that case with no seconds at all, so the three predicted seconds are
+                # NULL too and only the memory projection survives -- which is why no such row ever
+                # reaches the dashboard, whose estimator view requires `predicted_s` (see dashboard.md).
+                # Writing them with seconds would put a shape in the demo that production cannot emit.
+                low, high = pred / rng.uniform(1, 2.5), pred * rng.uniform(1, 3)
+                if rng.random() < 0.2:
+                    model = fit_tw = npoints = disagreement = climbing = drift = None
+                    point = low = high = None
+                    kill_trusted = 0
+                else:
+                    # the relations the estimator itself guarantees, so the demo rows are internally
+                    # consistent: a climbing fit is exactly a `ratio` one (estimate.project), the
+                    # disagreement is the high/low ratio (the seconds rate cancels), `fit_trustworthy` is
+                    # estimate.Projection.trustworthy, and `trustworthy` is that flag narrowed by the drift
+                    npoints = rng.randint(3, 8)
+                    disagreement = high / low
+                    climbing = int(rng.random() < 0.15 and npoints >= 4)
+                    model = "ratio" if climbing else rng.choice(["exp", "poly"] if npoints >= 4 else ["exp"])
+                    fit_tw = int(disagreement <= 3.0 and npoints >= 4)
+                    drift = rng.uniform(0.8, 6.0)
+                    kill_trusted = int(fit_tw and drift <= 2.0)
+                    # `Projection.point` is one of the two endpoints, never between them: both come from
+                    # the same pair of fits through the same clamps (estimate.project). True on all 18
+                    # fitted rows of the real database
+                    point = high if rng.random() < 0.2 else low
                 conn.execute("""INSERT INTO predictions(attempt_id, n, cost_unit, predicted_s, predicted_s_low, predicted_s_high,
-                    predicted_mem, model, trustworthy, feasible, value_dependent, actual_s, actual_mem, censored_s)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (aid, 30 + j, unit, pred, pred / rng.uniform(1, 2.5), pred * rng.uniform(1, 3), 1e8,
-                     rng.choice(["exp", "poly", "ratio"]), int(rng.random() < 0.7), 1, 0, actual, 9e7, censored))
+                    predicted_mem, model, trustworthy, feasible, value_dependent, actual_s, actual_mem, censored_s,
+                    fit_trustworthy, fit_npoints, fit_disagreement, fit_climbing, rate_drift)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (aid, 30 + j, unit, point, low, high, 1e8,
+                     model, kill_trusted, 1, 0, actual, 9e7, censored,
+                     fit_tw, npoints, disagreement, climbing, drift))
             if censored:
                 break
 
@@ -95,7 +126,8 @@ def main() -> None:
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "README.md").write_text(f"# {a}: demo\n\nSynthetic review folder. Nothing has been submitted.\n")
         (folder / "program.gp").write_text("isok(k) = isprime(k^2+1)\n")
-        (folder / f"b{a[1:]}.txt").write_text("\n".join(f"{n} {n * n + 1}" for n in range(1, 50)) + "\n")
+        # trailing blank line, as a real artifact b-file has since item 49 (SubmitB.html requires it)
+        (folder / f"b{a[1:]}.txt").write_text("\n".join(f"{n} {n * n + 1}" for n in range(1, 50)) + "\n\n")
         rel = str(folder.relative_to(config.ROOT))
         with conn:
             conn.execute("UPDATE attempts SET artifact_path = ? WHERE id = ?", (rel, aid))

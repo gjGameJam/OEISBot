@@ -47,6 +47,7 @@ def main() -> int:
             *(ROOT / "dashboard" / "src").glob("*.ts*")]
     source = "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in code)
     seen = set()
+    idents = 0
     for doc in docs:
         for ident in re.findall(r"`([A-Za-z_][\w.]*)(?:\(\))?`", doc.read_text(encoding="utf-8")):
             last = ident.split(".")[-1]
@@ -56,6 +57,22 @@ def main() -> int:
                 seen.add((doc.name, ident))
                 if not re.search(rf"{re.escape(last)}", source):
                     print(f"IDENT  {doc.name}: not found in code: {ident}")
+                    idents += 1
+
+    # The count of expected hits is itself documented, and was hand-maintained until it went stale the
+    # first time something the docs had only proposed was built. Check it here, where both numbers are
+    # known: a hit that is *not* expected needs a decision, and a stale number hides one.
+    said = re.search(r"There are (\d+) expected hits",
+                     (ROOT / "docs" / "development.md").read_text(encoding="utf-8"))
+    if not said:
+        print("COUNT  development.md: the 'There are N expected hits' sentence is gone, so nothing checks "
+              "this list any more")
+        link_problems += 1
+    elif int(said.group(1)) != idents:
+        print(f"COUNT  development.md: says {said.group(1)} expected IDENT hits, this run found {idents}. "
+              "Either a new one needs judging and describing there, or an old one is now real code")
+        link_problems += 1
+
     print(f"link problems: {link_problems}")
     return 1 if link_problems else 0
 

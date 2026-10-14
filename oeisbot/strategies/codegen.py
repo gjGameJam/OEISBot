@@ -22,6 +22,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable
 
+from . import pari
 from .. import config, db
 from ..ingest.seqfile import Entry
 from ..model import ModelClient
@@ -50,6 +51,12 @@ def shown_indices(known: KnownTerms) -> list[int]:
 
 # starts the reviewer note; artifact.write and the dashboard's Review inbox look for it
 ENTRY_PROGRAM_NOTE = "the entry's own program"
+# The header a disclaimed program is quoted under in `_context`. It replaces the "correct" claim with the
+# author's own, and is the only thing standing between the model and a conjecture dressed as an
+# algorithm, so do not soften it (tests/test_codegen.py pins it, and docs/strategies.md quotes it).
+CONJECTURAL_PROGRAMS_NOTE = ("Programs the author calls conjectural or heuristic (do NOT assume they are correct: "
+                             "a term such a program produces is a conjecture, not a result, and reproducing its "
+                             "formula proves nothing):")
 
 
 @dataclass
@@ -95,9 +102,30 @@ def _context(entry: Entry, known: KnownTerms, limit: int = 2500, note: str | Non
     if entry.comments:
         parts.append("Comments:\n" + "\n".join(f"  {c}" for c in entry.comments[:8]))
     progs = [p for p in entry.programs if p.language in ("pari", "mathematica", "maple", "python", "magma", "sage")]
-    if progs:
+    # A program whose author disclaims it is NOT listed under the header below, which calls what follows
+    # CORRECT -- for such a program that is a lie, and the model would be invited to reproduce a
+    # conjectural closed form in Python, where no disclaimer survives for anything to detect (the PARI
+    # stage's own rejection cannot help: `Runnable._why_not` keeps a sequence for the model regardless of
+    # the PARI verdict). Until 2026-09-30 the block was withheld altogether; it is now quoted under its own
+    # header that says what the author said (item 51, the auditor's alternative from item 48): the model
+    # keeps the algorithm and loses only the false claim. The header is the whole protection -- a term
+    # such a program yields is still a conjecture, and `pari.conjectural` still refuses the block for the
+    # PARI stage -- so its wording is a constant the tests and the docs key on.
+    # PARI only: `pari.code_mask` implements GP's comment syntax, so a Mathematica or Maple block
+    # carrying the same disclaimer is not covered -- see docs/known-limitations.md.
+    # Sliced BEFORE partitioning, so a flagged block never frees a slot: partitioning first would let a
+    # fifth program promote into the shown four, and a promoted block could hard-code terms -- including
+    # a held-out one, which invariant 5 forbids. Latent today (all 7 flagged entries have exactly one
+    # eligible program, so nothing can be promoted).
+    shown4 = progs[:4]
+    clean = [p for p in shown4 if p.language != "pari" or pari.conjectural(p.code) is None]
+    flagged = [(p, w) for p in shown4 if p.language == "pari" and (w := pari.conjectural(p.code)) is not None]
+    if clean:
         parts.append("Existing programs (correct, possibly slow):\n" + "\n".join(
-            f"  ({p.tag}) {p.code[:600]}" for p in progs[:4]))
+            f"  ({p.tag}) {p.code[:600]}" for p in clean))
+    if flagged:
+        parts.append(CONJECTURAL_PROGRAMS_NOTE + "\n" + "\n".join(
+            f"  ({p.tag}) [the author's own comment says \"{w}\"] {p.code[:600]}" for p, w in flagged))
     text = "\n".join(parts)
     return text if len(text) <= limit * 4 else text[: limit * 4] + "\n  [truncated]"
 
@@ -502,6 +530,9 @@ def retry_guidance(stop: Stop | None) -> str:
     if stop is Stop.LAUNCH_ERROR:
         return ("The run never started, for a reason on this machine rather than in your program. Send your "
                 "best program again, changed only if you can see a real fault in it.")
+    if stop is Stop.HARNESS_ERROR:      # our own callback raised (item 51): the program is not at fault
+        return ("The run was stopped by a fault in the harness that reads your output, not by your program. "
+                "Send the same program again, unchanged.")
     if stop is Stop.DISK_CAP:
         return ("The run used too much disk. Generated programs must not write files at all: keep state in "
                 "memory and keep it small.")

@@ -42,6 +42,29 @@ def cmd_sync(args):
         oeisdata.sync(conn, pull=not args.no_pull)
 
 
+def form_bucket(cands, rejected) -> str:
+    """Which `stats --forms` row a sequence counts in, given what `pari.build_candidates` returned.
+
+    A pure function so it can be tested: the inline version of this had a mis-filed bucket twice --
+    once caught by a critic in history item 33, once by item 47's auditor, because `stats --forms` has
+    never had a test and a wrong bucket looks exactly like a real measurement. Order matters: the
+    reasons are not mutually exclusive on a multi-block entry, and the first match wins."""
+    from .strategies import pari
+
+    if cands:
+        return cands[0].form
+    if any("list-printing" in r.reason for r in rejected):
+        return "list printer only (unsupported)"
+    if any("another OEIS entry" in r.reason for r in rejected):
+        return "calls another entry's helper (unrunnable)"
+    if pari.rejected_as_conjectural(rejected):
+        # its own bucket, because "no usable function" would be a lie for most of them: 5 of the 7
+        # flagged parts define a perfectly good a(n) or predicate and are refused for what their
+        # author said about the program, not for its shape (item 47)
+        return "author calls it conjectural (refused)"
+    return "no usable function (unsupported)"
+
+
 def cmd_stats(args):
     from .ingest import oeisdata
     from .ingest.bfile import InconsistentTerms
@@ -61,15 +84,7 @@ def cmd_stats(args):
             if entry is None or not entry.data:
                 continue
             known = KnownTerms(a, entry.offset, entry.data_values, "data")
-            cands, rejected = pari.build_candidates(entry, known)
-            if cands:
-                forms[cands[0].form] += 1
-            elif any("list-printing" in r.reason for r in rejected):
-                forms["list printer only (unsupported)"] += 1
-            elif any("another OEIS entry" in r.reason for r in rejected):
-                forms["calls another entry's helper (unrunnable)"] += 1
-            else:
-                forms["no usable function (unsupported)"] += 1
+            forms[form_bucket(*pari.build_candidates(entry, known))] += 1
         print("PARI-bearing candidates by the best supported program form:")
         for form, c in forms.most_common():
             print(f"  {form:<42} {c:>6}")
@@ -77,10 +92,8 @@ def cmd_stats(args):
 
 def _session_pool(conn, args):
     """The pool `oeisbot run` would pick from with default budgets (`--all` = the `--model` pool)."""
-    from . import select
-    from .attempt import Runnable
-    keep = Runnable(conn, config.DEFAULT_BUDGETS, model=not args.pari)
-    return select.candidates(conn, alpha=args.alpha, require_langs={"pari"} if args.pari else None, keep=keep), keep
+    from .attempt import session_pool
+    return session_pool(conn, config.DEFAULT_BUDGETS, model=not args.pari, alpha=args.alpha)
 
 
 def cmd_queue(args):
@@ -93,6 +106,18 @@ def cmd_queue(args):
     print(f"{'A-number':<9} {'difficulty':>10} {'pick %':>8}  {'programs':<24} name")
     for c in sorted(pool, key=key)[: args.limit]:
         print(f"{c.a_number:<9} {c.difficulty:>10.3f} {100 * c.weight / total_w:>8.4f}  {c.program_langs[:24]:<24} {c.name[:70]}")
+
+
+def cmd_snapshot(args):
+    from .attempt import pool_name, record_snapshot, session_pool
+    conn = db.connect()
+    for model in (False, True) if args.all else (False,):
+        pool, keep = session_pool(conn, config.DEFAULT_BUDGETS, model=model)
+        name = pool_name(model)
+        sid = record_snapshot(conn, pool, model=model, budgets=config.DEFAULT_BUDGETS)
+        kept = len(db.pick_snapshot_headers(conn, name))
+        print(f"{name}: {len(pool)} candidates; " + (f"snapshot #{sid} stored ({kept} kept)" if sid is not None
+              else f"unchanged since the newest of {kept} snapshots, nothing stored"))
 
 
 def cmd_pick(args):
@@ -196,20 +221,40 @@ def cmd_attempts(args):
 
 
 def cmd_dashboard(args):
+    import threading
+
     import uvicorn
-    from .dashboard.app import STATIC, app
+    from .dashboard.app import STATIC, app, warm_live_pool
+
+    def warm():
+        try:
+            warm_live_pool("pari")
+        except Exception as e:      # noqa: BLE001 -- the tab reports its own error when it is opened
+            print(f"Pick map warm-up failed: {type(e).__name__}: {e}")
+
     if not STATIC.is_dir():
         print("dashboard not built: run `npm install` and `npm run build` in dashboard/ (API still available)")
     print(f"OEISBot dashboard (read-only) on http://{args.host}:{args.port}")
+    # build the Pick map's pool now, so the first visit to that tab does not wait the several seconds it takes
+    threading.Thread(target=warm, daemon=True).start()
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+
+
+def review_block(r) -> str:
+    """The three-line identity of a review, the same facts the dashboard inbox shows (item 51):
+    what sequence, what the addition is and where it came from, then status bookkeeping."""
+    n = r["new_terms"] if r["new_terms"] is not None else r["last_new_index"] - r["first_new_index"] + 1
+    return (f"#{r['id']:<4} {r['a_number']}  {r['status']:<10} {r['name'] or '(name not synced)'}\n"
+            f"      {n} new term{'' if n == 1 else 's'}, a({r['first_new_index']})..a({r['last_new_index']}), "
+            f"from {r['program_origin'] or r['strategy']}, attempt #{r['attempt_id']}\n"
+            f"      {r['artifact_path']}  {r['note'] or ''}".rstrip())
 
 
 def cmd_review(args):
     conn = db.connect()
     if args.action == "list":
-        for r in conn.execute("SELECT * FROM reviews ORDER BY id DESC"):
-            print(f"#{r['id']:<4} {r['a_number']} a({r['first_new_index']})..a({r['last_new_index']}) "
-                  f"{r['status']:<10} {r['artifact_path']}  {r['note'] or ''}")
+        for r in db.review_rows(conn):
+            print(review_block(r))
     else:
         db.set_review_status(conn, args.id, args.status, args.note)
         print(f"review #{args.id} -> {args.status}")
@@ -244,6 +289,10 @@ def main(argv: list[str] | None = None) -> int:
             s.add_argument("--seed", type=int)
         s.set_defaults(fn=fn)
 
+    s = sub.add_parser("snapshot", help="record the pick pool for the dashboard's Pick map (a session does this too)")
+    s.add_argument("--all", action="store_true", help="also the `run --model` pool")
+    s.set_defaults(fn=cmd_snapshot)
+
     s = sub.add_parser("attempt", help="attempt specific sequences")
     s.add_argument("a_numbers", nargs="+")
     s.add_argument("--no-recheck", action="store_true", help="skip the oeis.org re-check (testing only)")
@@ -252,7 +301,9 @@ def main(argv: list[str] | None = None) -> int:
     s.set_defaults(fn=cmd_attempt)
 
     s = sub.add_parser("run", help="pick and attempt sequences")
-    s.add_argument("-n", type=int, default=5)
+    s.add_argument("-n", type=int, default=5,
+                   help=f"how many sequences to attempt (capped at {config.DEFAULT_BUDGETS.session_attempt_cap}; "
+                        "the session log says so when it bites)")
     s.add_argument("--alpha", type=float, default=1.0)
     s.add_argument("--seed", type=int)
     s.add_argument("--model", action="store_true", help="also pick sequences without PARI and use the local model")

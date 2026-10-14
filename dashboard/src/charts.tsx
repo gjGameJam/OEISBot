@@ -4,13 +4,14 @@ import { fmtSeconds, useWidth } from "./lib";
 // ----------------------------------------------------------------------------- tooltip
 
 export interface TipRow { label: string; value: string; color?: string }
-interface TipState { x: number; y: number; title: string; rows: TipRow[] }
+export interface TipState { x: number; y: number; title: string; rows: TipRow[] }
 
-function Tooltip({ tip }: { tip: TipState | null }) {
+export function Tooltip({ tip }: { tip: TipState | null }) {
   if (!tip) return null;
   const left = Math.min(tip.x + 14, window.innerWidth - 330);
+  const above = tip.y + 14 + 36 + tip.rows.length * 22 > window.innerHeight && tip.y > window.innerHeight / 2;
   return (
-    <div className="tooltip" style={{ left, top: tip.y + 14 }} role="status">
+    <div className="tooltip" style={above ? { left, bottom: window.innerHeight - tip.y + 14 } : { left, top: tip.y + 14 }} role="status">
       <div className="t-title">{tip.title}</div>
       {tip.rows.map((r) => (
         <div className="t-row" key={r.label}>

@@ -16,6 +16,10 @@ class Status(str, Enum):
     OUTPUT_CAP = "output_cap"
     STOPPED = "stopped"            # the caller asked for a stop (enough terms, wrong term, over prediction...)
     LAUNCH_ERROR = "launch_error"
+    # the caller's own `on_line` or `on_tick` raised (item 51). A harness bug, never the program's doing:
+    # the job is stopped, the pipes are still drained, and the reason names the exception. Deliberately
+    # not any of the program's own failure statuses, so a harness bug cannot retire a program for ever
+    CALLBACK_ERROR = "callback_error"
 
 
 @dataclass

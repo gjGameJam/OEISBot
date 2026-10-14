@@ -66,9 +66,10 @@ def test_assess_converts_work_to_seconds_and_checks_budget():
     pts = pts_from(lambda n: 1000 * 2.0 ** n, range(5, 20))
     a = assess(pts, 20, unit="work", time_budget_s=10_000, mem_budget=4e9)
     assert a.seconds == pytest.approx(1000 * 2 ** 20 * 1e-6, rel=0.05)
-    assert a.feasible and not a.risky
+    assert a.feasible and not a.risky and a.infeasible_on == []
     b = assess(pts, 20, unit="work", time_budget_s=100, mem_budget=4e9)
     assert not b.feasible and any("exceeds remaining budget" in r for r in b.reasons)
+    assert b.infeasible_on == ["time"]                  # item 51: the verdict names the budget it hit
 
 
 def test_assess_memory_projection_blocks_infeasible_jobs():
@@ -77,7 +78,9 @@ def test_assess_memory_projection_blocks_infeasible_jobs():
     assert a.mem_high == pytest.approx(20e6 + 1e3 * 2 ** 20, rel=0.2)
     assert a.feasible
     b = assess(pts, 20, unit="work", time_budget_s=1e9, mem_budget=5e8)
-    assert not b.feasible
+    assert not b.feasible and b.infeasible_on == ["memory"]
+    c = assess(pts, 20, unit="work", time_budget_s=1e-3, mem_budget=5e8)
+    assert not c.feasible and c.infeasible_on == ["time", "memory"]
 
 
 def test_value_dependent_names():
@@ -92,6 +95,41 @@ def test_value_dependent_assessment_is_a_budgeted_search():
     assert a.value_dependent and a.risky
     assert a.feasible               # time projection not trusted; the budget caps it instead
     assert a.kill_after_s(2.0) is None
+
+
+def test_a_stored_prediction_carries_the_fit_statistics_it_was_decided_from():
+    """`trustworthy` is the kill's permission; the `fit_*` fields say what it was made of. The pair that
+    matters is a sound cost fit withdrawn from the kill by the rate drift alone: 0 and 1, not 0 and 0.
+    Without these fields no query can tell that apart from a fit that was never trustworthy."""
+    # a doubling cost with a rate that climbs 2x per term: the cost fit is sound, the drift withdraws it
+    drifting = [Point(n, 1000 * 2.0 ** n, 1000 * 2.0 ** n * 1e-9 * 2.0 ** (n - 5), 1e6, n) for n in range(5, 20)]
+    a = assess(drifting, 20, unit="work", time_budget_s=10_000, mem_budget=4e9)
+    assert a.cost.trustworthy and a.rate_drift > 2.0 and not a.trusted(2.0)
+    stored = Prediction.from_assessment(a, 2.0)
+    assert stored.trustworthy is False and stored.fit_trustworthy is True
+    assert stored.fit_npoints == a.cost.npoints and stored.fit_disagreement == a.cost.disagreement
+    assert stored.fit_climbing == a.cost.climbing and stored.rate_drift == a.rate_drift
+
+    # that series is a perfect exponential, so its disagreement is exactly 1.0 and an assertion against it
+    # would hold for any constant. Pin the number on a series whose newest point disagrees with the rest
+    jump = pts_from(lambda n: 1000 * 2.0 ** n * (50 if n == 19 else 1), range(5, 20))
+    j = assess(jump, 20, unit="work", time_budget_s=10_000, mem_budget=4e9)
+    stored_jump = Prediction.from_assessment(j, 2.0)
+    assert stored_jump.fit_disagreement == j.cost.disagreement > estimate.TRUST_DISAGREEMENT
+    assert stored_jump.fit_trustworthy is False and stored_jump.fit_npoints == j.cost.npoints
+
+    # a climbing (super-exponential) cost: the one fit flag that is not a function of the other two
+    climbing = pts_from(lambda n: float(math.factorial(n)), range(5, 16), secs_per_unit=1e-12)
+    c = Prediction.from_assessment(assess(climbing, 16, unit="work", time_budget_s=10_000, mem_budget=4e9), 2.0)
+    assert c.fit_climbing is True and c.fit_trustworthy is True
+
+    # nothing fitted: every one of the five is NULL together, so "no fit" is never read as "the fit said no"
+    cheap = [Point(n, 0.0, 0.0, 1e6, n) for n in range(5, 10)]
+    none = assess(cheap, 10, unit="work", time_budget_s=10_000, mem_budget=4e9)
+    assert none.cost is None
+    empty = Prediction.from_assessment(none, 2.0)
+    assert (empty.fit_trustworthy, empty.fit_npoints, empty.fit_disagreement,
+            empty.fit_climbing, empty.rate_drift) == (None, None, None, None, None)
 
 
 def test_kill_threshold_needs_a_trustworthy_projection():

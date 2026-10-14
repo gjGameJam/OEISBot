@@ -462,8 +462,16 @@ def run(argv: list[str], *, cwd: Path, limits: Limits, env: dict[str, str] | Non
                     stdout_tail.append(line[:2000])
                     if on_line is not None:
                         t = time.perf_counter() - t_start[0]
-                        with cb_lock:
-                            reason = on_line(line, t)
+                        # This thread has no other exception handler: a raise here would end it silently
+                        # and the harness would wait out the whole budget seeing nothing (item 46 found the
+                        # hazard, item 51 closed it). The job is stopped instead and the reason says why;
+                        # `stop.event` is set, so the loop above keeps draining
+                        try:
+                            with cb_lock:
+                                reason = on_line(line, t)
+                        except Exception as e:      # noqa: BLE001 -- any harness bug, reported not swallowed
+                            stop.request(Status.CALLBACK_ERROR, f"on_line raised {type(e).__name__}: {e}")
+                            continue
                         if reason:
                             stop.request(Status.STOPPED, reason)
 
@@ -531,8 +539,14 @@ def run(argv: list[str], *, cwd: Path, limits: Limits, env: dict[str, str] | Non
                     continue
             if on_tick is not None and elapsed >= next_tick:
                 next_tick = elapsed + tick_s
-                with cb_lock:
-                    reason = on_tick(elapsed)
+                # same guard as `on_line`: raised here it would escape `run` with the job still alive
+                # (kill-on-close ends it only when the handle goes), and crash the pick loop above
+                try:
+                    with cb_lock:
+                        reason = on_tick(elapsed)
+                except Exception as e:      # noqa: BLE001
+                    stop.request(Status.CALLBACK_ERROR, f"on_tick raised {type(e).__name__}: {e}")
+                    continue
                 if reason:
                     stop.request(Status.STOPPED, reason)
 

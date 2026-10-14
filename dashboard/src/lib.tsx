@@ -1,17 +1,22 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
-/** Polls a read-only API path. Keeps the previous data while refetching (no flash). */
-export function useApi<T>(path: string, refreshMs = 15000, asText = false) {
+/** Polls a read-only API path: fetches `path`, then again every `refreshMs`, keeping the previous data while it
+ *  refetches (no flash). `pollPath`, when given, is what the repeats ask for, so that a request which must not
+ *  be repeated (a forced rebuild) is made once. An error stays until the next request for a different `path`
+ *  starts or any request succeeds. */
+export function useApi<T>(path: string, refreshMs = 15000, asText = false, pollPath = path) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     let alive = true;
     let timer = 0;
+    let target = path;
+    setError(null);
     const load = async () => {
       setLoading(true);
       try {
-        const res = await fetch(path);
+        const res = await fetch(target);
         if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
         const json = (asText ? await res.text() : await res.json()) as T;
         if (alive) {
@@ -23,6 +28,7 @@ export function useApi<T>(path: string, refreshMs = 15000, asText = false) {
       } finally {
         if (alive) {
           setLoading(false);
+          target = pollPath;
           timer = window.setTimeout(load, refreshMs);
         }
       }
@@ -32,7 +38,7 @@ export function useApi<T>(path: string, refreshMs = 15000, asText = false) {
       alive = false;
       window.clearTimeout(timer);
     };
-  }, [path, refreshMs, asText]);
+  }, [path, pollPath, refreshMs, asText]);
   return { data, error, loading };
 }
 

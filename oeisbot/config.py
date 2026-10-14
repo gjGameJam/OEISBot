@@ -55,3 +55,17 @@ class Budgets:
 
 
 DEFAULT_BUDGETS = Budgets()
+
+# Safety factor on the searched-bound check (verify.Harness._bound_exhausted): the extension is skipped
+# only when the published bound is more than this many times further than the measured rate could reach.
+# It is NOT a Budgets field on purpose -- attempt._checked compares Budgets field sets in both directions,
+# so adding one invalidates every saved win in data/pending/ (CLAUDE.md). It is a safety constant, not a
+# per-run budget. At 10x the check reaches 148 of the 179 pool candidates it could at 1x: cheap insurance,
+# and the rate it multiplies is measured over a window that is sometimes well under a second.
+SEARCHED_BOUND_MARGIN = 10.0
+
+# How many pick-chance snapshots (db.record_pick_snapshot) are kept per pool; older ones are pruned in the
+# same transaction that writes a new one. The Pick map compares the live pool with ONE earlier snapshot, so
+# this is history for looking back, not something the view needs more of. The 'model' pool holds ~27k rows
+# a snapshot against ~3.4k for 'pari', hence the smaller number.
+PICK_SNAPSHOTS_KEPT = {"pari": 30, "model": 10}

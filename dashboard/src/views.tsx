@@ -4,7 +4,7 @@ import {
   DataTable, OeisLink, Tile, fmtBytes, fmtInt, fmtPct, fmtSeconds, fmtTime, useApi, type Column,
 } from "./lib";
 
-function Status({ error, loading, hasData }: { error: string | null; loading: boolean; hasData: boolean }) {
+export function Status({ error, loading, hasData }: { error: string | null; loading: boolean; hasData: boolean }) {
   if (error) return <p className="error">Could not load: {error}</p>;
   if (loading && !hasData) return <p className="muted">Loading…</p>;
   return null;
@@ -227,9 +227,9 @@ export function AttemptsView() {
 
 interface ReviewRow {
   id: number; a_number: string; attempt_id: number; artifact_path: string; first_new_index: number; last_new_index: number;
-  status: string; note: string | null; created_at: string; updated_at: string; strategy: string; new_terms: number;
-  runtime_s: number | null; known_terms: number; known_source: string; name: string | null; files: string[];
-  weak_verification: boolean; rewrites: string[];
+  status: string; note: string | null; created_at: string; updated_at: string; strategy: string; program_origin: string | null;
+  new_terms: number; runtime_s: number | null; known_terms: number; known_source: string; name: string | null; files: string[];
+  weak_verification: boolean; rewrites: string[]; below_bound: { bound: string; quote: string; indices: number[] } | null;
 }
 
 function FileViewer({ reviewId, name }: { reviewId: number; name: string }) {
@@ -259,15 +259,22 @@ export function ReviewsView() {
         {rows.length === 0 && <div className="empty">No successes yet.</div>}
         {rows.map((r) => (
           <div className="review" key={r.id}>
+            {/* The same three facts, in the same order, as `oeisbot review list` (cli.review_block): the
+                sequence, the addition and where it came from, then the bookkeeping. Keep them in step. */}
             <div className="review-head">
               <span className="pill">{r.status}</span>
               <OeisLink a={r.a_number} />
-              <b>a({r.first_new_index})..a({r.last_new_index})</b>
-              <span className="secondary">{r.new_terms} new · {r.strategy} · {fmtSeconds(r.runtime_s)} · {fmtTime(r.created_at)}</span>
+              {r.name && <span className="secondary">{r.name}</span>}
               <span className="muted mono">review #{r.id}</span>
             </div>
-            {r.name && <div className="secondary" style={{ marginTop: 4 }}>{r.name}</div>}
+            <div style={{ marginTop: 4 }}>
+              <b>{r.new_terms} new term{r.new_terms === 1 ? "" : "s"}, a({r.first_new_index})..a({r.last_new_index})</b>
+              {", from "}{r.program_origin ?? r.strategy}{", attempt #"}{r.attempt_id}
+              <span className="secondary">{" · "}{r.strategy} · {fmtSeconds(r.runtime_s)} · {fmtTime(r.created_at)}</span>
+            </div>
             {r.weak_verification && <div className="warn">Weak verification: only {r.known_terms} known terms to check against.</div>}
+            {r.below_bound && <div className="warn">A term lands below a published bound ({r.below_bound.bound}): a({r.below_bound.indices.join("), a(")}).
+              The entry says "{r.below_bound.quote}". Either that search or this program is wrong; resolve which before submitting.</div>}
             {r.strategy === "python:model" && <div className="warn">AI-generated program. Do not submit a program you do not fully understand.</div>}
             {/* "the entry's own program" is codegen.ENTRY_PROGRAM_NOTE and "list contract" codegen.MEMBERS_NOTE;
                 keep them in step */}

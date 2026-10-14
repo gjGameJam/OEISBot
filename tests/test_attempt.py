@@ -5,12 +5,13 @@ import json
 import re
 import shutil
 import sqlite3
+import subprocess
 import urllib.error
 from dataclasses import replace
 
 import pytest
 
-from oeisbot import attempt, config, db, sandbox, select
+from oeisbot import attempt, config, db, sandbox, select, setup_tools
 from oeisbot.config import Budgets
 from oeisbot.ingest import bfile, oeisdata
 from oeisbot.ingest.seqfile import parse
@@ -23,6 +24,13 @@ pytestmark = [
 
 PRIMES = "2,3,5,7,11,13,17,19,23,29,31,37,41,43,47"
 FAST = Budgets(verify_wall_s=30, extend_wall_s=5, max_new_terms=5)
+
+
+def budget_extra(budgets: Budgets = FAST) -> str:
+    """The `extra` a real run records for the dead-end checks: the budgets it asked for, and the memory
+    cap it actually got (here the full budget, i.e. a machine that was not short of RAM)."""
+    return json.dumps({"extend_wall_s": budgets.extend_wall_s, "mem_bytes": budgets.mem_bytes,
+                       "mem_cap_bytes": budgets.mem_bytes})
 
 
 def make_entry(program: str | list[str], data: str = PRIMES, keywords: str = "nonn,more", comments=(),
@@ -64,10 +72,15 @@ def test_success_writes_artifact_and_review(env):
     assert rep.artifact, rep.lines
     extra = json.loads(conn.execute("SELECT extra FROM attempts WHERE id = ?", (rep.attempt_ids[-1],)).fetchone()[0])
     assert (extra["extend_wall_s"], extra["mem_bytes"]) == (FAST.extend_wall_s, FAST.mem_bytes)
+    # and what the run actually got: the harness lowers the cap to free RAM - reserve, so it is never
+    # more than the budget, and it is what keys an infeasible dead end (db.is_dead_end)
+    assert 0 < extra["mem_cap_bytes"] <= FAST.mem_bytes
     assert extra["recheck"] == "live entry ends at a(15)" and not attempt.pending_path(rep.attempt_ids[-1]).exists()
     folder = tmp / "artifacts" / "A999999" / f"attempt-{rep.attempt_ids[-1]}"
     bf = (folder / "b999999.txt").read_text().splitlines()
-    assert bf[0] == "1 2" and bf[14] == "15 47" and bf[15:] == ["16 53", "17 59", "18 61", "19 67", "20 71"]
+    # the trailing "" is the blank line SubmitB.html requires, written by artifact.write; it is spelled
+    # out rather than filtered so this asserts on the real uploaded shape
+    assert bf[0] == "1 2" and bf[14] == "15 47" and bf[15:] == ["16 53", "17 59", "18 61", "19 67", "20 71", ""]
     readme = (folder / "README.md").read_text()
     assert "a(16)..a(20)" in readme and "Weak verification" not in readme
     assert {p.name for p in folder.iterdir()} >= {"README.md", "program.gp", "executed.gp", "verification.md",
@@ -77,6 +90,32 @@ def test_success_writes_artifact_and_review(env):
 
     again = attempt.attempt_sequence(conn, "A999999", FAST, log=lambda m: None)
     assert again.skipped == "open_review"
+
+
+def test_a_predicate_run_records_where_its_scan_reached(env):
+    """The caller gate for progress heartbeats. A predicate run must come back with a frontier in its
+    `extra`; without this the harness could stop being given `ScanTracking` and every heartbeat would be
+    silently dropped, which looks exactly like a driver that never emitted one."""
+    conn, state, _ = env
+    # the scan has to cross a block for a heartbeat to exist at all: the driver reports after each block,
+    # so a sequence whose terms are all small finishes inside the first one and records no frontier
+    state["program"] = "isok(k) = k % 20000 == 0"
+    state["data"] = "20000,40000,60000"
+    rep = attempt.attempt_sequence(conn, "A999999", FAST, log=lambda m: None)
+    extra = json.loads(conn.execute("SELECT extra FROM attempts WHERE id = ?", (rep.attempt_ids[-1],)).fetchone()[0])
+    assert extra["form"] == "predicate"
+    assert int(extra["scan_reached"]) > 0 and extra["heartbeats"] > 0
+    assert "heartbeats_ignored" not in extra          # written only when something was actually dropped
+
+
+def test_a_non_predicate_run_records_no_frontier(env):
+    """The other half of the gate: for the a(n) and print-loop drivers the loop variable need not be the
+    term value at all, so there is no frontier to record and none may appear."""
+    conn, state, _ = env
+    state["program"] = "a(n) = prime(n)"
+    rep = attempt.attempt_sequence(conn, "A999999", FAST, log=lambda m: None)
+    extra = json.loads(conn.execute("SELECT extra FROM attempts WHERE id = ?", (rep.attempt_ids[-1],)).fetchone()[0])
+    assert extra["form"] == "a(n)" and "scan_reached" not in extra and "heartbeats" not in extra
 
 
 def test_superseded_run_records_no_artifact(env):
@@ -142,7 +181,7 @@ def test_infeasible_dead_end_runs_again_with_a_bigger_budget(env):
                             new_terms, outcome, failure_mode, extra)
                         VALUES ('A999999', ?, ?, ?, 1, ?, 0, 'verified', 'infeasible', ?)""",
                      (program.strategy, program.sha, db.now(), known.count,
-                      json.dumps({"extend_wall_s": FAST.extend_wall_s, "mem_bytes": FAST.mem_bytes})))
+                      budget_extra()))
 
     assert attempt.attempt_sequence(conn, "A999999", FAST, log=lambda m: None).skipped == "all_programs_dead_ends"
     bigger = replace(FAST, extend_wall_s=FAST.extend_wall_s * 2)
@@ -202,7 +241,7 @@ def test_a_used_up_extension_lets_the_entrys_next_program_run(env, monkeypatch):
     # a later attempt at that budget skips the used-up program and runs the next one, which wins
     again = attempt.attempt_sequence(conn, "A999999", SEARCH_BRIEFLY, log=lambda m: None)
     lines = "\n".join(again.lines)
-    assert "A999999 %o (PARI) block 2: verified before and found nothing new in no less time" in lines
+    assert "A999999 %o (PARI) block 2 (a(n)): verified before and found nothing new in no less time" in lines
     assert "running pari:a(n) from A999999 %o (PARI) block 1" in lines
     assert rows(conn) == [("pari:a(n)", "verified", "extend_budget"), ("pari:a(n)", "extended", "max_new_terms")]
     assert again.artifact, again.lines
@@ -221,7 +260,7 @@ def test_a_budget_dead_end_does_not_hold_back_the_others(env, failure_mode):
                             new_terms, runtime_s, cpu_s, outcome, failure_mode, detail, extra)
                         VALUES ('A999999', ?, ?, ?, 1, ?, 0, 5.5, 5.4, 'verified', ?, 'nothing new', ?)""",
                      (dead.strategy, dead.sha, db.now(), known.count, failure_mode,
-                      json.dumps({"extend_wall_s": FAST.extend_wall_s, "mem_bytes": FAST.mem_bytes})))
+                      budget_extra()))
     rep = attempt.attempt_sequence(conn, "A999999", FAST, log=lambda m: None)
     # the others run in order after the dead end: block 2 fails, block 1 wins
     origins = [r[0] for r in conn.execute("SELECT program_origin FROM attempts WHERE id > 1 ORDER BY id")]
@@ -242,7 +281,7 @@ def test_a_program_broken_after_verifying_does_not_hold_back_the_others(env):
                         VALUES ('A999999', ?, ?, ?, 1, ?, 0, 'verified', 'bad_index', 'program emitted n=17')""",
                      (broken.strategy, broken.sha, db.now(), known.count))
     rep = attempt.attempt_sequence(conn, "A999999", FAST, log=lambda m: None)
-    assert "A999999 %o (PARI) block 2: failed the same way before (attempt #1: bad_index)" in rep.lines
+    assert "A999999 %o (PARI) block 2 (a(n)): failed the same way before (attempt #1: bad_index)" in rep.lines
     assert rep.artifact, rep.lines                                 # block 1 ran and won
 
 
@@ -344,6 +383,28 @@ def test_interrupted_recheck_is_kept_and_resolved_later(env):
     assert extra["attempt_call"] == call and extra["recheck"] == "live entry ends at a(15)"   # the key survives
 
 
+def test_a_win_for_a_sequence_with_a_rejected_review_is_kept_but_opens_no_review(env):
+    """Item 51, end to end: the run is not gated by a `rejected` review (item 48), the win is re-checked
+    and recorded with its artifact, and the only thing withheld is the inbox row -- said aloud."""
+    conn, state, tmp = env
+    earlier = db.record_skip(conn, "A999999", "pari:a(n)", "x")      # any attempt row to hang the old review on
+    old = db.add_review(conn, "A999999", earlier, "artifacts/old", 16, 20)
+    db.set_review_status(conn, old, "rejected", "conjectural")
+    state["recheck"] = (True, "live entry ends at a(15)")
+    lines: list[str] = []
+    rep = attempt.attempt_sequence(conn, "A999999", FAST, log=lines.append)
+    attempt_id = rep.attempt_ids[-1]
+    row = conn.execute("SELECT outcome, artifact_path, extra FROM attempts WHERE id = ?", (attempt_id,)).fetchone()
+    assert row["outcome"] == "extended" and row["artifact_path"]
+    assert json.loads(row["extra"])["review_refused"]["prior_review"] == old
+    assert db.open_review(conn, "A999999") is None
+    assert conn.execute("SELECT COUNT(*) FROM reviews").fetchone()[0] == 1
+    assert any("review refused" in line and f"#{old}" in line for line in lines)
+    folder = tmp / "artifacts" / "A999999" / f"attempt-{attempt_id}"
+    assert (folder / "README.md").exists() and not (folder / ".incomplete").exists()
+    assert not attempt.pending_path(attempt_id).exists()
+
+
 def test_non_network_recheck_error_is_not_retried(env):
     conn, state, _ = env
     state["recheck"] = ValueError("max() arg is an empty sequence")
@@ -351,6 +412,83 @@ def test_non_network_recheck_error_is_not_retried(env):
     assert state["recheck_calls"] == 1 and rep.artifact is None
     extra = json.loads(conn.execute("SELECT extra FROM attempts WHERE id = ?", (rep.attempt_ids[-1],)).fetchone()[0])
     assert extra["recheck"] == "not done: ValueError: max() arg is an empty sequence"
+
+
+def test_a_win_that_keeps_failing_the_same_way_says_how_often(env):
+    """Flagged, never dropped: a pending win is retried for ever, because giving up on one is giving up
+    on new terms and a permanent-looking error can be a long outage. Only the silence is fixed."""
+    conn, state, _ = env
+    attempt_id = pending_win(conn, state)          # the attempt's own three tries: failure 1
+    def extra():
+        return json.loads(conn.execute("SELECT extra FROM attempts WHERE id = ?", (attempt_id,)).fetchone()[0])
+    assert extra()["recheck_failures"] == 1
+    lines: list[str] = []
+    for expected in (2, 3):
+        assert attempt.retry_pending_rechecks(conn, log=lines.append) == 1
+        assert extra()["recheck_failures"] == expected
+        assert f"the same way {expected} times now" in lines[-1]
+
+    # a different failure starts the count again, and the win is still pending and still blocked
+    state["recheck"] = ValueError("could not read the live entry")
+    assert attempt.retry_pending_rechecks(conn, log=lines.append) == 1
+    assert extra()["recheck_failures"] == 1 and "the same way" not in lines[-1]
+    assert db.pending_recheck(conn, "A999999")["id"] == attempt_id
+    assert [c.a_number for c in select.candidates(conn)] == []
+
+
+def stored_failures(conn, attempt_id: int) -> int:
+    return json.loads(conn.execute("SELECT extra FROM attempts WHERE id = ?",
+                                   (attempt_id,)).fetchone()[0])["recheck_failures"]
+
+
+def test_a_hand_edited_extra_cannot_break_a_session(env):
+    """`extra` is JSON a human may have edited by hand (operations.md says how), so it can be any shape
+    at all, and the failure counter reads it inside `retry_pending_rechecks`'s own failure handler. One
+    bad row must not crash `oeisbot run` before it picks anything (invariant 7)."""
+    conn, state, _ = env
+    attempt_id = pending_win(conn, state)
+    note = json.loads(conn.execute("SELECT extra FROM attempts WHERE id = ?",
+                                   (attempt_id,)).fetchone()[0])["recheck"]
+    # each shape is unreadable in a different way; the last one parses but cannot be counted on
+    unreadable = ("[]", '"just a string"', "42", "not json at all",
+                  json.dumps({"recheck": note, "recheck_failures": "many"}))
+    for shape in (*unreadable, None, "{}"):
+        with conn:
+            conn.execute("UPDATE attempts SET extra = ? WHERE id = ?", (shape, attempt_id))
+        lines: list[str] = []
+        assert attempt.retry_pending_rechecks(conn, log=lines.append) == 1, shape
+        assert db.pending_recheck(conn, "A999999")["id"] == attempt_id, shape
+        # an unreadable one says so and starts the count again rather than guessing
+        said = any("could not read the earlier re-check failures" in line for line in lines)
+        assert said == (shape in unreadable), shape
+        if shape == unreadable[-1]:
+            # the only unreadable shape that is still a JSON object, so the restarted count can be
+            # stored at all: it restarts at 1, not at 0
+            assert stored_failures(conn, attempt_id) == 1
+
+    assert stored_failures(conn, attempt_id) == 1      # and a readable `{}` counts its first failure
+
+    # An `extra` that is not a JSON object holds neither the count nor the re-check note: `json_set`
+    # returns it unchanged, so the rest of it (`attempt_call`, `log`, `program`) is preserved rather than
+    # blanked. That is older behaviour in `db.set_recheck_result`, left alone deliberately: the same
+    # statement is what `db.record_win` uses, so "repairing" a malformed `extra` here would mean
+    # rewriting a row's `extra` on the winning path. The outcome column carries the win either way.
+
+
+def test_the_failure_count_cannot_cost_a_win(env, monkeypatch):
+    """Invariant 7: `retry_pending_rechecks` never raises for a single attempt. The counter is written
+    inside the failure handler, so its own failure must not escape."""
+    conn, state, _ = env
+    attempt_id = pending_win(conn, state)
+
+    def locked(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(db, "set_recheck_result", locked)
+    lines: list[str] = []
+    assert attempt.retry_pending_rechecks(conn, log=lines.append) == 1
+    assert any("could not record the re-check failure" in line for line in lines)
+    assert db.pending_recheck(conn, "A999999")["id"] == attempt_id
 
 
 def test_pending_retry_survives_broken_state_and_repeats_safely(env, monkeypatch):
@@ -362,9 +500,9 @@ def test_pending_retry_survives_broken_state_and_repeats_safely(env, monkeypatch
     lines: list[str] = []
 
     # an unloadable saved result: logged, still pending, and a session still runs
-    attempt.pending_path(attempt_id).write_bytes(b"not a pickle")
+    attempt.pending_path(attempt_id).write_bytes(b"not json")
     assert attempt.retry_pending_rechecks(conn, log=lines.append) == 1
-    assert "UnpicklingError" in lines[-1]
+    assert "JSONDecodeError" in lines[-1]
     attempt.run_session(conn, 1, FAST, a_numbers=["A999999"], log=lambda m: None)
     assert db.pending_recheck(conn, "A999999")["id"] == attempt_id
 
@@ -443,7 +581,7 @@ def test_out_of_reach_predicate_is_not_run(env, monkeypatch):
     monkeypatch.setattr(attempt, "run_attempt", lambda *a, **k: pytest.fail("an out-of-reach program was run"))
     rep = attempt.attempt_sequence(conn, "A999999", FAST, log=lambda m: None)
     assert rep.skipped == "verify_out_of_reach"
-    assert any(line.startswith("A999999 %o (PARI) block 1: not run: reaching a(3)") for line in rep.lines)
+    assert any(line.startswith("A999999 %o (PARI) block 1 (predicate): not run: reaching a(3)") for line in rep.lines)
     assert rows(conn) == [("pari", "skipped", "verify_out_of_reach")]
     # the same program under a budget long enough for it is runnable again
     entry = make_entry(FAR_PREDICATE, FAR_DATA)
@@ -518,7 +656,7 @@ def test_the_failure_penalty_counts_an_attempt_once_however_many_programs_it_ran
 
 
 @pytest.mark.parametrize("failure_mode, detail, logged", [
-    ("infeasible", "needs 9 days", "verified before and judged the next term infeasible with no less time and memory"),
+    ("infeasible", "needs 9 days", "verified before and judged the next term infeasible with no more of the budget it ran out of"),
     ("extend_budget", "extension budget 5 s used", "verified before and found nothing new in no less time"),
 ])
 def test_model_is_told_about_a_verified_program_from_an_earlier_attempt(env, failure_mode, detail, logged):
@@ -531,7 +669,7 @@ def test_model_is_told_about_a_verified_program_from_an_earlier_attempt(env, fai
                                       known_terms, new_terms, runtime_s, cpu_s, outcome, failure_mode, detail, extra)
                                   VALUES ('A999999', ?, ?, ?, 1, ?, 0, 5.5, 5.4, 'verified', ?, ?, ?)""",
                                (program.strategy, program.sha, db.now(), known.count, failure_mode, detail,
-                                json.dumps({"extend_wall_s": FAST.extend_wall_s, "mem_bytes": FAST.mem_bytes}))).lastrowid
+                                budget_extra())).lastrowid
     model = FakeModel(['{"approach": "skip", "reason": "hopeless"}'])
     rep = attempt.attempt_sequence(conn, "A999999", FAST, log=lambda m: None, model=model)
     prompt = model.calls[0][-1]["content"]
@@ -641,6 +779,10 @@ def pool(conn, model=False, budgets=FAST):
     ('lista(nn) = for(n=1, nn, if(isprime(n), print1(n, ", ")))', PRIMES, "no_supported_program"),
     # a helper that lives in another OEIS entry: gp would run this, error and exit 0
     ("a(n) = A007947(n)", PRIMES, "no_supported_program"),
+    # NOT the conjectural case: item 48 made it the one kind that is left out of the --model pool too,
+    # so it cannot share this test's "with the model on, the model can still take it" assertion, which
+    # is the point of this parametrize. It has its own tests above --
+    # test_a_conjectural_sequence_is_left_out_of_the_model_pool_too and the two beside it.
     (FAR_PREDICATE, FAR_DATA, "verify_out_of_reach"),
 ])
 def test_selection_leaves_out_what_could_only_be_skipped(env, program, data, reason):
@@ -653,6 +795,58 @@ def test_selection_leaves_out_what_could_only_be_skipped(env, program, data, rea
     assert pool(conn, model=True)[0] == ["A999999"]
     # and attempting it anyway records exactly the reason the check predicted
     assert attempt.attempt_sequence(conn, "A999999", FAST, log=lambda m: None).skipped == reason
+
+
+def test_a_conjectural_sequence_is_left_out_of_the_model_pool_too(env):
+    """The PARI refusal alone does not cover the model: `_why_not` keeps any PARI-bearing sequence for
+    the model whatever the PARI verdict, and the model is shown the entry's own %C/%F, which state the
+    conjecture. A Python re-derivation of a conjectured closed form reproduces every known term by
+    construction, so verification cannot tell it from a real result (item 48)."""
+    conn, state, _ = env
+    state["program"] = "a(n) = prime(n) \\\\ conjectured to be exact"
+    add_row(conn)
+    assert pool(conn)[0] == [] and pool(conn, model=True)[0] == []
+    assert pool(conn, model=True)[1].left_out == {"conjectural_program": 1}
+    # the control: the same program without the disclaimer is in both pools
+    state["program"] = "a(n) = prime(n) + (n > 99)"      # runnable, just not a winner
+    assert pool(conn)[0] == ["A999999"] and pool(conn, model=True)[0] == ["A999999"]
+
+
+def test_a_targeted_attempt_still_runs_the_model_on_a_conjectural_sequence(env):
+    """Only the random draw is blocked. `attempt_sequence` deliberately has no such gate, so a
+    deliberate `oeisbot attempt A... --model` still runs -- which is what made suppressing the draw an
+    acceptable trade rather than a loss. If someone adds the gate there, this fails."""
+    conn, state, _ = env
+    state["program"] = "a(n) = prime(n) \\\\ conjectured to be exact"
+    add_row(conn)
+    model = FakeModel([PLAN, '{"form": "function"}', PRIMES_PY])
+    rep = attempt.attempt_sequence(conn, "A999999", FAST, log=lambda m: None, model=model)
+    assert rep.skipped is None and model.calls, rep.lines
+    assert any(r["strategy"] == "python:model" for r in
+               conn.execute("SELECT strategy FROM attempts WHERE a_number = 'A999999'"))
+
+
+def test_a_clean_block_beside_a_conjectural_one_keeps_the_sequence_in_both_pools(env):
+    """The suppression is for an entry whose PARI comes to nothing *because* of a disclaimer. A clean
+    block that still builds a candidate means the PARI stage has real work, so nothing is suppressed."""
+    conn, state, _ = env
+    state["program"] = ["a(n) = 2*n \\\\ conjectured to be exact", "a(n) = prime(n) + (n > 99)"]
+    add_row(conn)
+    assert pool(conn)[0] == ["A999999"] and pool(conn, model=True)[0] == ["A999999"]
+
+
+def test_a_conjectural_program_records_why_in_the_skip_detail(env):
+    """`Rejected.reason` -> `PariPlan.nothing_to_run()` detail -> the `detail` column, pinned end to end.
+    Without this the reason string could say anything (or nothing) and only a unit test on
+    `build_candidates` would notice. Also pins that the detail carries no value out of the comment."""
+    conn, state, _ = env
+    state["program"] = "a(n) = prime(n) \\\\ conjectured that a(20) = 71 exactly"
+    state["data"] = PRIMES
+    add_row(conn)
+    assert attempt.attempt_sequence(conn, "A999999", FAST, log=lambda m: None).skipped == "no_supported_program"
+    row = conn.execute("SELECT detail FROM attempts WHERE a_number = 'A999999' ORDER BY id DESC").fetchone()
+    assert "a comment calls it conjectured" in row["detail"]
+    assert "71" not in row["detail"] and "a(20)" not in row["detail"]
 
 
 def test_selection_leaves_out_dead_ends_until_a_bigger_budget(env):
@@ -738,6 +932,72 @@ def test_session_checks_the_pool_with_its_own_budgets(env, monkeypatch):
     assert rows(conn) == [] and "1 verify_out_of_reach" in lines[0]
 
 
+def test_a_session_records_which_gp_produced_its_rows(env, monkeypatch):
+    """History item 43. `meta` alone cannot answer it: it is overwritten the next time gp changes, so
+    after an upgrade it describes no historical row at all. The note is written once and never touched
+    again -- `db.finish_session` updates the counters and leaves `note` alone."""
+    conn, state, _ = env
+    state["program"] = "lista(nn) = 0"                      # nothing to run: the session is the subject
+    add_row(conn)
+    monkeypatch.setattr(setup_tools, "runtime_versions",
+                        lambda: {"gp_version": "GP/PARI CALCULATOR Version 9.9.9 (released) "
+                                               "amd64 (x86-64/GMP-1.2.3 kernel)",
+                                 "sandbox_python_version": "Python 9.9.9"})
+    session_id = attempt.run_session(conn, 1, FAST, seed=1, log=lambda m: None)
+
+    note = conn.execute("SELECT note FROM sessions WHERE id = ?", (session_id,)).fetchone()["note"]
+    assert "gp=9.9.9/GMP-1.2.3" in note
+    assert "count=1" in note and "seed=1" in note          # the existing note is kept, not replaced
+    assert len(note) < 120                                 # the dashboard renders this as one column
+    # the full banner goes to `meta`, where the note's short token cannot carry it
+    assert db.get_meta(conn, "gp_version").endswith("(x86-64/GMP-1.2.3 kernel)")
+    assert db.get_meta(conn, "sandbox_python_version") == "Python 9.9.9"
+
+
+def test_the_version_probe_runs_before_the_session_row_exists(env, monkeypatch):
+    """The ordering is the whole reason `runtime_versions` may never raise: it runs before
+    `db.start_session` and before `run_session`'s try/finally, so a raise there would kill `oeisbot run`
+    without even leaving a session row. The two tests either side of this one check post-conditions
+    only, and still pass if the block is moved inside the try -- so the order itself is pinned here."""
+    conn, state, _ = env
+    state["program"] = "lista(nn) = 0"
+    add_row(conn)
+    seen: list[int] = []
+    monkeypatch.setattr(setup_tools, "runtime_versions", lambda: (
+        seen.append(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]),
+        {"gp_version": "GP/PARI Version 1.0", "sandbox_python_version": "Python 1.0"})[1])
+    attempt.run_session(conn, 1, FAST, seed=1, log=lambda m: None)
+    assert seen == [0], "the probe ran after the session row was inserted"
+
+
+def test_a_session_still_runs_when_the_version_probe_fails(env, monkeypatch):
+    """`run_session` builds its note *before* its try/finally, so a raising probe would kill `oeisbot
+    run` having done nothing -- not even a session row to show for it."""
+    conn, state, _ = env
+    state["program"] = "lista(nn) = 0"
+    add_row(conn)
+    monkeypatch.setattr(setup_tools, "subprocess", _NoSubprocess())
+    lines: list[str] = []
+    session_id = attempt.run_session(conn, 1, FAST, seed=1, log=lines.append)
+
+    note = conn.execute("SELECT note FROM sessions WHERE id = ?", (session_id,)).fetchone()["note"]
+    assert "gp=unknown" in note and "count=1" in note
+    assert db.get_meta(conn, "gp_version") == setup_tools.UNKNOWN_VERSION
+    assert conn.execute("SELECT finished_at FROM sessions WHERE id = ?",
+                        (session_id,)).fetchone()["finished_at"] is not None
+
+
+class _NoSubprocess:
+    """Stands in for the `subprocess` module with a `run` that always fails, keeping the names
+    `_probe_version` needs from it (`DEVNULL`, and `TimeoutExpired` for the raise)."""
+    DEVNULL = subprocess.DEVNULL
+    TimeoutExpired = subprocess.TimeoutExpired
+
+    @staticmethod
+    def run(*args, **kwargs):
+        raise OSError("no runtimes on this machine")
+
+
 def test_queue_and_pick_show_the_session_pool(env, monkeypatch, capsys):
     from oeisbot import cli
     conn, state, _ = env
@@ -753,6 +1013,51 @@ def test_queue_and_pick_show_the_session_pool(env, monkeypatch, capsys):
     assert "A999999" not in capsys.readouterr().out
 
 
+def test_a_run_short_of_ram_records_the_cap_it_was_judged_against(env, monkeypatch):
+    """`mem_cap_bytes` is the cap the feasibility check used, not the budget the run asked for.
+
+    The harness and the sandbox each lower the budget to free RAM minus the reserve, reading free RAM a
+    moment apart, so the two can differ; only the harness's is the number `estimate.assess` judged
+    against, and only that one belongs with an `infeasible` verdict. The two are given different views
+    here so the recorded value can only come from one of them."""
+    from oeisbot.sandbox import windows
+    conn, _, _ = env
+    for_harness = FAST.reserve_phys_bytes + config.GiB            # harness cap: 1 GiB
+    for_sandbox = FAST.reserve_phys_bytes + 5 * config.GiB        # sandbox cap: 5 GiB
+    monkeypatch.setattr(sandbox, "avail_phys_bytes", lambda: for_harness)   # what verify.Harness reads
+    monkeypatch.setattr(windows, "avail_phys_bytes", lambda: for_sandbox)   # what the sandbox reads
+    rep = attempt.attempt_sequence(conn, "A999999", FAST, log=lambda m: None)
+    assert rep.artifact, rep.lines
+    extra = json.loads(conn.execute("SELECT extra FROM attempts WHERE id = ?", (rep.attempt_ids[-1],)).fetchone()[0])
+    assert extra["mem_bytes"] == FAST.mem_bytes           # asked for the whole budget
+    assert extra["mem_cap_bytes"] == config.GiB           # judged against what the harness saw free
+
+
+def test_a_session_says_when_n_is_capped(env, monkeypatch):
+    conn, state, _ = env
+    entries = {"A999999": make_entry("a(n) = prime(n)"),
+               "A999997": make_entry("a(n) = prime(n)", a_number="A999997")}
+    monkeypatch.setattr(oeisdata, "load_entry", lambda a: entries[a])
+    add_row(conn, "A999999")
+    add_row(conn, "A999997")
+    capped = replace(FAST, session_attempt_cap=1)
+    lines: list[str] = []
+
+    attempt.run_session(conn, 5, capped, seed=1, log=lines.append)
+    assert "asked for 5, capped at 1 (budgets.session_attempt_cap)" in lines[0]
+    assert len({r["a_number"] for r in conn.execute("SELECT a_number FROM attempts")}) == 1
+
+    # the cap truncates an explicit list too, and says so
+    lines.clear()
+    attempt.run_session(conn, 5, capped, a_numbers=["A999999", "A999997"], log=lines.append)
+    assert "asked for 5, capped at 1" in lines[0]
+
+    # within the cap it stays quiet
+    lines.clear()
+    attempt.run_session(conn, 1, capped, seed=1, log=lines.append)
+    assert not any("capped" in line for line in lines)
+
+
 def test_session_picks_only_runnable_sequences(env, monkeypatch):
     conn, state, _ = env
     entries = {"A999999": make_entry("a(n) = prime(n)"),
@@ -764,3 +1069,173 @@ def test_session_picks_only_runnable_sequences(env, monkeypatch):
     attempt.run_session(conn, 2, FAST, seed=1, log=lines.append)
     assert {r["a_number"] for r in conn.execute("SELECT a_number FROM attempts")} == {"A999999"}
     assert "picked 1 of 1 candidates" in lines[0] and "1 no_supported_program" in lines[0]
+
+
+# ------------------------------------------------------------------ pick snapshots (the dashboard's Pick map)
+
+def two_candidates(conn, monkeypatch):
+    entries = {"A999999": make_entry("a(n) = prime(n)"), "A999997": make_entry("a(n) = prime(n)", a_number="A999997")}
+    monkeypatch.setattr(oeisdata, "load_entry", lambda a: entries[a])
+    add_row(conn, "A999999")
+    add_row(conn, "A999997")
+
+
+def test_a_session_stores_the_pool_it_drew_from_before_any_program_runs(env, monkeypatch):
+    conn, state, _ = env
+    two_candidates(conn, monkeypatch)
+    seen: list[int] = []
+    real = attempt.attempt_sequence
+
+    def watch(conn_, a, *args, **kwargs):
+        seen.append(conn_.execute("SELECT COUNT(*) FROM pick_snapshots").fetchone()[0])
+        return real(conn_, a, *args, **kwargs)
+
+    monkeypatch.setattr(attempt, "attempt_sequence", watch)
+    lines: list[str] = []
+    drawn_from, _keep = attempt.session_pool(conn, FAST, model=False)   # before the run changes anything
+    sid = attempt.run_session(conn, 1, FAST, seed=1, log=lines.append)
+    assert seen == [1]                                                  # already there when the first pick starts
+    assert "picked 1 of 2 candidates" in lines[0]                       # the snapshot logs nothing when it works
+    (h,) = db.pick_snapshot_headers(conn, "pari")
+    assert (h["session_id"], h["n"]) == (sid, 2)
+    assert h["budgets"] == attempt.budgets_json(FAST) and h["rules"] == attempt.rules_fingerprint()
+    stored = db.pick_snapshot_difficulties(conn, h["id"])
+    assert stored == {c.a_number: c.difficulty for c in drawn_from}     # the difficulty, not its weight d**-alpha
+    assert all(c.difficulty != c.weight for c in drawn_from)            # ... which these rows tell apart
+
+
+def test_session_pool_weighs_every_candidate_by_difficulty_to_the_minus_alpha(env, monkeypatch):
+    conn, state, _ = env
+    two_candidates(conn, monkeypatch)
+    for alpha in (0.0, 1.0, 2.0):
+        pool_, _keep = attempt.session_pool(conn, FAST, model=False, alpha=alpha)
+        assert len(pool_) == 2 and all(c.difficulty != 1 for c in pool_)
+        assert [c.weight for c in pool_] == [c.difficulty ** -alpha for c in pool_]
+    seen: list[float] = []
+    real = attempt.session_pool
+
+    def spy(conn_, budgets, *, model, alpha=1.0):
+        seen.append(alpha)
+        return real(conn_, budgets, model=model, alpha=alpha)
+
+    monkeypatch.setattr(attempt, "session_pool", spy)
+    attempt.run_session(conn, 0, FAST, alpha=2.0, seed=1, log=lambda m: None)
+    assert seen == [2.0]                                                # run_session hands its alpha on
+
+
+def test_a_session_over_an_unchanged_pool_stores_nothing_new(env, monkeypatch):
+    conn, state, _ = env
+    two_candidates(conn, monkeypatch)
+    attempt.run_session(conn, 0, FAST, seed=1, log=lambda m: None)
+    attempt.run_session(conn, 0, FAST, seed=2, log=lambda m: None)
+    assert len(db.pick_snapshot_headers(conn, "pari")) == 1
+    add_row(conn, "A999995")                                            # the pool changes: a new snapshot
+    entries = {"A999999": make_entry("a(n) = prime(n)"), "A999997": make_entry("a(n) = prime(n)", a_number="A999997"),
+               "A999995": make_entry("a(n) = prime(n)", a_number="A999995")}
+    monkeypatch.setattr(oeisdata, "load_entry", lambda a: entries[a])
+    attempt.run_session(conn, 0, FAST, seed=3, log=lambda m: None)
+    assert [h["n"] for h in db.pick_snapshot_headers(conn, "pari")] == [3, 2]
+
+
+def test_a_session_given_its_own_list_has_no_pool_and_stores_no_snapshot(env, monkeypatch):
+    conn, state, _ = env
+    two_candidates(conn, monkeypatch)
+    attempt.run_session(conn, 1, FAST, a_numbers=["A999999"], log=lambda m: None)
+    assert db.pick_snapshot_headers(conn, "pari") == []
+
+
+def test_a_model_session_stores_the_model_pool_apart_from_the_pari_one(env, monkeypatch):
+    conn, state, _ = env
+    two_candidates(conn, monkeypatch)
+    attempt.run_session(conn, 0, FAST, seed=1, log=lambda m: None, model=NoModel())
+    assert db.pick_snapshot_headers(conn, "pari") == [] and len(db.pick_snapshot_headers(conn, "model")) == 1
+    assert attempt.pool_name(True) == "model" and attempt.pool_name(False) == "pari"
+
+
+def test_a_snapshot_that_cannot_be_written_costs_the_session_nothing(env, monkeypatch):
+    conn, state, _ = env
+    two_candidates(conn, monkeypatch)
+
+    def refuse(*a, **k):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(db, "record_pick_snapshot", refuse)
+    lines: list[str] = []
+    attempt.run_session(conn, 1, FAST, seed=1, log=lines.append)
+    assert any(l == "pick snapshot not recorded: OperationalError: disk I/O error" for l in lines)
+    assert conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 1      # the pick still ran
+    assert conn.execute("SELECT finished_at FROM sessions").fetchone()[0] is not None
+
+
+def test_a_session_builds_its_pool_once_and_stores_that_same_pool(env, monkeypatch):
+    conn, state, _ = env
+    two_candidates(conn, monkeypatch)
+    real, built = attempt.session_pool, []
+
+    def counting(*a, **k):
+        built.append(1)
+        return real(*a, **k)
+
+    monkeypatch.setattr(attempt, "session_pool", counting)
+    attempt.run_session(conn, 0, FAST, seed=1, log=lambda m: None)
+    assert built == [1]
+
+
+@pytest.mark.parametrize("error", [RuntimeError("inside a transaction"), ValueError("unknown pool"),
+                                   sqlite3.IntegrityError("duplicate")])
+def test_whatever_a_snapshot_raises_costs_the_session_nothing(env, monkeypatch, error):
+    conn, state, _ = env
+    two_candidates(conn, monkeypatch)
+
+    def refuse(*a, **k):
+        raise error
+
+    monkeypatch.setattr(db, "record_pick_snapshot", refuse)
+    lines: list[str] = []
+    attempt.run_session(conn, 1, FAST, seed=1, log=lines.append)
+    assert f"pick snapshot not recorded: {type(error).__name__}: {error}" in lines
+    assert conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 1
+
+
+def test_the_model_snapshot_holds_what_only_the_model_can_take(env, monkeypatch):
+    """A sequence with no usable PARI program is in the model pool only: the two snapshots must differ."""
+    conn, state, _ = env
+    state["program"] = "lista(nn) = 0"
+    add_row(conn)
+    attempt.run_session(conn, 0, FAST, seed=1, log=lambda m: None)
+    attempt.run_session(conn, 0, FAST, seed=1, log=lambda m: None, model=NoModel())
+    (p,) = db.pick_snapshot_headers(conn, "pari")
+    (m,) = db.pick_snapshot_headers(conn, "model")
+    assert (p["n"], m["n"]) == (0, 1) and p["digest"] != m["digest"]    # an empty pool is a pool, and is stored
+    assert set(db.pick_snapshot_difficulties(conn, m["id"])) == {"A999999"}
+
+
+def test_snapshot_pool_reports_none_for_an_unchanged_pool(env, monkeypatch):
+    conn, state, _ = env
+    two_candidates(conn, monkeypatch)
+    pool_, _keep = attempt.session_pool(conn, FAST, model=False)
+    first = attempt.snapshot_pool(conn, pool_, model=False, budgets=FAST, log=lambda m: None)
+    assert first is not None
+    assert attempt.snapshot_pool(conn, pool_, model=False, budgets=FAST, log=lambda m: None) is None
+
+
+def test_the_snapshot_command_stores_the_pari_pool_and_with_all_the_model_pool(env, monkeypatch, capsys):
+    from oeisbot import cli
+    conn, state, _ = env
+    state["program"] = "lista(nn) = 0"          # no usable PARI program: only the model pool has it
+    add_row(conn)
+    monkeypatch.setattr(db, "connect", lambda *a, **k: conn)
+    cli.main(["snapshot"])
+    assert capsys.readouterr().out.strip() == "pari: 0 candidates; snapshot #1 stored (1 kept)"
+    cli.main(["snapshot"])
+    assert capsys.readouterr().out.strip() == "pari: 0 candidates; unchanged since the newest of 1 snapshots, nothing stored"
+    cli.main(["snapshot", "--all"])
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].startswith("pari: 0 candidates; unchanged") and out[1] == "model: 1 candidates; snapshot #2 stored (1 kept)"
+    (h,) = db.pick_snapshot_headers(conn, "model")
+    assert h["budgets"] == attempt.budgets_json(config.DEFAULT_BUDGETS) and h["session_id"] is None
+    add_row(conn, "A999998")                                            # the model pool changes, the PARI pool (one snapshot) does not
+    cli.main(["snapshot", "--all"])
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].endswith("unchanged since the newest of 1 snapshots, nothing stored")
+    assert out[1] == "model: 2 candidates; snapshot #3 stored (2 kept)"

@@ -73,6 +73,11 @@ class Assessment:
     reasons: list[str] = field(default_factory=list)
     # wall seconds per cost unit projected to term n, over the rate the seconds were converted with
     rate_drift: float | None = None
+    # which budget an infeasible verdict was reached on: "time", "memory", or both. Empty when feasible.
+    # Recorded on the attempt row so the dead-end rule can ask only about the budget that mattered
+    # (item 51): before this, a verdict reached on time alone kept the run in the pool for any bigger
+    # memory cap, and one reached on memory alone for any longer extension
+    infeasible_on: list[str] = field(default_factory=list)
 
     @property
     def exceeds_int64(self) -> bool:
@@ -275,7 +280,8 @@ def assess(points: list[Point], n_next: int, *, unit: str, time_budget_s: float,
         reasons.append(f"only {len(fit)} terms above the noise floor; "
                        + ("all terms so far are cheap" if cheap else "cannot extrapolate"))
         feasible = mem_high is None or mem_high <= mem_budget
-        return Assessment(n_next, unit, None, None, None, None, mem_high, feasible, True, value_dep, bits, reasons)
+        return Assessment(n_next, unit, None, None, None, None, mem_high, feasible, True, value_dep, bits, reasons,
+                          infeasible_on=[] if feasible else ["memory"])
 
     recent = fit[-5:]
     rate = sum(p.wall_s for p in recent) / sum(p.cost for p in recent)   # wall seconds per cost unit
@@ -287,6 +293,7 @@ def assess(points: list[Point], n_next: int, *, unit: str, time_budget_s: float,
     reasons += proj.notes
     risky = value_dep or not proj.trustworthy or proj.climbing
     feasible = True
+    on: list[str] = []
     if proj.disagreement > TRUST_DISAGREEMENT:
         reasons.append(f"fits with/without newest point disagree {proj.disagreement:.1f}x")
     # only a trustworthy cost fit can judge a term infeasible on time: one the estimator itself doubts is no
@@ -295,12 +302,14 @@ def assess(points: list[Point], n_next: int, *, unit: str, time_budget_s: float,
     if not value_dep and s_high > time_budget_s:
         if proj.trustworthy:
             feasible = False
+            on.append("time")
             reasons.append(f"projected {s_high:.3g} s exceeds remaining budget {time_budget_s:.3g} s")
         else:
             reasons.append(f"projected {s_high:.3g} s exceeds remaining budget {time_budget_s:.3g} s, but the fit "
                            "is untrustworthy: not judged infeasible on time")
     if mem_high is not None and mem_high > mem_budget:
         feasible = False
+        on.append("memory")
         reasons.append(f"projected memory {mem_high / 2**30:.2f} GiB exceeds cap {mem_budget / 2**30:.2f} GiB")
     return Assessment(n_next, unit, proj, s_point, s_low, s_high, mem_high, feasible, risky, value_dep, bits, reasons,
-                      rate_drift)
+                      rate_drift, on)

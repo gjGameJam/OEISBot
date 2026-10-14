@@ -20,7 +20,10 @@ Programs report terms on stdout, one line each:
 | `mem_bytes` | memory figure for this term (meaning depends on the runtime; see below) |
 
 Also recognized: `@DONE` (generator finished) and `@ERR <message>` (program failed; details on
-stderr). Any other stdout line is ignored, apart from being kept in the diagnostics tail. An `@ERR`
+stderr). Any other stdout line is ignored, apart from being kept in the diagnostics tail — including a
+line on which a program's own unterminated output precedes the driver's `@T` (A373945's `print1` put
+`0, 1, ` before every term line in session 11), so such a run records no term and ends as an ordinary
+`verify_timeout`; see [known limitations](known-limitations.md#strategies). An `@ERR`
 whose message starts with `OEISBotContractError:` (`verify.CONTRACT_ERROR`, raised by the list
 contract's driver) stops the run as `protocol` and turns every new term recorded so far into kind
 `void`, so none counts: the program's order is wrong somewhere. The run log keeps them as they
@@ -101,7 +104,21 @@ The harness computes its memory budget once, at start: `min(mem_bytes, free phys
 
 For every `@T` line, in order:
 
-1. **Parse.** Wrong field count or non-integers → stop `protocol`.
+1. **Parse.** Wrong field count or non-integers → stop `protocol`. So is any *counting* field longer than
+   `verify.MAX_TERM_FIELD_DIGITS` (40): the index, the microseconds, the work units and the bytes. The
+   term's own **value is exempt**, because OEIS terms are legitimately unbounded — it is why `verify.py`
+   lifts Python's own `int`/`str` digit limit at import.
+
+   The length check runs *before* `int()`, not after, and that ordering is the point. `on_line` runs in
+   the sandbox's stdout reader thread, which has no exception handler: an `OverflowError` out of the
+   float conversions a `TermRecord` needs (`cpu_us / 1e6`, `float(mem)`, `float(dwork)`) would kill the
+   thread, stop the drain loop that keeps the child from blocking on a full pipe, and lose the reason the
+   run failed. A program controls these fields directly — `py_runner` hands the candidate module the same
+   stdout, and a gp program can `print` whatever it likes. 40 digits leaves every honest quantity ~20
+   orders of magnitude of headroom and still sits ~268 digits below the point where `float()` overflows.
+
+   This closes the overflow entirely; it does **not** close the quadratic-`int()` stall, because the
+   value field is exempt — see [known limitations](known-limitations.md#term-lines-from-an-untrusted-program).
 2. **Index.** The first term must have the first known index (the entry's offset). Each later term must be
    the previous index + 1. Otherwise → stop `bad_index`, detail `program emitted n=X, expected n=Y`
    (plus the offset on the first term).
@@ -112,9 +129,12 @@ For every `@T` line, in order:
    index).
 5. **Log.** The term is appended to the run's JSONL file immediately (the value as a string). A term that
    failed steps 1–3 stopped the run before this step, so it never appears in the log.
-6. **At the last known index**: if fewer than all known terms were reproduced → stop `incomplete`;
-   otherwise verification is complete. With extension off → stop `verified_only`; otherwise project the
-   next term.
+6. **At the last known index**: verification is complete. The guard here for "fewer than all known terms
+   reproduced" (→ stop `incomplete`) cannot fire: steps 1–3 force consecutive indices and halt on the
+   first value that differs, so every known index has been emitted and matched by the time the last one
+   arrives. It is kept so that state could never be treated as verified. With extension off → stop
+   `verified_only`; otherwise the [searched-bound check](#the-searched-bound-check) runs, and if it does
+   not stop the run, the next term is projected.
 7. **New term**: record the actual cost against the pending projection; after `max_new_terms` new terms →
    stop `max_new_terms`; otherwise project the next term.
 
@@ -128,6 +148,100 @@ strictly in index order and the first mismatch stops the run.
 - The term currently being computed has run longer than its kill threshold (only trusted projections
   have one, see [assessment](#assessment-estimateassess)) → stop `over_prediction`.
 
+### The searched-bound check
+
+Many `more` entries publish, in a `%C` comment, a range a human has already searched and found empty:
+`No more terms <= 2 * 10^38` (A194099), `a(29) > 10^13`, `Any subsequent terms are > 10^12`. The pipeline
+already parses those lines (`Entry.comments`). Once verification completes, and before any extension time
+is spent, `Harness._bound_exhausted` compares such a bound against the rate the run has just demonstrated:
+
+```
+X - last_known_value > SEARCHED_BOUND_MARGIN * measured_rate * extend_wall_s   ->  stop searched_bound
+```
+
+`measured_rate` (`verify.measured_rate`) is work per second over `records[-1]` minus `records[0]`. The
+first record is dropped for the same reason `Harness.points` drops it -- it carries interpreter start-up,
+which for gp is most of a short verification -- and because including it *understates* the rate, which
+would make the skip fire more often. `config.SEARCHED_BOUND_MARGIN` is 10.
+
+**Predicate form only.** Only there do term values equal the driver's work count: the driver tests
+k = `search_start`, `search_start`+1, ... and the terms *are* the k that pass, so a bound on a value is a
+bound on work. For the other two forms the loop variable need not be the term value at all -- A038582's
+terms are `k` (numbers whose first k primes sum to a palindrome) while A038583's are those sums, the same
+search with opposite mappings -- and `work` is hard-coded to 0 in both drivers, so there is no rate to
+measure. `attempt._Attempter.run` supplies a bound only for `pari:predicate`. The `work > 0` guard in the harness
+backs that up for the other two **PARI** forms, whose drivers report a literal zero; it cannot back it up
+for a model program, whose runner reports a positive work count in whatever unit that program counts, so
+for the model form the gate in `attempt` is the only thing standing between a bound and a meaningless
+comparison. `tests/test_bounds.py` asserts all four forms.
+
+The check cannot fire without a bound, a positive extension budget, at least two term records, a positive
+measurement window and a positive gap. Every one of those guards exists because its absence produced a
+measured error while the feature was being sized; the table in
+[known limitations](known-limitations.md#searched-bounds) lists what it still gets wrong.
+
+**A bound is an unverified human claim.** It is only ever used to decline to spend time. It never decides
+a term's value or index, and it is never evidence that a term is correct -- that rule is why the check
+lives after verification (which is evidence) rather than replacing any part of it. The stop's `detail`
+names only the bound and the budget: it reaches the model through `codegen.slow_program_note`, whose
+contract is timing and the stop reason but never a term value, and publishing the rate and margin beside
+the bound would let the held-out last known term be recovered by arithmetic. The rate, the window, the
+quote and `verified_scan_to` -- how far this run's own scan actually reached, which is the part that is
+*not* a claim -- go to the attempt's `extra` instead.
+
+**A new term inside the range the bound calls empty is flagged, never refused** (2026-09-30, history
+item 51). When a run with an applicable bound emits a new term whose value is at or below the bound,
+`Harness.below_bound` records its index; the attempt's `extra.below_published_bound` carries the bound,
+the quoted comment and the indices; the console prints a `WARNING`; and the artifact README and the
+dashboard inbox say the two disagree. The term stays a term and the run goes on, because the doubt cuts
+both ways — the published search may be the wrong one — and only a human can say which. This is the safe
+direction of invariant 10: a published claim may cast doubt on a term and must never confirm one. No
+real case exists yet; `tests/test_bounds.py` drives it synthetically.
+
+## Progress heartbeats (predicate form only)
+
+The predicate driver used to print only when the predicate was **true**, so a run killed mid-scan had
+emitted nothing since its last term and where its scan reached was unrecoverable. Across the 49 predicate
+runs that ended at `verify_timeout` or `extend_budget`, 30,312 s of scan position was thrown away that
+way, and every re-pick began again at `search_start`. Only **21,002 s** of that is recoverable by
+resuming *above* the known terms (14 runs over 13 sequences): the 35 `verify_timeout` runs never
+reproduced the known terms, so their frontier lies below the last known value.
+
+The scan now runs in blocks and prints `@P <k reached> <predicate calls made> <cpu us>` after each one.
+The block is sized in **time**, not in k: it doubles while a block comes in under
+`pari.HEARTBEAT_TARGET_MS` and halves when one overruns it fourfold, so the cadence holds whether a call
+costs 0.2 us or 10 ms. A block fixed in k cannot do that, and one that only grew could swallow hours in a
+single step -- losing exactly the progress the heartbeat exists to keep.
+
+`verify.Harness` accepts a heartbeat only when all of these hold, and **drops the line rather than
+halting** when they do not: a heartbeat can never make a term, so killing a sound run over a defect in a
+progress report would be a self-inflicted wound. Each refusal is a case where believing the line would
+later let a run skip a range that was never scanned:
+
+| Refused when | Why |
+|---|---|
+| the caller passed no `ScanTracking` | only the predicate driver emits these by contract; the caller gate is in `attempt._Attempter.run`, and this is the mechanical half of the same two-gate pattern the searched-bound check uses |
+| the line is over `MAX_HEARTBEAT_CHARS` | `int()` is quadratic and this runs in the sandbox's reader thread, which holds the same lock as `on_tick`: a program spraying huge numbers would stall the very clocks that kill it |
+| malformed, or not four fields | as above -- dropped and counted, never fatal |
+| `k - start + 1 != tested` | this driver tests every k from `start`, so the position and the work are one fact twice. A frontier that does not match the work claimed for it did not come from the driver we built |
+| `tested <= 0` | a frontier that claims no work |
+| not strictly beyond the frontier so far | it only ever moves forward |
+| behind a term already emitted | a term at k proves the driver tested k |
+| `tested` implies a rate above `pari.PREDICATE_MAX_RATE` | the same ceiling `out_of_reach` is built on, with gp's start-up granted because the harness clock counts it and the scan does not |
+
+The result carries `scan_reached`, `heartbeats` and `heartbeats_ignored` (plus the first bad line), and
+`attempt.py` writes them to the row's `extra`. The ignored count exists so that a driver bug mangling
+every line shows up as a number rather than as silence -- otherwise the frontier would simply never move
+and nothing would say why.
+
+**What the frontier is worth.** It is *ours* but **reported**, not witnessed: the harness cross-checks it
+against the work claimed and the fastest rate a predicate can be tested at, but it is still the program's
+own word, and the program is untrusted. That is a step below `verified_scan_to`, where the harness
+watched every known term arrive from the range, and a step above `searched_bound`, which is a human
+claim. **Nothing consumes the frontier, and nothing is meant to**: recording it made the resume question
+a measurement rather than a guess, and on 2026-09-23 the user took the decision — **not** to build
+resume (history item 42). Do not build it without new evidence.
+
 ## Stop reasons
 
 `verify.Stop` values, which become `attempts.failure_mode`:
@@ -138,7 +252,7 @@ strictly in index order and the first mismatch stops the run.
 | `bad_index` | any | first index ≠ offset, or an index was skipped or repeated. After verification the run still counts as verified and earlier new terms stand | yes |
 | `protocol` | any | malformed `@T` line, or a list-contract program yielding a pair or a value out of order (`OEISBotContractError`; after verification its new terms are voided) | yes |
 | `crash` | verify | program errored (`@ERR`, other than `OEISBotContractError`) or exited non-zero before verification | yes |
-| `incomplete` | verify | program ended cleanly before reproducing all known terms | yes |
+| `incomplete` | verify | the program ended by itself before reproducing all known terms — always that, since the guard at the last known index cannot fire (step 6 above) | yes |
 | `verify_timeout` | verify | known terms not all reproduced within `verify_wall_s` | no, but counts as a dead end for runs with a `verify_wall_s` no larger than the time it already ran |
 | `timeout` | any | sandbox wall clock | no |
 | `memory_cap` | any | job memory cap, or system RAM low | no |
@@ -146,8 +260,10 @@ strictly in index order and the first mismatch stops the run.
 | `disk_cap` | any | scratch too large or free disk low | no |
 | `output_cap` | any | stdout too large or a line over 1 MiB | no |
 | `launch_error` | start | not enough free RAM to start, or process creation failed | no |
+| `harness_error` | any | **our own** `on_line` or `on_tick` raised inside the sandbox (`Status.CALLBACK_ERROR`, since 2026-09-30, history item 51); the detail names the exception. A harness bug, never the program's doing | **no, deliberately**: outside `db.DETERMINISTIC_FAILURES`, so a bug of ours cannot retire a program for ever |
 | `verified_only` | extend | verification done and extension was not requested | n/a |
-| `infeasible` | extend | the next term's projection does not fit the remaining budget: a trustworthy cost fit's time, or the memory | counts as a dead end if nothing new was found, but only for runs with an extension time and memory budget no larger than the one that stopped |
+| `searched_bound` | extend | the entry publishes a searched range with no further term in it, and the extension cannot reach the end of it at the rate measured while verifying (predicate form only; see [above](#the-searched-bound-check)) | **no, and deliberately not a dead end**: nothing about the sequence has been disproved, so the program stays runnable. `extra.verified_scan_to` records how far this run's own scan reached |
+| `infeasible` | extend | the next term's projection does not fit the remaining budget: a trustworthy cost fit's time, or the memory. `extra.infeasible_on` says which (`time`, `memory` or `time+memory`; since 2026-09-30, history item 51) | counts as a dead end if nothing new was found, but only for runs whose budget *for the reason recorded* is no larger than the one that stopped: a verdict on time holds under any memory cap and one on memory under any extension time; rows without the key need both |
 | `over_prediction` | extend | a new term ran past `max(10 s, 2 × high estimate)` of a trusted projection | no |
 | `extend_budget` | extend | `extend_wall_s` used up | no, but counts as a dead end if nothing new was found and the job had at least 80% CPU, for runs with an extension time no larger than the one it used up |
 | `max_new_terms` | extend | enough new terms | n/a |
@@ -175,7 +291,8 @@ within 1.6× and 4.4× of the previous one's cost before the budget ran out). A 
 nothing.
 
 When the harness itself did not stop the run, the sandbox status decides the reason: `timeout`,
-`memory_cap`, `cpu_cap`, `disk_cap`, `output_cap` and `launch_error` map to the stop of the same name.
+`memory_cap`, `cpu_cap`, `disk_cap`, `output_cap` and `launch_error` map to the stop of the same name;
+`callback_error` (our own callback raised, since 2026-09-30) maps to `harness_error`.
 The sandbox's own `stopped` status (a program trying to start a child process) has no mapping. The job
 is terminated with exit code 1, so the attempt is recorded as `crash` ("exit code 1"), or as `finished`
 after verification, and the child-process reason is lost; any exit after verification → `finished` (even a crash; its
@@ -279,7 +396,12 @@ For the next index, given the remaining extension time and the memory budget:
   points, `R²(ln cost ~ n) < 0.8` and `R²(ln cost ~ ln|value|)` is higher by more than 0.15.
 - **Memory.** Baseline = the smallest memory figure seen; project the growth above baseline from points
   more than 1 MiB above it; `mem_high = baseline + projected high`, or 1.25 × the largest figure seen when
-  growth cannot be projected.
+  growth cannot be projected. **The budget it is compared with depends on the runtime** (since
+  2026-09-30, history item 51): a Python program's figure is its process memory and is judged against
+  the job cap (`Harness.mem_cap`); a gp program's figure is `default(parisize) + heap`, the PARI stack,
+  and is judged against the stack ceiling gp was launched with (`Harness.stack_cap` = `parisizemax` =
+  0.8 × the cap), which is what that figure can actually exhaust. Before this every gp figure was
+  compared with the job cap, ~800× larger, so no gp run could be judged infeasible on memory.
 - **No time projection** (fewer than 3 fitted points): feasible if memory fits; marked risky; no kill
   threshold, so only the extension budget limits the term.
 - **Seconds.** `rate` = total wall seconds ÷ total cost over the last 5 fitted points; the point, low and
@@ -316,6 +438,16 @@ For the next index, given the remaining extension time and the memory budget:
   log) whose fit was untrustworthy, 10 took less than the low estimate and 14 more than the high one.
   The price: a run whose projection is untrustworthy spends its whole remaining extension when the term
   does not come, and then ends as `extend_budget`.
+
+  **Measured on a real run for the first time on 2026-09-21, and it paid for itself.** In attempt #139
+  (A385331, the project's first win) the pre-offer-F rule would have stopped the extension at six
+  consecutive projections — n = 33 to 38, with `seconds_high` of 3.49e+08, 1.9e+09, 1.03e+10, 5.63e+10,
+  3.06e+11 and 3,737 s against 1,221-1,279 s remaining. The n=33 projection amounts to eleven years for a
+  term that cost **0.0006 s**. Offer F let all six through, and the run went on to produce 18 new terms
+  instead of the 8 it would have kept. The seventh, at n=43, was on a *trustworthy* fit, so offer F did
+  not shield it and the run stopped — correctly: a(43) has no prime factor below 2x10^8, which by the
+  run's own cost law puts it at >= 1,626 s against the 1,068 s it had left. See
+  [status](status.md#history-condensed) history item 35.
 - **Risky** when value-dependent, the cost fit is untrustworthy, or climbing (the rate drift does not
   enter it). This lives only on the in-memory prediction: it is neither stored nor acted on.
 - **Kill threshold** = `max(10 s, over_prediction_factor × seconds_high)`, only for a trusted
@@ -351,6 +483,10 @@ Each projection becomes a `predictions` row:
   the kill could act on it: `Assessment.trusted`, above; so a row with `trustworthy = 0` whose cost fit
   was trustworthy, withdrawn only by the rate drift, can still be `feasible = 0` on time), `feasible`,
   `value_dependent`, `cost_unit`;
+- the cost fit's own statistics, since 2026-09-21: `fit_trustworthy` (`Projection.trustworthy`, the
+  first half of `trustworthy` above), `fit_npoints`, `fit_disagreement`, `fit_climbing` and `rate_drift`.
+  All five are NULL together, exactly when nothing could be fitted. `fit_trustworthy = 1` with
+  `trustworthy = 0` is precisely a sound fit withdrawn from the kill by the drift;
 - `actual_s` and `actual_mem` if that term finished;
 - `censored_s` if the run stopped while that term was being computed (the term took at least that long).
 

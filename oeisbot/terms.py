@@ -54,5 +54,11 @@ class Program:
 
 
 def format_bfile(values: dict[int, int]) -> str:
-    """OEIS b-file body: one 'n a(n)' per line, contiguous indices."""
+    """OEIS b-file body: one 'n a(n)' per line, contiguous indices.
+
+    The *body* only: this newline-terminates each line and adds no blank one, so what it returns is not
+    yet a conformant b-file. https://oeis.org/SubmitB.html requires a file to end with a blank line,
+    warning that the last data line may otherwise be ignored -- **the caller owns that trailing
+    newline**. `artifact.write` adds it; the same helper also fills a ``` fence in the artifact README,
+    where a blank line would be noise, which is why it is not added here (item 49)."""
     return "".join(f"{n} {values[n]}\n" for n in sorted(values))

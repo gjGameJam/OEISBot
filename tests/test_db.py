@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import sqlite3
 from dataclasses import replace
@@ -41,10 +42,102 @@ def test_wal_mode_and_readonly_reader(tmp_path, conn):
     ro.close()
 
 
+def test_set_meta_many_writes_all_the_keys_or_none(conn):
+    """`meta` keys that describe one moment -- the runtime versions (history item 43) -- must not be
+    able to land half-written, leaving a fresh gp version beside a stale Python one. `set_meta` opens a
+    transaction per call and cannot promise that; this is why `set_meta_many` exists.
+
+    Note the *caller* choosing `set_meta` in a loop instead is deliberately not detectable from outside:
+    the end state is identical and only a crash between the two writes tells them apart. That mutation
+    is recorded as uncatchable in the item's mutation harness rather than papered over with a test that
+    asserts which function was called."""
+    db.set_meta_many(conn, {"gp_version": "one", "sandbox_python_version": "two"})
+    assert (db.get_meta(conn, "gp_version"), db.get_meta(conn, "sandbox_python_version")) == ("one", "two")
+
+    # The bad binding must come SECOND, or nothing is ever applied and the assertions below hold without
+    # any rollback: `set_meta_many` sorts its items, so `gp_version` is written before
+    # `sandbox_python_version` fails. Reversing these two names hollows this test out silently.
+    with pytest.raises(sqlite3.Error):      # a value SQLite cannot bind, part way through
+        db.set_meta_many(conn, {"gp_version": "three", "sandbox_python_version": ["not a string"]})
+    # the first key of the failed batch must not have survived it
+    assert db.get_meta(conn, "gp_version") == "one"
+    assert db.get_meta(conn, "sandbox_python_version") == "two"
+
+
 def test_attempt_and_predictions_recorded(conn):
     aid = db.record_attempt(conn, make_result(), started_at=db.now())
     rows = conn.execute("SELECT n, predicted_s, actual_s FROM predictions WHERE attempt_id = ? ORDER BY n", (aid,)).fetchall()
     assert [tuple(r) for r in rows] == [(2, 1.0, 1.2), (3, 1.0, 1.2)]
+
+
+def test_the_cost_fits_statistics_are_stored_and_stay_null_without_a_fit(conn):
+    """A row must be able to say "the fit was sound, the drift withdrew it" (trustworthy 0,
+    fit_trustworthy 1) and "there was no fit at all" (every fit column NULL) -- and never confuse the
+    two. `int(None)` would raise; a bool written as 0 would read as "the fit said no"."""
+    result = make_result(new=2)
+    result.predictions[0] = Prediction(2, "work", 1.0, 0.5, 2.0, 1e6, "exp", False, True, True, False, 10, [],
+                                       actual_s=1.2, fit_trustworthy=True, fit_npoints=5, fit_disagreement=1.75,
+                                       fit_climbing=False, rate_drift=7.794)
+    result.predictions[1] = Prediction(3, "work", None, None, None, 1e6, None, False, True, True, False, 10, [],
+                                       actual_s=1.2)
+    aid = db.record_attempt(conn, result, started_at=db.now())
+    rows = conn.execute("""SELECT n, trustworthy, fit_trustworthy, fit_npoints, fit_disagreement, fit_climbing,
+                           rate_drift FROM predictions WHERE attempt_id = ? ORDER BY n""", (aid,)).fetchall()
+    assert [tuple(r) for r in rows] == [(2, 0, 1, 5, 1.75, 0, 7.794), (3, 0, None, None, None, None, None)]
+
+
+# Every `verify.Prediction` field, and the `predictions` column it is stored in -- None for the ones
+# deliberately not stored. Item 36 added five fields, and the ways that can go wrong are all silent: a
+# field added to the dataclass but not to `db.SCHEMA`, or to the SCHEMA but not the INSERT, or to the
+# INSERT in the wrong position. Pinning the whole mapping makes each of those a failure here, and forces
+# a decision to be recorded rather than defaulted when a field is added later.
+PREDICTION_COLUMNS = {
+    "n": "n", "unit": "cost_unit", "seconds": "predicted_s", "seconds_low": "predicted_s_low",
+    "seconds_high": "predicted_s_high", "mem_high": "predicted_mem", "model": "model",
+    "trustworthy": "trustworthy", "feasible": "feasible", "value_dependent": "value_dependent",
+    "actual_s": "actual_s", "actual_mem": "actual_mem", "censored_s": "censored_s",
+    "fit_trustworthy": "fit_trustworthy", "fit_npoints": "fit_npoints",
+    "fit_disagreement": "fit_disagreement", "fit_climbing": "fit_climbing", "rate_drift": "rate_drift",
+    # not stored, each for a reason documented in docs/data-and-schema.md
+    "risky": None,             # derivable: model IS NULL OR value_dependent OR NOT fit_trustworthy OR fit_climbing
+    "next_bits_high": None,    # about the next term's size, not about the cost fit
+    "reasons": None,           # free text; survives in artifacts/*/predictions.csv
+    "actual_cost": None,       # the cost unit's own figure; actual_s is what the estimator is judged on
+}
+
+
+def test_every_prediction_field_is_stored_or_knowingly_not(conn):
+    """The dataclass and the table must not drift apart silently."""
+    fields = {f.name for f in dataclasses.fields(Prediction)}
+    assert fields == set(PREDICTION_COLUMNS), (
+        "verify.Prediction changed: add each new field to PREDICTION_COLUMNS with its column, or None "
+        f"if it is deliberately not stored. Added {fields - set(PREDICTION_COLUMNS)}, "
+        f"removed {set(PREDICTION_COLUMNS) - fields}")
+    table = {r["name"] for r in conn.execute("PRAGMA table_info(predictions)")}
+    mapped = {c for c in PREDICTION_COLUMNS.values() if c}
+    assert mapped <= table, f"mapped to columns that do not exist: {mapped - table}"
+    assert table - mapped == {"id", "attempt_id"}, (
+        f"columns nothing maps to (added to db.SCHEMA but never written?): {table - mapped - {'id', 'attempt_id'}}")
+
+
+def test_every_stored_prediction_field_survives_a_round_trip(conn):
+    """Distinct values in every field, so a column written from the wrong one cannot look right. This is
+    what catches an INSERT whose column list and value tuple have drifted out of step."""
+    values = {
+        "n": 7, "unit": "cpu", "seconds": 1.5, "seconds_low": 0.25, "seconds_high": 3.5,
+        "mem_high": 1234.0, "model": "poly", "trustworthy": False, "feasible": True,
+        "value_dependent": True, "actual_s": 2.25, "actual_mem": 4321.0, "censored_s": 8.75,
+        "fit_trustworthy": True, "fit_npoints": 6, "fit_disagreement": 2.75, "fit_climbing": False,
+        "rate_drift": 9.5,
+    }
+    result = make_result(new=1)
+    result.predictions[:] = [Prediction(**values, next_bits_high=11, reasons=["why"], risky=True,
+                                        actual_cost=99.0)]
+    aid = db.record_attempt(conn, result, started_at=db.now())
+    row = conn.execute("SELECT * FROM predictions WHERE attempt_id = ?", (aid,)).fetchone()
+    stored = {field: row[PREDICTION_COLUMNS[field]] for field in values}
+    # SQLite has no bool: the two flags come back as 0/1, and that is what `_opt_int` is for
+    assert stored == {k: (int(v) if isinstance(v, bool) else v) for k, v in values.items()}
 
 
 def test_dead_end_detection(conn):
@@ -61,7 +154,8 @@ def test_dead_end_detection(conn):
 def test_infeasible_is_a_dead_end_only_without_a_bigger_budget(conn):
     budgets = Budgets(extend_wall_s=600, mem_bytes=2 * GiB)
     stuck = make_result(stop=Stop.INFEASIBLE, verified=True, new=0, sha_source="stuck")
-    db.record_attempt(conn, stuck, started_at=db.now(), extra={"extend_wall_s": 600, "mem_bytes": 2 * GiB})
+    db.record_attempt(conn, stuck, started_at=db.now(),
+                      extra={"extend_wall_s": 600, "mem_bytes": 2 * GiB, "mem_cap_bytes": 2 * GiB})
     sha = stuck.program.sha
     assert db.is_dead_end(conn, "A000001", sha, 2, budgets)
     assert db.is_dead_end(conn, "A000001", sha, 2, replace(budgets, extend_wall_s=300, mem_bytes=GiB))
@@ -70,6 +164,77 @@ def test_infeasible_is_a_dead_end_only_without_a_bigger_budget(conn):
     unknown = make_result(stop=Stop.INFEASIBLE, verified=True, new=0, sha_source="recorded before budgets")
     db.record_attempt(conn, unknown, started_at=db.now())
     assert not db.is_dead_end(conn, "A000001", unknown.program.sha, 2, budgets)
+
+
+def test_an_infeasible_verdict_is_keyed_on_the_budget_it_ran_out_of(conn):
+    """Item 51. `extra.infeasible_on` says which budget the projection exceeded, and the dead-end rule
+    asks about that one alone: a verdict on time holds under any memory cap and one on memory under any
+    extension time. Rows without the key (every row before 2026-09-30) keep needing both, as before."""
+    budgets = Budgets(extend_wall_s=600, mem_bytes=2 * GiB)
+
+    def row(tag, on):
+        r = make_result(stop=Stop.INFEASIBLE, verified=True, new=0, sha_source=tag)
+        db.record_attempt(conn, r, started_at=db.now(), extra={"extend_wall_s": 600, "mem_bytes": 2 * GiB,
+                                                               "mem_cap_bytes": 2 * GiB, "infeasible_on": on})
+        return r.program.sha
+
+    time_only = row("time", "time")
+    assert db.is_dead_end(conn, "A000001", time_only, 2, budgets)
+    assert db.is_dead_end(conn, "A000001", time_only, 2, replace(budgets, mem_bytes=8 * GiB))       # memory was not the reason
+    assert not db.is_dead_end(conn, "A000001", time_only, 2, replace(budgets, extend_wall_s=3600))  # more time: try again
+    mem_only = row("memory", "memory")
+    assert db.is_dead_end(conn, "A000001", mem_only, 2, replace(budgets, extend_wall_s=36000))      # time was not the reason
+    assert not db.is_dead_end(conn, "A000001", mem_only, 2, replace(budgets, mem_bytes=8 * GiB))
+    both = row("both", "time+memory")
+    assert db.is_dead_end(conn, "A000001", both, 2, budgets)
+    assert not db.is_dead_end(conn, "A000001", both, 2, replace(budgets, mem_bytes=8 * GiB))
+    assert not db.is_dead_end(conn, "A000001", both, 2, replace(budgets, extend_wall_s=3600))
+
+
+def test_a_harness_error_is_never_a_dead_end(conn):
+    """Item 51: `harness_error` is our own callback raising inside the sandbox, not the program failing.
+    It sits outside DETERMINISTIC_FAILURES and matches no dead-end clause, so the program runs again."""
+    assert Stop.HARNESS_ERROR.value not in db.DETERMINISTIC_FAILURES
+    r = make_result(stop=Stop.HARNESS_ERROR, verified=False, new=0, sha_source="bug")
+    db.record_attempt(conn, r, started_at=db.now(), extra={"extend_wall_s": 600, "mem_cap_bytes": GiB})
+    row = conn.execute("SELECT failure_mode FROM attempts ORDER BY id DESC LIMIT 1").fetchone()
+    assert row["failure_mode"] == "harness_error"
+    assert not db.is_dead_end(conn, "A000001", r.program.sha, 2, Budgets(verify_wall_s=1, extend_wall_s=1, mem_bytes=1))
+
+
+def test_a_run_squeezed_for_memory_is_not_retired(conn):
+    """The infeasible clause keys on the cap the run actually got, not the one it asked for: a busy
+    machine pushes the harness below the budget (`min(mem_bytes, free RAM - reserve)`), and the verdict
+    was reached under that smaller cap. Such a run must be tried again once the RAM is back."""
+    budgets = Budgets(extend_wall_s=600, mem_bytes=2 * GiB)
+    starved = make_result(stop=Stop.INFEASIBLE, verified=True, new=0, sha_source="starved")
+    db.record_attempt(conn, starved, started_at=db.now(),
+                      extra={"extend_wall_s": 600, "mem_bytes": 2 * GiB, "mem_cap_bytes": GiB})
+    sha = starved.program.sha
+    assert not db.is_dead_end(conn, "A000001", sha, 2, budgets)                        # it never got 2 GiB
+    assert db.is_dead_end(conn, "A000001", sha, 2, replace(budgets, mem_bytes=GiB))    # but it did get 1
+
+    # the shape of every row recorded before 2026-09-20: the budgets, but no effective cap. It never
+    # counts, rather than falling back to the configured budget it asked for
+    legacy = make_result(stop=Stop.INFEASIBLE, verified=True, new=0, sha_source="recorded before the cap")
+    db.record_attempt(conn, legacy, started_at=db.now(), extra={"extend_wall_s": 600, "mem_bytes": 2 * GiB})
+    assert not db.is_dead_end(conn, "A000001", legacy.program.sha, 2, budgets)
+
+
+def test_refresh_difficulty_rescores_every_row(conn):
+    """Including rows that have left `more`: the column is meant to equal `select.difficulty` for every
+    row in the table, not only the ones a session could pick."""
+    db.upsert_sequences(conn, [db.SequenceRow("A000001", "Things", 1, "nonn,more", 5, 2, "pari", 0, False),
+                               db.SequenceRow("A000002", "Things", 1, "nonn,more", 5, 2, "pari", 0, False)])
+    db.mark_not_in_more(conn, {"A000001"})                       # A000002 is retired
+    with conn:
+        conn.execute("UPDATE sequences SET difficulty = 0")
+    assert db.refresh_difficulty(conn, select.difficulty) == 2
+    rows = conn.execute("SELECT * FROM sequences ORDER BY a_number").fetchall()
+    assert [r["in_more"] for r in rows] == [1, 0]
+    for r in rows:                                               # the retired row is scored, and correctly
+        assert r["difficulty"] > 0
+        assert r["difficulty"] == pytest.approx(select.difficulty(r))
 
 
 def test_extension_used_up_is_a_dead_end_only_without_more_time(conn):
@@ -201,6 +366,52 @@ def test_review_cannot_be_submitted_twice(conn):
         db.set_review_status(conn, r2, "submitted")
     with pytest.raises(Exception):
         db.set_review_status(conn, r2, "bogus")
+
+
+def test_a_rejected_review_refuses_a_new_one_but_keeps_the_win(conn):
+    """Item 51. A `rejected` review does not gate the run (item 48's deliberate asymmetry), so it gates
+    the *output*: a later win of the same sequence keeps its `extended` row and its artifact path but
+    opens no review, and the refusal is recorded on the attempt rather than raised out of the
+    transaction -- raised, the rollback would leave it `recheck_pending`, to be retried and refused
+    every session for ever."""
+    a1 = db.record_attempt(conn, make_result(sha_source="a"), started_at=db.now())
+    r1 = db.add_review(conn, "A000001", a1, "artifacts/x", 2, 3)
+    db.set_review_status(conn, r1, "rejected", "conjectural: the program's own comment says so")
+    a2 = db.record_attempt(conn, make_result(sha_source="b"), started_at=db.now(), outcome="recheck_pending",
+                           extra={"recheck": "not done yet"})
+    with pytest.raises(db.ReviewRefused) as e:
+        db.add_review(conn, "A000001", a2, "artifacts/y", 2, 3)
+    assert e.value.prior_id == r1 and f"#{r1}" in str(e.value) and "conjectural" in str(e.value)
+    assert db.record_win(conn, a2, "A000001", "artifacts/y", 2, 3, "still new") is None
+    row = conn.execute("SELECT outcome, artifact_path, extra FROM attempts WHERE id = ?", (a2,)).fetchone()
+    assert (row["outcome"], row["artifact_path"]) == ("extended", "artifacts/y")
+    extra = json.loads(row["extra"])
+    assert extra["review_refused"]["prior_review"] == r1 and extra["recheck"] == "still new"
+    assert conn.execute("SELECT COUNT(*) FROM reviews").fetchone()[0] == 1
+    assert db.open_review(conn, "A000001") is None
+    # reopening the old row lifts the refusal: a human decides the new result is different, never the pipeline
+    db.set_review_status(conn, r1, "reviewing")
+    a3 = db.record_attempt(conn, make_result(sha_source="c"), started_at=db.now())
+    assert db.add_review(conn, "A000001", a3, "artifacts/z", 2, 3) > r1
+
+
+def test_review_rows_carry_the_identity_block_and_the_cli_prints_it(conn):
+    """Item 51: `oeisbot review list` and the dashboard inbox identify a review by the same facts in the
+    same order -- the sequence and its name, the addition and where it came from, then the bookkeeping."""
+    from oeisbot import cli
+    db.upsert_sequences(conn, [db.SequenceRow("A000001", "Things that are things", 1, "nonn,more", 5, 2, "pari", 0, False)])
+    aid = db.record_attempt(conn, make_result(), started_at=db.now())
+    rid = db.add_review(conn, "A000001", aid, "artifacts/x", 2, 3)
+    (r,) = db.review_rows(conn)
+    assert (r["id"], r["a_number"], r["name"], r["new_terms"], r["attempt_id"]) == (rid, "A000001", "Things that are things", 2, aid)
+    assert r["program_origin"] and r["strategy"]
+    lines = cli.review_block(r).splitlines()
+    assert lines[0].startswith(f"#{rid}") and "A000001" in lines[0] and " new " in lines[0] and lines[0].endswith("Things that are things")
+    assert lines[1].strip() == f"2 new terms, a(2)..a(3), from {r['program_origin']}, attempt #{aid}"
+    assert lines[2].strip() == "artifacts/x"
+    db.set_review_status(conn, rid, "rejected", "not it")
+    (r,) = db.review_rows(conn)
+    assert cli.review_block(r).splitlines()[2].strip() == "artifacts/x  not it"
 
 
 def test_session_rollup(conn):

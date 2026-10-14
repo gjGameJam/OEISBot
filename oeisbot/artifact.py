@@ -45,7 +45,14 @@ def write(result: AttemptResult, attempt_id: int, entry_name: str, budgets: Budg
 
     values = dict(result.known.values)
     values.update({t.n: t.value for t in new})
-    (folder / f"b{a[1:]}.txt").write_text(format_bfile(values), encoding="utf-8")
+    # The trailing blank line is required, not cosmetic: https://oeis.org/SubmitB.html says in capitals
+    # that a b-file should end with one, "OTHERWISE THE LAST DATA LINE MAY BE IGNORED" -- and the last
+    # data line is the highest new term, the one the whole run was for. `format_bfile` newline-terminates
+    # each line but adds no blank one, so it is added here rather than in the helper: the README written
+    # at the end of this function formats the new terms with the same helper inside a ``` fence, whose
+    # closing fence sits directly on the helper's own trailing newline -- a blank line in the helper
+    # would push it apart. Added 2026-09-28 after review #1's b-file was checked against the rules.
+    (folder / f"b{a[1:]}.txt").write_text(format_bfile(values) + "\n", encoding="utf-8")
     (folder / f"program.{ext}").write_text(result.program.source + "\n", encoding="utf-8")
     (folder / f"executed.{ext}").write_text(result.program.executed, encoding="utf-8")
 
@@ -57,10 +64,13 @@ def write(result: AttemptResult, attempt_id: int, entry_name: str, budgets: Budg
     with open(folder / "predictions.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["n", "unit", "model", "trustworthy", "feasible", "predicted_s", "predicted_s_low",
-                    "predicted_s_high", "predicted_mem", "actual_s", "actual_mem", "censored_s", "reasons"])
+                    "predicted_s_high", "predicted_mem", "actual_s", "actual_mem", "censored_s",
+                    "fit_trustworthy", "fit_npoints", "fit_disagreement", "fit_climbing", "rate_drift", "reasons"])
         for p in result.predictions:
             w.writerow([p.n, p.unit, p.model, p.trustworthy, p.feasible, p.seconds, p.seconds_low, p.seconds_high,
-                        p.mem_high, p.actual_s, p.actual_mem, p.censored_s, " | ".join(p.reasons)])
+                        p.mem_high, p.actual_s, p.actual_mem, p.censored_s,
+                        p.fit_trustworthy, p.fit_npoints, p.fit_disagreement, p.fit_climbing, p.rate_drift,
+                        " | ".join(p.reasons)])
 
     k = result.known
     (folder / "verification.md").write_text(f"""# Verification: {a}
@@ -69,7 +79,7 @@ def write(result: AttemptResult, attempt_id: int, entry_name: str, budgets: Budg
 - Offset (%O): {k.offset}; program's first emitted index: {result.records[0].n if result.records else '-'}
 - Reproduced: {result.reproduced} of {k.count} known terms, every one compared as an (index, value) pair
 - Notes on the known terms: {'; '.join(k.notes) or 'none'}
-- Program origin: {result.program.origin}
+- Program origin: {result.program.origin} ({result.program.strategy})
 - Program sha256 (executed file, first 16 hex): {result.program.sha}
 - All known terms reproduced after {result.verified_at_s:.2f} s
 - Re-check against oeis.org just before writing this: {recheck_note}
@@ -96,6 +106,13 @@ def write(result: AttemptResult, attempt_id: int, entry_name: str, budgets: Budg
                   if n.startswith(codegen.ENTRY_PROGRAM_NOTE)]
     else:
         notes += [f"**Program was rewritten:** {n}" for n in result.program.notes]
+    if result.below_bound:
+        # the safe direction of invariant 10: a published search can cast doubt on a term, never confirm one
+        b = result.below_bound
+        hits = ", ".join(f"a({t.n}) = {t.value}" for t in new if t.n in b["indices"])
+        notes.append(f"**A term lands below a published bound ({b['bound']}):** {hits}, while the entry says "
+                     f"\"{b['quote']}\". Either that search or this program is wrong. Find out which before "
+                     "submitting; a term inside a range a human reported empty needs the disagreement resolved.")
     warnings = "\n" + "\n\n".join(notes) + "\n" if notes else ""
     total_new_s = sum(t.dt for t in new)
     (folder / "README.md").write_text(f"""# {a}: {len(new)} new term(s), a({first.n})..a({last.n})

@@ -51,11 +51,26 @@ def test_artifact_files_are_confined(client):
     assert client.get(f"/api/reviews/{rid}/files/nope.md").status_code == 404
 
 
-def test_api_never_writes(client):
+def test_api_never_writes(client, monkeypatch):
+    from oeisbot import attempt, select
+    monkeypatch.setattr(attempt, "session_pool", lambda conn, budgets, *, model, alpha=1.0: (
+        [select.Candidate("A000001", "Test sequence", 1.0, 1.0, "pari"), select.Candidate("A000002", "Other sequence", 2.0, 0.5, "pari")],
+        attempt.Runnable(conn, budgets, model)))
+    monkeypatch.setattr(dashboard, "_live", {})
+    opened = []
+    real_connect = db.connect
+
+    def spy(*args, **kwargs):
+        opened.append(kwargs.get("readonly", False))
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(db, "connect", spy)
     before = config.DB_PATH.stat().st_mtime_ns
-    for path in ["/api/summary", "/api/estimator", "/api/queue", "/api/attempts", "/api/reviews", "/api/history"]:
+    for path in ["/api/summary", "/api/estimator", "/api/queue", "/api/attempts", "/api/reviews", "/api/history",
+                 "/api/pickmap", "/api/pickmap?pool=model&alpha=2&refresh=true"]:
         assert client.get(path).status_code == 200
-    conn = db.connect(config.DB_PATH, readonly=True)
+    assert opened and all(opened)                                        # every connection the endpoints made was read-only
+    conn = real_connect(config.DB_PATH, readonly=True)
     with pytest.raises(Exception):
         conn.execute("UPDATE reviews SET status = 'submitted'")
     assert config.DB_PATH.stat().st_mtime_ns == before

@@ -2,10 +2,12 @@ import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { fmtInt, useApi } from "./lib";
+import { PickMapView } from "./pickmap";
 import { AttemptsView, EstimatorView, HistoryView, QueueView, ReviewsView } from "./views";
 
 const TABS = [
   { id: "estimator", label: "Estimator accuracy", view: EstimatorView },
+  { id: "pickmap", label: "Pick map", view: PickMapView },
   { id: "queue", label: "Queue", view: QueueView },
   { id: "attempts", label: "Attempts", view: AttemptsView },
   { id: "reviews", label: "Review inbox", view: ReviewsView },

@@ -15,7 +15,7 @@ from oeisbot.ingest import bfile, oeisdata
 from oeisbot.ingest.seqfile import parse
 from oeisbot.model import ModelUnavailable
 from oeisbot.sandbox import RunResult, Status
-from oeisbot.strategies import codegen
+from oeisbot.strategies import codegen, pari
 from oeisbot.terms import KnownTerms, Program
 from oeisbot.verify import CONTRACT_ERROR, AttemptResult, Stop, _short, run_attempt
 
@@ -102,6 +102,72 @@ def test_at_least_two_known_terms_are_always_held_out(count, shown):
     assert len(codegen.shown_indices(fib_known(count))) == shown
 
 
+def _entry_with_pari(program: str, extra_lang: str = ""):
+    lines = ["%S A999998 0,1,1,2", "%N A999998 Test.", "%O A999998 0,1", "%K A999998 nonn,more"]
+    first, *rest = program.split("\n")
+    lines.append(f"%o A999998 (PARI) {first}")
+    lines += [f"%o A999998 {r}" for r in rest]
+    if extra_lang:
+        lines.append(f"%o A999998 (Magma) {extra_lang}")
+    return parse("\n".join(lines) + "\n")
+
+
+def test_a_conjectural_program_is_offered_under_an_honest_header_not_as_correct():
+    """"Existing programs (correct, possibly slow)" is a lie for a program its own author disclaims: the
+    model would be invited to reproduce a conjectural closed form in Python, where no disclaimer
+    survives for anything to detect, and the PARI stage's rejection cannot cover this -- Runnable._why_not
+    keeps a sequence for the model whatever the PARI verdict (history item 47). Since item 51 the block
+    is quoted under `CONJECTURAL_PROGRAMS_NOTE` with the author's own word, instead of being withheld:
+    the model keeps the algorithm and loses only the false claim."""
+    known = fib_known(10)
+    flagged = codegen._context(_entry_with_pari("a(n) = 2*n-2 \\\\ conjectured to be exact"), known)
+    assert "Existing programs (correct" not in flagged
+    assert codegen.CONJECTURAL_PROGRAMS_NOTE in flagged and "2*n-2" in flagged
+    assert 'says "conjectured"' in flagged
+    assert flagged.index(codegen.CONJECTURAL_PROGRAMS_NOTE) < flagged.index("2*n-2")
+    assert "do NOT assume they are correct" in codegen.CONJECTURAL_PROGRAMS_NOTE      # the wording is the protection
+
+    clean = codegen._context(_entry_with_pari("a(n) = 2*n-2 \\\\ proved, cf. comments"), known)
+    assert "Existing programs (correct, possibly slow)" in clean and "2*n-2" in clean
+    assert codegen.CONJECTURAL_PROGRAMS_NOTE not in clean
+
+
+def test_a_clean_program_beside_a_conjectural_one_is_still_offered_as_correct():
+    """Only the flagged PARI block moves under the honest header. The Magma block carries the same
+    disclaimer in a `/* */` comment -- which GP shares, so `pari.conjectural` does match it -- and is
+    still offered as correct, because the check is deliberately PARI-only: `code_mask` implements GP's
+    comment syntax and cannot be trusted on another language's. That is a documented limitation, not an
+    oversight (docs/known-limitations.md), and this test is what stops the check quietly widening to
+    every language."""
+    magma = "a := func<n | 2*n-2>; /* conjectured to be exact */"
+    assert pari.conjectural(magma) == "conjectured", "fixture must be flagged, or this test is vacuous"
+    entry = _entry_with_pari("a(n) = 2*n-2 \\\\ conjectured to be exact", extra_lang=magma)
+    text = codegen._context(entry, fib_known(10))
+    correct, _, disclaimed = text.partition(codegen.CONJECTURAL_PROGRAMS_NOTE)
+    assert "Existing programs (correct, possibly slow)" in correct and "(Magma)" in correct
+    assert "2*n-2 \\\\ conjectured" not in correct         # the PARI block is not called correct ...
+    assert "(PARI)" in disclaimed and "2*n-2 \\\\ conjectured" in disclaimed     # ... it is quoted as disclaimed
+
+
+def test_a_block_is_disclaimed_whole_when_any_of_its_signed_parts_is_flagged():
+    """Deliberately coarser than `build_candidates`, which rejects per signed part. `_context` shows
+    `p.code[:600]` -- the whole block -- so a block with one flagged part is quoted whole under the
+    conjectural header, its clean part included; that errs in the safe direction (a clean part called
+    conjectural costs the model a claim, a conjectural part called correct costs it the truth).
+    `build_candidates` still builds the clean part's candidate; only the model's view is all-or-nothing.
+    Nothing forces these two granularities to agree, so this test is what stops someone harmonising
+    them."""
+    two_parts = "a(n) = 2*n \\\\ conjectured to be exact\n\\\\ _A. Author_, Jan 1 2020\na(n) = 2*n-2"
+    entry = _entry_with_pari(two_parts)
+    text = codegen._context(entry, fib_known(10))
+    assert "Existing programs (correct" not in text
+    assert codegen.CONJECTURAL_PROGRAMS_NOTE in text and "2*n-2" in text      # the clean part goes along
+
+    # ... while the PARI stage keeps the clean part's candidate, which is the asymmetry being pinned
+    cands, rej = pari.build_candidates(entry, fib_known(10))
+    assert [c.form for c in cands] == ["a(n)"] and len(rej) == 1
+
+
 def test_copied_terms_rejected_but_small_constants_allowed():
     known = fib_known(40)
     listed = ", ".join(str(known.values[n]) for n in range(10, 30))
@@ -162,9 +228,11 @@ def test_host_conditions_are_not_blamed_on_the_program():
 def test_every_stop_that_can_retry_is_classified():
     """The fall-through exists, but nothing reaching a retry today should be landing in it: a new Stop
     should be classified deliberately rather than inheriting definition advice."""
-    # stops that imply the program verified; generate_and_verify breaks before retrying on these
+    # stops that imply the program verified; generate_and_verify breaks before retrying on these.
+    # SEARCHED_BOUND is one of them: it is only ever raised after every known term has been reproduced,
+    # so the run is a success that declined to extend, and there is nothing to advise a retry about
     after_verification = {Stop.VERIFIED_ONLY, Stop.INFEASIBLE, Stop.OVER_PREDICTION, Stop.EXTEND_BUDGET,
-                          Stop.MAX_NEW_TERMS, Stop.FINISHED}
+                          Stop.MAX_NEW_TERMS, Stop.FINISHED, Stop.SEARCHED_BOUND}
     unclassified = [s for s in Stop if s not in after_verification
                     and s is not Stop.WRONG_TERM                      # the one intended fall-through
                     and codegen.retry_guidance(s) == codegen.DEFINITION_GUIDANCE]
@@ -539,7 +607,8 @@ def test_a_members_program_wins_and_is_reviewed_as_ai_generated(env, monkeypatch
     assert (folder / "executed.py").read_text() == executed
     readme = (folder / "README.md").read_text()
     assert "AI-generated program" in readme and "Numbered by the runner" in readme and "executed.py" in readme
-    assert (folder / "b999997.txt").read_text().splitlines()[15:] == ["16 53", "17 59", "18 61"]
+    # trailing "" is the blank line SubmitB.html requires (artifact.write), not a stray empty term line
+    assert (folder / "b999997.txt").read_text().splitlines()[15:] == ["16 53", "17 59", "18 61", ""]
     # the kept program is what ran, and its hash is the recorded one
     extra = json.loads(row["extra"])
     kept = Path(extra["program"]).read_bytes()

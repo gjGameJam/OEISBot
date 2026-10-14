@@ -18,6 +18,7 @@ starts one, and everything else (verification, budgets, estimates) assumes it ho
 | Output floods cannot exhaust the harness | Per-line and total stdout caps; pipes are always drained | `test_output_flood` |
 | If the harness dies, the job dies | Job Object kill-on-close | `test_job_dies_with_harness` |
 | The caller can stop a job at any moment | `on_line` / `on_tick` callbacks returning a reason | `test_caller_can_stop_on_a_line`, `test_on_tick_can_stop` |
+| A bug in the caller's callback cannot leave the job running unwatched or crash the caller | `on_line` and `on_tick` are called under a guard in both backends (since 2026-09-30, history item 51): an exception stops the job with `Status.CALLBACK_ERROR` and a reason naming it, the pipes are still drained, and the harness records `harness_error`, which retires nothing. Before this the stdout reader thread died silently and the job ran out its whole budget with nobody reading | `test_a_raising_line_callback_stops_the_job_and_names_the_exception`, `test_a_raising_tick_callback_stops_the_job_too` |
 
 ## Windows backend (`oeisbot/sandbox/windows.py`)
 
@@ -152,10 +153,42 @@ These were found by the tests or by real runs:
   project is Windows-specific: `config.py` hard-codes `python.exe` and `gp.exe`, and `setup` downloads
   Windows binaries.
 
+## gp outside the sandbox
+
+Since 2026-09-23 (history item 43) there is **one** code path that runs a sandbox runtime on the host
+rather than through `sandbox.run`, and it runs **both** of them: `setup_tools.runtime_versions()`
+invokes `gp --version` and `python.exe -VV` to record which runtimes produced a session's rows. Before
+that item, `config.GP` and `config.SANDBOX_PYTHON` were only ever executed inside the sandbox
+(`verify.Harness.argv`). `-VV` prints the interpreter's version and exits, so no user code runs there
+either.
+
+This does not touch [invariant 2](development.md#invariants), which covers *programs from an entry or a
+model*: the probe passes no file and evaluates nothing. What keeps it that way, and must stay true of any
+change to it:
+
+- the argv is fixed and contains no entry-derived text — `[config.GP, "-f", "--version"]`;
+- `-f` skips any `gprc`, mirroring `Harness.argv`, so a configuration file cannot inject code (that
+  `--version` is handled before `gprc` parsing was verified for gp 2.17.4 and is guaranteed by nothing
+  after an upgrade — `-f` is what makes it not matter);
+- `stdin` is `DEVNULL`, because gp is a REPL and would otherwise wait on a terminal;
+- the AppContainer holds **RX, not M**, on `PARI_DIR` and `SANDBOX_PYTHON_DIR`, so a sandboxed program
+  cannot rewrite a binary the host then executes. Verified on disk, 2026-09-23: both directories carry
+  the container SID as `(OI)(CI)(RX)` and the binaries inherit `(I)(RX)`, with no
+  `ALL APPLICATION PACKAGES` entry anywhere on either path. **The protection is the package SID, not the
+  ACE alone** — the same objects carry `Authenticated Users:(I)(M)`, and an AppContainer token is denied
+  only because Windows additionally requires the package SID to be granted. Anyone "simplifying" those
+  ACLs can break this without touching the container ACE.
+
+It remains trust-on-first-download: `setup_tools.install_gp` prints the sha256 of `gp.exe` but does not
+check it against a known value (see [known limitations](known-limitations.md#operations)).
+
 ## Changing the sandbox
 
 - Keep `tests/test_sandbox.py` passing, and add a test for any new guarantee: every test there attacks
   one guarantee directly.
+- **Do not add another host-side execution of a sandbox runtime** without the same argument as the
+  section above: a fixed argv, no entry- or model-derived text, and a reason the invariant is untouched.
+  There is exactly one such code path today (`setup_tools.runtime_versions`, covering both runtimes).
 - The harness assumes `run` never raises for program misbehavior. Problems belong in `RunResult.status`;
   only setup failures (Windows API errors while creating the job) raise.
 - If you add a runtime (a new language), grant the container read/execute on its directory in

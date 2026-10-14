@@ -85,6 +85,9 @@ def sync(conn, log: Callable[[str], None] = print, *, pull: bool = True) -> dict
         row.difficulty = difficulty(row)
         rows.append(row)
     db.upsert_sequences(conn, rows)
+    # the rows above were built from the entry alone, so their difficulty knows nothing of the b-file
+    # facts `fetch-bfiles` stored; recompute from the stored rows, which carry them
+    db.refresh_difficulty(conn, difficulty)
     gone = db.mark_not_in_more(conn, {r.a_number for r in rows})
     db.set_meta(conn, "oeisdata_commit", commit)
     db.set_meta(conn, "synced_at", db.now())

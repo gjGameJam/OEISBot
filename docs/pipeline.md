@@ -62,8 +62,10 @@ flowchart TD
    digits of the last DATA term, program languages present, the number of "more terms" credits on `%E`
    lines, and whether the name reads like a search ("smallest k such that...").
 4. **Store**: difficulty is computed from those features and everything is upserted into `sequences`
-   with `in_more = 1`; rows not seen this time get `in_more = 0`. The commit hash and time are written
-   to `meta`.
+   with `in_more = 1`; rows not seen this time get `in_more = 0`. Because those features come from the
+   entry alone, a second pass (`db.refresh_difficulty`, one transaction) then recomputes the column from
+   the stored rows, which carry the b-file facts a `fetch-bfiles` sweep left behind. The commit hash and
+   time are written to `meta`.
 
 The full sync takes about 70 seconds. The 2026-09-17 snapshot has 26,814 candidates, 186 of them
 `fini,more`.
@@ -97,8 +99,13 @@ then picks sequences with `select.candidates` and `select.pick`.
   the default 60 s verify budget and without `--model`, this left out 1,748 of the 5,316 PARI-bearing
   candidates (1,326 `no_supported_program`, 393 `verify_out_of_reach`, 29 `all_programs_dead_ends`; 12
   before session 5's 17 timeouts) in about 3 seconds; the helper check added on 2026-09-20 moves 65 more
-  sequences into `no_supported_program`;
-  with `--model` it left out 10, all `too_few_known_terms`. `oeisbot queue` and `oeisbot pick` apply the same check
+  sequences into `no_supported_program`, and the conjectural-program check added on 2026-09-26 a further
+  3 (item 47), taking the PARI pool to 3,438, and session 11's 20 retirements (2026-09-29) took it to
+  3,418 with 94 `all_programs_dead_ends`;
+  with `--model` it left out 10, all `too_few_known_terms`, until item 48 (2026-09-26) made
+  `conjectural_program` a model-pool exclusion too — **the model pool is not exempt from the conjectural
+  check**, and as of 2026-09-28 `--all` leaves out 16 (9 `too_few_known_terms`, 7
+  `conjectural_program`), taking that pool to 26,747. `oeisbot queue` and `oeisbot pick` apply the same check
   with the default budgets (`--all` standing for the `--model` pool); `fetch-bfiles` and the dashboard's
   Queue tab do not.
 - **Difficulty.** Recomputed from the current row at pick time (so b-file facts gathered since the last
@@ -108,7 +115,9 @@ then picks sequences with `select.candidates` and `select.pick`.
   [strategies](strategies.md#failure-penalty)).
 - **Weight.** `difficulty ** -alpha` (α defaults to 1; 0 is uniform).
 - **Draw.** `min(N, 25)` distinct sequences, each draw proportional to weight, using a sum tree and
-  setting a picked leaf's weight to zero. `--seed` makes the draw reproducible.
+  setting a picked leaf's weight to zero. `--seed` makes the draw reproducible. When the cap
+  (`budgets.session_attempt_cap`) cuts the request down, the session log says so; it truncates an
+  explicit list of A-numbers too.
 
 `oeisbot attempt A123456 ...` skips selection and runs stage 3 onward for the named sequences, outside
 any session.
@@ -175,9 +184,17 @@ programs that appear later in the entry go first. Details: [strategies](strategi
 - **it is a dead end**: `db.is_dead_end` finds an earlier attempt with the same executed script
   (sha256) and the same number of known terms that
   - failed deterministically (`wrong_term`, `bad_index`, `protocol`, `crash`, `incomplete`); or
-  - verified with no new terms and was judged `infeasible` under an extension time (`extend_wall_s`) and
-    memory budget (`mem_bytes`) at least as large as the current ones (both are stored in each attempt's
-    `extra`; attempts without them never count here); or
+  - verified with no new terms and was judged `infeasible` under an extension time (`extend_wall_s`) at
+    least as large as the current one and an *effective* memory cap (`mem_cap_bytes`) at least the
+    current `mem_bytes` budget (both are stored in each attempt's `extra`; attempts without them never
+    count here). Since 2026-09-30 (history item 51) the row also says which budget the verdict was
+    reached on (`extra.infeasible_on`: `time`, `memory` or `time+memory`), and only that budget is
+    compared — a verdict on time holds under any memory cap, one on memory under any extension time;
+    older rows without the key still need both. The cap is the one the feasibility check was judged against — the budget lowered to free physical RAM
+    minus the reserve — so a run squeezed by a busy machine is not retired at that budget and runs again once
+    the RAM is back. It is compared against the *configured* budget rather than against the cap the next
+    run would get, so the answer does not depend on free RAM at the time of asking and a session's picks
+    stay reproducible (since 2026-09-20); or
   - verified with no new terms and stopped at `extend_budget` after an extension time at least as large as
     the current one (from `extra`, as above; memory is not compared, because running out of memory never
     ends a run this way), provided the job had the CPU for at least 80% of its wall time
@@ -209,9 +226,12 @@ also rules out the model stage.
 
 Runs only when `--model` was given, the model server answered the availability check at startup, and
 no PARI run found new terms. That includes a sequence whose PARI program reproduced every known term but
-produced nothing new (stopped by the extension budget or an infeasible projection, or it ended by
-itself), in this attempt or in an earlier one that made it a dead end: what such a sequence needs is a
-faster program, or one that keeps going. The model is then told so, and every program it writes carries
+produced nothing new (stopped by the extension budget or an infeasible projection, by a
+[searched bound](verification-and-estimation.md#the-searched-bound-check) the extension could not reach,
+or it ended by itself), in this attempt or in an earlier one that made it a dead end: what such a
+sequence needs is a faster program, or one that keeps going. A searched bound is a reason to try the
+model rather than a reason not to: it defeats a program that *scans* upward, which the model is being
+asked not to write. The model is then told so, and every program it writes carries
 a note for the reviewer (see [strategies](strategies.md#what-the-model-is-shown)).
 `strategies.codegen.generate_and_verify` asks the model to classify the sequence (and, when the known
 terms strictly increase, whether it is a list of numbers with a property), then generates up to 3
@@ -238,8 +258,11 @@ If no program ran (`PariPlan.nothing_to_run`):
   way, or verified and found nothing new with no smaller budget", plus a count of any out of reach). The
   log names each one: "failed the same way before (attempt #N: mode)"; for `extend_budget` "verified
   before and found nothing new in no less time"; for `infeasible` "verified before and judged the next
-  term infeasible with no less time and memory";
-- otherwise `no_supported_program`, with the reasons each PARI block was rejected.
+  term infeasible with no more of the budget it ran out of";
+- otherwise `no_supported_program`, with the reasons each PARI block was rejected — including
+  "the program describes itself as \<word\> (a conjectural program cannot extend the sequence)", the
+  one rejection that refuses a part whose program would otherwise have run
+  ([strategies](strategies.md#programs-whose-author-calls-them-conjectural)).
 
 A skip row from the model stage takes precedence: with `--model` and fewer than 3 known terms, a
 sequence whose PARI programs were all out of reach is recorded as `too_few_known_terms`. A sequence whose
@@ -271,8 +294,9 @@ Every run, successful or not, writes one `attempts` row (strategy, program origi
 count and source, reproduced count, new-term count, runtime, CPU, peak memory, cost unit, the last
 projection, outcome, stop reason, detail) and one `predictions` row per projected term. The `extra` JSON
 column holds the log path, the program form, rewrite notes, the weak-verification flag, the run's
-`extend_wall_s` and `mem_bytes` budgets, the attempt's key (`attempt_call`, shared by every row of one
-`attempt_sequence` call) and, whenever new terms were found, the re-check note.
+`extend_wall_s` and `mem_bytes` budgets and the `mem_cap_bytes` it actually got, the attempt's key
+(`attempt_call`, shared by every row of one `attempt_sequence` call) and, whenever new terms were found,
+the re-check note.
 
 Outcomes: `extended` (verified with new terms, still new on oeis.org), `verified` (verified, no new
 terms), `failed`, `superseded` (new terms already on oeis.org), `recheck_pending` (new terms whose
@@ -287,9 +311,12 @@ rather than a lost one:
 1. **Record as pending**: the attempt row is written with outcome `recheck_pending` and
    `extra.recheck = "not done yet"`.
 2. **Save the result**: the in-memory result (program, known terms, every term record, predictions,
-   sandbox result), the entry name and the budgets are pickled to `data/pending/attempt-<id>.pickle`
-   (written to a `.part` file, then renamed). If saving fails, that is logged and the re-check still
-   runs; only a later retry would need the file.
+   sandbox result), the entry name and the budgets are written as JSON to
+   `data/pending/attempt-<id>.json` (to a `.part` file, then renamed). Field by field, with the field
+   names checked against the dataclasses when it is read back, so a class that gained or lost a field
+   since the save is a loud error rather than a value silently defaulted; enums travel by value,
+   known-term indices, known-term values and program-reported integers as strings. If saving fails, that is logged and the
+   re-check still runs; only a later retry would need the file.
 3. **Re-check** (`attempt.recheck`): downloads the live b-file (`fetch(..., refresh=True)`, which also
    overwrites the cached copy) and the live entry in internal format
    (`https://oeis.org/search?q=id:A123456&fmt=text`), merges them, and compares against the new terms:
@@ -315,17 +342,23 @@ rather than a lost one:
 
    If this step raises (for example, the artifact folder already exists), the error is logged and the
    attempt stays pending.
-6. **Clean up**: the pickle is deleted. Failing to delete it is only logged; nothing reads it once the
-   attempt is resolved.
+6. **Clean up**: the saved file is deleted. Failing to delete it is only logged; nothing reads it once
+   the attempt is resolved.
 
 ### Pending re-checks: `attempt.retry_pending_rechecks`
 
 Runs at the start of every `oeisbot run` that has pending re-checks, and on `oeisbot recheck`. For each
 attempt with outcome `recheck_pending`, oldest first, it loads the saved result, runs the re-check once
-(no retries) and resolves it as in step 5, then deletes the pickle. Any exception for one attempt
+(no retries) and resolves it as in step 5, then deletes the saved file. Any exception for one attempt
 (unloadable or missing file, a re-check error, a failed artifact write) is logged with its type, and that
 attempt stays pending; the function never raises for a single attempt, so a session always goes on to
-pick sequences.
+pick sequences. Each such failure is counted in `extra.recheck_failures` (reset when the error text
+changes), and a repeat is logged as `-- the same way N times now`, so a win that can never resolve
+itself stops looking like a fresh problem every session. It is still retried for ever: a pending win is
+unpublished new terms, and the sequence stays blocked until a human releases it
+([operations](operations.md#a-win-whose-re-check-failed-recheck_pending)). Neither reading nor writing
+the counter can cost the win: `extra` is JSON a human may have edited into any shape, so the read is
+guarded and says what it could not make sense of, and the write's own failure is caught and logged.
 
 Resolving is safe to repeat. For a pending attempt, a folder that still has the `.incomplete` marker was
 never recorded as a win, so `artifact.write` deletes and rewrites it; an existing folder without the marker is never

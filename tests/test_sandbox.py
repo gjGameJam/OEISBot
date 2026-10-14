@@ -198,6 +198,31 @@ def test_disk_cap():
     assert (d / "big.bin").stat().st_size < 1024 * MiB
 
 
+def test_a_raising_line_callback_stops_the_job_and_names_the_exception():
+    """A harness bug in `on_line` used to end the stdout reader thread silently, leaving the job to run out
+    its whole budget with nobody reading (found by item 46's critic; closed by item 51). The job is now
+    stopped at once with a status that says it was our fault, not the program's, and names the exception;
+    the pipe is still drained, so the child never blocks."""
+    def on_line(line, t):
+        raise ZeroDivisionError("harness bug")
+
+    res, _, _ = run_py("import itertools\nfor i in itertools.count(): print(i)", Limits(wall_s=30), on_line=on_line)
+    assert res.status is Status.CALLBACK_ERROR
+    assert "on_line raised ZeroDivisionError: harness bug" == res.stop_reason
+    assert res.wall_s < 20                                  # stopped by the guard, not by the wall clock
+
+
+def test_a_raising_tick_callback_stops_the_job_too():
+    """Same guard on `on_tick`: raised there it would escape `run` and crash the pick loop above it."""
+    def on_tick(t):
+        raise RuntimeError("tick bug")
+
+    res, _, _ = run_py("import time\ntime.sleep(30)", Limits(wall_s=60), on_tick=on_tick)
+    assert res.status is Status.CALLBACK_ERROR
+    assert res.stop_reason == "on_tick raised RuntimeError: tick bug"
+    assert res.wall_s < 20
+
+
 def test_caller_can_stop_on_a_line():
     seen = []
 

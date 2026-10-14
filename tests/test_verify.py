@@ -11,7 +11,7 @@ from oeisbot import estimate, sandbox, verify
 from oeisbot.config import Budgets
 from oeisbot.sandbox import RunResult, Status
 from oeisbot.terms import KnownTerms, Program
-from oeisbot.verify import Harness, Stop, run_attempt
+from oeisbot.verify import MAX_TERM_FIELD_DIGITS, Harness, Stop, run_attempt
 
 pytestmark = [
     pytest.mark.sandbox,
@@ -158,6 +158,65 @@ def test_incomplete_keeps_what_the_program_said_on_stderr():
     assert r.stop is Stop.INCOMPLETE and not r.verified
     assert r.detail.startswith("program ended after 0 terms: ")
     assert "gave up: no way to compute this" in r.detail
+
+
+def test_the_last_known_term_cannot_verify_a_run_that_missed_one():
+    """`on_line`'s guard at the last known index. Nothing can reach it: indices are consecutive and a
+    value that differs halts before the term is appended, so every known index has matched by the time the
+    last one arrives. The state is therefore built by hand. The guard is kept because without it such a
+    run would set `verified_at`, spend its whole extension and end as `failed`."""
+    known = KnownTerms("A000045", 0, {n: fib(n) for n in range(4)}, "data")
+    h = Harness(py(""), known, FAST)
+    for n in range(3):
+        assert h.on_line(f"@T {n} {fib(n)} 0 0 0", 0.1 * n) is None
+    h.reproduced = 0                       # the impossible state: known terms behind, none of them counted
+    said = h.on_line(f"@T 3 {fib(3)} 0 0 0", 0.4)
+    assert said == "incomplete: reproduced 1 of 4 known terms"
+    assert h.stop is Stop.INCOMPLETE and h.verified_at is None
+
+
+def test_an_over_long_counting_field_is_a_protocol_stop_not_a_crash():
+    """`on_line` runs in the sandbox's stdout reader thread, which has no exception handler and holds the
+    same lock as `on_tick`. An untrusted program can put anything in a term line -- py_runner hands the
+    candidate module the same stdout, and verify.py:31 lifts Python's own digit limit -- so a field of a
+    few hundred digits would raise OverflowError out of the float conversions a TermRecord needs, killing
+    the drain thread, and one of a few hundred thousand would stall it in quadratic int(). Both are
+    refused here, as a malformed line, before anything converts."""
+    known = KnownTerms("A000045", 0, {n: fib(n) for n in range(4)}, "data")
+    huge = "9" * 400
+    for field, line in (("cpu_us", f"@T 0 {fib(0)} {huge} 0 0"),
+                        ("work", f"@T 0 {fib(0)} 0 {huge} 0"),
+                        ("mem", f"@T 0 {fib(0)} 0 0 {huge}"),
+                        ("n", f"@T {huge} {fib(0)} 0 0 0")):
+        h = Harness(py(""), known, FAST)
+        said = h.on_line(line, 0.1)
+        assert said is not None and said.startswith("protocol:"), field
+        assert h.stop is Stop.PROTOCOL, field
+        assert not h.records, field
+
+
+def test_the_counting_field_cap_is_the_documented_one():
+    """400 digits is over the float cliff at ~309, so the cases above would also be caught with no cap
+    at all wherever a float conversion is reached. These two sit either side of MAX_TERM_FIELD_DIGITS
+    and below that cliff, so only a real cap of exactly this size passes both."""
+    known = KnownTerms("A000045", 0, {n: fib(n) for n in range(4)}, "data")
+    over = "9" * (MAX_TERM_FIELD_DIGITS + 1)
+    assert Harness(py(""), known, FAST).on_line(f"@T 0 {fib(0)} {over} 0 0", 0.1) == \
+        f"protocol: malformed term line: {f'@T 0 {fib(0)} {over} 0 0'[:200]!r}"
+    at = "9" * MAX_TERM_FIELD_DIGITS
+    h = Harness(py(""), known, FAST)
+    assert h.on_line(f"@T 0 {fib(0)} {at} 0 0", 0.1) is None
+    assert h.reproduced == 1
+
+
+def test_a_huge_term_value_is_still_a_term():
+    """The cap is per field and deliberately exempts the value: OEIS terms are legitimately unbounded,
+    which is the whole reason verify.py:31 lifts Python's limit. Capping it would refuse real sequences."""
+    big = 10 ** 5000
+    known = KnownTerms("A999999", 0, {0: big}, "data")
+    h = Harness(py(""), known, FAST)
+    assert h.on_line(f"@T 0 {big} 0 0 0", 0.1) is None
+    assert h.reproduced == 1 and h.records[0].value == big
 
 
 def test_a_gp_program_that_errors_but_exits_cleanly_says_why():
@@ -381,3 +440,49 @@ def test_gp_program_verified():
     r = run_attempt(prog, FIB_KNOWN, FAST)
     assert r.verified and r.outcome == "extended", (r.stop, r.detail, r.run.stderr_tail)
     assert [(t.n, t.value) for t in r.new_terms] == [(n, fib(n)) for n in range(31, 36)]
+
+
+def test_a_callback_error_is_its_own_stop_outside_every_dead_end_and_tail_rule():
+    """Item 51: the sandbox reports our own `on_line`/`on_tick` raising as `Status.CALLBACK_ERROR`, and
+    the harness records it as `harness_error` -- a stop that is not the program's failure, so it is not
+    in `db.DETERMINISTIC_FAILURES`, and whose detail is the sandbox's reason (it names the exception),
+    so no stderr tail is appended to it."""
+    from oeisbot import db
+    assert verify._STATUS_TO_STOP[Status.CALLBACK_ERROR] is Stop.HARNESS_ERROR
+    assert Stop.HARNESS_ERROR not in verify._TAIL_STOPS
+    assert Stop.HARNESS_ERROR.value not in db.DETERMINISTIC_FAILURES
+    known = KnownTerms("A000045", 0, {n: fib(n) for n in range(4)}, "data")
+    h = Harness(py(""), known, FAST)
+    res = h._result(RunResult(Status.CALLBACK_ERROR, None, 1.0, 0.5, 0, 6 << 30,
+                              "on_line raised ZeroDivisionError: harness bug", [], "stderr noise\n"), None)
+    assert res.stop is Stop.HARNESS_ERROR and res.detail == "on_line raised ZeroDivisionError: harness bug"
+    assert res.outcome == "failed" and not res.verified
+
+
+def test_gp_memory_is_judged_against_the_stack_ceiling_not_the_job_cap(tmp_path):
+    """Item 51 (next step 6). The gp driver reports `default(parisize) + heap`, a PARI stack figure, while
+    the job cap is enforced on the job's commit -- quantities ~800x apart -- so no gp run could ever be
+    judged infeasible on memory (A277041 reached the job cap reporting 8 MiB throughout). The harness now
+    compares the stack figure with the ceiling it launches gp with (`parisizemax`, 0.8 x the cap); a
+    Python run, whose figure is its own process memory, keeps the job cap. Same term lines, same
+    growth: the gp harness must stop strictly earlier."""
+    known = KnownTerms("A000045", 0, {n: fib(n) for n in range(4)}, "data")
+    budgets = Budgets(verify_wall_s=60, extend_wall_s=600, mem_bytes=6 << 30)
+    gp = Harness(Program("gp", "a(n)=fibonacci(n)", origin="test", strategy="pari:a(n)"), known, budgets)
+    assert gp.stack_cap == int(max(gp.mem_cap, 1 << 28) * 0.8) and gp.stack_cap < gp.mem_cap
+    assert f"parisizemax={gp.stack_cap}" in gp.argv(tmp_path)      # the same ceiling gp is launched with
+    py_run = Harness(py(""), known, budgets)
+    assert py_run.stack_cap is None
+
+    def halted_at(h: Harness) -> int:
+        mem, n = 8_000_000, 0
+        while h.stop is None and n < 200:
+            h.on_line(f"@T {n} {fib(n)} {n * 1000} 0 {int(mem)}", 0.1 * (n + 1))
+            mem *= 1.15                                     # the stack figure grows 15% a term
+            n += 1
+        assert h.stop is Stop.INFEASIBLE and h.infeasible_on == ["memory"], (h.stop, h.detail)
+        return n
+
+    n_gp, n_py = halted_at(gp), halted_at(py_run)
+    assert n_gp < n_py
+    assert gp.predictions[-1].mem_high > gp.stack_cap

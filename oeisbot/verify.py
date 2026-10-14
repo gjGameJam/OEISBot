@@ -5,6 +5,8 @@ Runs a program in the sandbox and checks every term as it streams out, as (index
   * the first index must be the first known index (the offset), then strictly consecutive
   * every known term must match; the first mismatch kills the run
   * only after *all* known terms are reproduced is anything beyond them recorded as new
+  * when verification completes, a searched bound the entry publishes is compared against the rate
+    just measured; unreachable within the extension budget -> stop before spending any of it
   * when verification completes, and after each new term, the next term is projected;
     infeasible -> stop; a term running far past a trusted projection -> kill
   * every term is appended to a JSONL log outside the sandbox as it arrives, so a kill
@@ -29,6 +31,21 @@ from .terms import KnownTerms, Program
 sys.set_int_max_str_digits(0)
 
 WEAK_VERIFICATION_TERMS = 10   # fewer known terms than this: reproducing them is weak evidence
+# A heartbeat line is advisory: it records how far a scan reached and can never make a term, so a
+# malformed one is dropped rather than halted on -- killing a sound run over a cosmetic defect in a
+# progress report would be a self-inflicted wound. These two bound what a *hostile* one can do.
+MAX_HEARTBEAT_CHARS = 200      # `int()` is quadratic and runs in the reader thread under the sandbox's lock
+HEARTBEAT_STARTUP_GRACE_S = 0.5   # gp's start-up, which the harness clock counts but the scan does not
+# The same ceiling for a term line's *counting* fields -- index, microseconds, work units, bytes. A term's
+# own value is deliberately exempt: it is legitimately unbounded, which is why line 31 lifts Python's limit.
+# The largest honest quantity here is a byte or microsecond count, far below 10^40; a longer field is a
+# forged or broken line. Capping it before `int()` closes the `OverflowError` the float conversions a
+# TermRecord needs would otherwise raise in the sandbox's reader thread, which has no exception handler:
+# the thread would die, the drain loop would stop, and the run would lose the reason it failed.
+# It does NOT close the quadratic-`int()`/`str()` stall, because the value field is exempt and MAX_LINE
+# is 1 MiB: measured on this machine, 10^6 digits costs 3.7 s to parse and 13.1 s to render, and the
+# thread holds the same lock as `on_tick` throughout. That residue is in known-limitations.md.
+MAX_TERM_FIELD_DIGITS = 40
 # raised by a driver when the program breaks the contract the driver enforces (codegen.MEMBERS_DRIVER:
 # members out of order). The order is then wrong somewhere, so no new term of that run can be trusted.
 CONTRACT_ERROR = "OEISBotContractError"
@@ -49,8 +66,10 @@ class Stop(str, Enum):
     DISK_CAP = "disk_cap"
     OUTPUT_CAP = "output_cap"
     LAUNCH_ERROR = "launch_error"
+    HARNESS_ERROR = "harness_error"      # our own callback raised (sandbox Status.CALLBACK_ERROR): never the program's fault
     # extension-phase stops
     VERIFIED_ONLY = "verified_only"      # extension not requested
+    SEARCHED_BOUND = "searched_bound"    # the entry publishes a bound the extension cannot reach
     INFEASIBLE = "infeasible"
     OVER_PREDICTION = "over_prediction"
     EXTEND_BUDGET = "extend_budget"
@@ -61,6 +80,9 @@ class Stop(str, Enum):
 _STATUS_TO_STOP = {
     Status.TIMEOUT: Stop.TIMEOUT, Status.MEMORY_CAP: Stop.MEMORY_CAP, Status.CPU_CAP: Stop.CPU_CAP,
     Status.DISK_CAP: Stop.DISK_CAP, Status.OUTPUT_CAP: Stop.OUTPUT_CAP, Status.LAUNCH_ERROR: Stop.LAUNCH_ERROR,
+    # a harness bug is recorded as its own stop, outside db.DETERMINISTIC_FAILURES, so it retires nothing
+    # (item 51); the sandbox's reason already names the exception, so no stderr tail is appended
+    Status.CALLBACK_ERROR: Stop.HARNESS_ERROR,
 }
 # stops that do not themselves say why the program produced what it did, so the stderr tail is kept
 # (see Harness._result). A stop added to `Stop` belongs here only if that is true of it too. `launch_error`
@@ -83,6 +105,23 @@ class TermRecord:
     kind: str         # 'known' | 'new' | 'unchecked' (gap in known terms) | 'void' (new, then disowned)
 
 
+@dataclass(frozen=True)
+class ScanTracking:
+    """What the harness needs to believe a predicate driver's progress heartbeats.
+
+    Supplied by the caller for the PARI predicate form only (`attempt._Attempter.run`), which is the same
+    two-gate pattern the searched-bound check uses: a caller gate that knows the form, and a mechanical
+    check here that does not take it on trust. `start` is the first k the driver tests, so for that driver
+    the position and the count are the same fact twice -- `k - start + 1 == tested` -- and a heartbeat
+    that fails the identity is not a heartbeat from the driver we built.
+
+    Without this the frontier would be a bare program self-report. That matters more than it looks: the
+    frontier's whole purpose is to let a later run skip a range, so a single bogus heartbeat would skip
+    it permanently and invisibly, and the run would honestly report having found nothing."""
+    start: int
+    max_rate: float            # pari.PREDICATE_MAX_RATE, passed in so this module never imports pari
+
+
 @dataclass
 class Prediction:
     n: int
@@ -102,14 +141,29 @@ class Prediction:
     actual_cost: float | None = None
     actual_mem: float | None = None
     censored_s: float | None = None   # still running when stopped: actual cost is at least this
+    # What the verdict above was made from: the cost fit's own statistics (`estimate.Projection`) and the
+    # rate drift. All None together, exactly when nothing could be fitted (`Assessment.cost is None`), so
+    # `trustworthy` can be told apart from `fit_trustworthy` -- a sound fit withdrawn from the kill by the
+    # drift alone is `trustworthy = 0, fit_trustworthy = 1`. New fields go at the *end*: `Prediction` is
+    # built positionally elsewhere, and one inserted mid-list would fill the wrong field silently
+    fit_trustworthy: bool | None = None
+    fit_npoints: int | None = None
+    fit_disagreement: float | None = None
+    fit_climbing: bool | None = None
+    rate_drift: float | None = None
 
     @classmethod
     def from_assessment(cls, a: estimate.Assessment, kill_factor: float) -> "Prediction":
-        """`trustworthy` is whether the over-prediction kill at `kill_factor` may act on the projection."""
+        """`trustworthy` is whether the over-prediction kill at `kill_factor` may act on the projection;
+        the `fit_*` fields and `rate_drift` are the statistics that verdict was made from."""
         note = a.drift_note(kill_factor)
+        c = a.cost
         return cls(a.n, a.unit, a.seconds, a.seconds_low, a.seconds_high, a.mem_high,
-                   a.cost.model if a.cost else None, a.trusted(kill_factor),
-                   a.feasible, a.risky, a.value_dependent, a.next_bits_high, list(a.reasons) + ([note] if note else []))
+                   c.model if c else None, a.trusted(kill_factor),
+                   a.feasible, a.risky, a.value_dependent, a.next_bits_high, list(a.reasons) + ([note] if note else []),
+                   fit_trustworthy=c.trustworthy if c else None, fit_npoints=c.npoints if c else None,
+                   fit_disagreement=c.disagreement if c else None, fit_climbing=c.climbing if c else None,
+                   rate_drift=a.rate_drift)
 
 
 @dataclass
@@ -126,6 +180,29 @@ class AttemptResult:
     run: RunResult
     verified_at_s: float | None = None
     scratch: Path | None = None
+    # the memory cap the feasibility check was judged against (`Harness.mem_cap`), which is the budget
+    # lowered to the free physical RAM of the moment. `run.mem_cap_bytes` is the sandbox's own reading of
+    # the same formula an instant later, so only this one belongs with an `infeasible` verdict
+    mem_cap: int = 0
+    # How far the predicate driver's scan actually reached, from its progress heartbeats, and what the
+    # harness made of them. None when no heartbeat was accepted -- every non-predicate run, and any
+    # predicate run killed before its first block finished. `heartbeats_ignored` and
+    # `first_bad_heartbeat` exist so a driver bug that mangles every line shows up as a number rather
+    # than as silence: without them the frontier would simply never advance and nothing would say why.
+    # New fields go at the *end*: this class is built positionally below, and one inserted mid-list
+    # would fill the wrong field silently (`Prediction` carries the same warning for the same reason)
+    scan_reached: int | None = None
+    heartbeats: int = 0
+    heartbeats_ignored: int = 0
+    first_bad_heartbeat: str | None = None
+    # Which budget an `infeasible` stop was reached on ("time", "memory", or both), so the dead-end rule
+    # can ask about that budget alone (item 51). Empty on every other stop.
+    infeasible_on: list[str] = field(default_factory=list)
+    # New terms that land at or below the entry's published searched bound -- a range a human said was
+    # empty. `{"bound": str, "quote": str, "indices": [n, ...]}`, or None. Only ever casts doubt (either
+    # the published search or this program is wrong); it can never confirm a term (invariant 10). Both
+    # fields added 2026-09-30, which invalidated any pending win saved before then (none existed)
+    below_bound: dict | None = None
 
     @property
     def new_terms(self) -> list[TermRecord]:
@@ -169,6 +246,27 @@ def _stderr_tail(res: RunResult, lines: int = 3) -> str:
     return " | ".join(said[-lines:])
 
 
+def measured_rate(records: list[TermRecord]) -> tuple[float, float, int] | None:
+    """(work per second, the window in seconds, the work done in it) over `records`, or None.
+
+    Module level, not a Harness method, so `attempt` can record exactly the rate the decision was made
+    with instead of recomputing it a second way and disagreeing.
+
+    Dropping `records[0]` follows `points()`: the first term carries interpreter start-up, and for gp
+    that is most of a short verification -- on the measured runs, about 25 ms of a 28 ms window.
+    Including it *understates* the rate, and understating makes the searched-bound skip fire more often,
+    which is the unsafe direction for a decision that cannot be undone within a session. Returning None
+    when the window collapses is the safe answer for the same reason: gp's stdout is block-buffered, so
+    several terms can arrive at nearly the same `t`, and no rate means no skip."""
+    if len(records) < 2:
+        return None
+    first, last = records[0], records[-1]
+    window, work = last.t - first.t, last.work - first.work
+    if window <= 0 or work <= 0:
+        return None
+    return work / window, window, work
+
+
 def brief_detail(detail: str) -> str:
     """A detail cut to one session-log line. A gp error runs to about 180 characters -- the call it could
     not make, the reason, and the file it gave up on -- and is worth carrying whole."""
@@ -177,9 +275,19 @@ def brief_detail(detail: str) -> str:
 
 class Harness:
     def __init__(self, program: Program, known: KnownTerms, budgets: Budgets, *, name: str = "",
-                 extend: bool = True, log_path: Path | None = None):
+                 extend: bool = True, log_path: Path | None = None, searched_bound: "Bound | None" = None,
+                 scan: ScanTracking | None = None):
         self.program, self.known, self.budgets, self.name = program, known, budgets, name
         self.extend = extend
+        # the caller gate for progress heartbeats: predicate form only (see ScanTracking)
+        self.scan = scan
+        self.scan_reached: int | None = None
+        self.heartbeats = 0
+        self.heartbeats_ignored = 0
+        self.first_bad_heartbeat: str | None = None
+        # `bounds.Bound`, and only for the PARI predicate form (attempt._Attempter.run decides). Annotated
+        # as a string so this module never imports bounds: nothing here needs more than .value and .quote
+        self.searched_bound = searched_bound
         self.log_path = log_path
         self.records: list[TermRecord] = []
         self.predictions: list[Prediction] = []
@@ -191,7 +299,17 @@ class Harness:
         self.kill_after: float | None = None
         self.child_error: str | None = None
         self.done = False
+        self.infeasible_on: list[str] = []
+        self.below_bound: list[int] = []
         self.mem_cap = min(budgets.mem_bytes, sandbox.avail_phys_bytes() - budgets.reserve_phys_bytes)
+        # What the memory projection is judged against. The job cap (`mem_cap`) is enforced on the job's
+        # commit, but the gp driver reports `default(parisize) + heap` -- the PARI *stack*, which gp
+        # commits up to `parisizemax` and errors past ("the PARI stack overflows", an `incomplete`). Those
+        # are different quantities ~800x apart, so until 2026-09-30 no gp run could be judged infeasible
+        # on memory at all (A277041 reached the job cap reporting 8 MiB throughout). A gp run is now judged
+        # against the ceiling it is launched with (`argv`), item 51. Growth outside the stack -- GMP's own
+        # allocations, which the job cap does see -- stays invisible to the projection: known-limitations.md
+        self.stack_cap: int | None = int(max(self.mem_cap, 1 << 28) * 0.8) if program.language == "gp" else None
 
     # -------------------------------------------------------------- callbacks (serialized by the sandbox)
 
@@ -199,6 +317,50 @@ class Harness:
         if self.stop is None:
             self.stop, self.detail = stop, detail
         return f"{stop.value}: {detail}"
+
+    def _drop_heartbeat(self, line: str) -> None:
+        self.heartbeats_ignored += 1
+        if self.first_bad_heartbeat is None:
+            self.first_bad_heartbeat = line[:MAX_HEARTBEAT_CHARS]
+
+    def _on_heartbeat(self, line: str, t: float) -> None:
+        """`@P <k reached> <predicate calls made> <cpu us>`: how far the scan has got.
+
+        Never halts and never touches a term. Every rejection below is a case where accepting the line
+        would let a later reader believe a range was scanned when it was not:
+
+        * no `scan` -- the caller did not build a predicate driver, so nothing here emits `@P` by
+          contract. The mechanical half of the two-gate pattern.
+        * over-long -- `int()` is quadratic and this runs in the sandbox's reader thread, which holds the
+          same lock as `on_tick`; a program spraying million-digit numbers would stall the harness's own
+          clocks rather than its own.
+        * identity `k - start + 1 != tested` -- the driver tests every k from `start`, so position and
+          count are one fact. A frontier that does not match the work claimed for it is not ours.
+        * not advancing, or behind a term already emitted -- the frontier only ever moves forward, and it
+          cannot be behind a k the driver has demonstrably tested.
+        * faster than any predicate can be tested -- the same ceiling `pari.out_of_reach` is built on,
+          with gp's start-up granted because the harness clock includes it and the scan does not.
+        """
+        if self.scan is None or len(line) > MAX_HEARTBEAT_CHARS:
+            self._drop_heartbeat(line)
+            return
+        parts = line.split()
+        try:
+            if len(parts) != 4:
+                raise ValueError
+            k, tested, _cpu_us = (int(p) for p in parts[1:])
+        except ValueError:
+            self._drop_heartbeat(line)
+            return
+        last_term = self.records[-1].value if self.records else None
+        if (tested <= 0 or k - self.scan.start + 1 != tested
+                or (self.scan_reached is not None and k <= self.scan_reached)
+                or (last_term is not None and k < last_term)
+                or tested > self.scan.max_rate * (max(t, 0.0) + HEARTBEAT_STARTUP_GRACE_S)):
+            self._drop_heartbeat(line)
+            return
+        self.heartbeats += 1
+        self.scan_reached = k
 
     def on_line(self, line: str, t: float) -> str | None:
         if not line.startswith("@"):
@@ -215,14 +377,28 @@ class Harness:
                         rec.kind = "void"
                 return self._halt(Stop.PROTOCOL, self.child_error)
             return None
+        if line.startswith("@P "):
+            self._on_heartbeat(line, t)
+            return None
         if not line.startswith("@T "):
             return None
         parts = line.split()
         try:
             if len(parts) != 6:
                 raise ValueError
-            n, value, cpu_us, work, mem = (int(p) for p in parts[1:])
-        except ValueError:
+            n_s, value_s, cpu_us_s, work_s, mem_s = parts[1:]
+            # every field but the value is a count; see MAX_TERM_FIELD_DIGITS for why this is checked
+            # here, before `int()`, rather than after
+            if any(len(f.lstrip("-")) > MAX_TERM_FIELD_DIGITS for f in (n_s, cpu_us_s, work_s, mem_s)):
+                raise ValueError
+            n, value, cpu_us = int(n_s), int(value_s), int(cpu_us_s)
+            work, mem = int(work_s), int(mem_s)
+            cpu_s = cpu_us / 1e6
+        # OverflowError is unreachable while the cap above is 40 digits and float() overflows at 309:
+        # no mutation covers it, and it is kept deliberately, as `on_line`'s `incomplete` guard below
+        # is. It is what stands between a raised cap -- or a sixth field added to the line and left out
+        # of the tuple above -- and a dead reader thread, which is a silent failure rather than a loud one.
+        except (ValueError, OverflowError):
             return self._halt(Stop.PROTOCOL, f"malformed term line: {line[:200]!r}")
 
         prev = self.records[-1] if self.records else None
@@ -240,11 +416,15 @@ class Harness:
             kind = "unchecked"
         else:
             kind = "new"
-        cpu_s = cpu_us / 1e6
         rec = TermRecord(n, value, t, cpu_s, work, mem,
                          dt=t - (prev.t if prev else 0.0), dcpu=cpu_s - (prev.cpu_s if prev else 0.0),
                          dwork=work - (prev.work if prev else 0), kind=kind)
         self.records.append(rec)
+        # A new term inside the range the entry's comment calls empty. Noted, never acted on: the term
+        # stays a term and the run goes on, because the doubt cuts both ways -- the published search may
+        # be the wrong one -- and a human decides which (the artifact README and the inbox say so)
+        if kind == "new" and self.searched_bound is not None and value <= self.searched_bound.value:
+            self.below_bound.append(n)
         self._log(rec)
 
         if kind == "new":
@@ -256,13 +436,61 @@ class Harness:
                 return self._halt(Stop.MAX_NEW_TERMS, f"reached {self.budgets.max_new_terms} new terms")
             return self._project_next(t)
         if n == self.known.last_index:
+            # Unreachable, and kept as a guard. Indices are forced consecutive from known.first_index
+            # above, and a known index whose value differs halts before the term is appended, so by the
+            # last known index every known index has been emitted and matched: reproduced == count. Were
+            # this dropped, that state would set verified_at instead, and the run would go on to spend its
+            # whole extension before ending as `failed` with a stop db.is_dead_end does not recognise.
             if self.reproduced != self.known.count:
                 return self._halt(Stop.INCOMPLETE, f"reproduced {self.reproduced} of {self.known.count} known terms")
             self.verified_at = t
             if not self.extend:
                 return self._halt(Stop.VERIFIED_ONLY, self.known.describe())
+            if (why := self._bound_exhausted()) is not None:
+                return self._halt(Stop.SEARCHED_BOUND, why)
             return self._project_next(t)
         return None
+
+    # -------------------------------------------------------------- the searched-bound check
+
+    def _bound_exhausted(self) -> str | None:
+        """Why the extension cannot reach the bound the entry publishes, or None.
+
+        Each guard is here because its absence caused a measured error (session 9):
+
+        * `work <= 0` -- `work` is hard-coded to 0 for the `a(n)` and print-loop drivers
+          (`pari.py` A_DRIVER, _EMIT), so a zero rate would make any bound look unreachable. The caller
+          only supplies a bound for the predicate form; this is the mechanical backstop for that.
+        * `extend_wall_s <= 0` -- a missing budget recorded as 0.0 made `gap > rate * 0` true for any
+          bound while this was being measured, inventing 240.3 s of saving out of nothing.
+        * `gap <= 0` -- `bounds.applicable` already filters stale claims, but this is the safety
+          boundary, so it does not take that on trust. (Strictly redundant: the threshold on the right is
+          always positive here, so a non-positive gap fails that test anyway. Kept as a statement of
+          intent, not because it has ever caught anything.)
+
+        The detail deliberately names only the bound and the budget. It reaches the model through
+        `codegen.slow_program_note`, whose contract is timing and the stop reason but **never a term
+        value**, and the last known term is always held out (`codegen.shown_indices`). Publishing the
+        rate and the margin alongside the bound would let `last_value` be recovered exactly, so they go
+        to the attempt row's `extra` instead.
+
+        The quote is kept out for a narrower reason than it first appears: `codegen._context` already
+        puts `entry.comments[:8]` in the prompt, so for almost every entry this can fire on the model
+        sees that line anyway. What `extra` avoids is the *other* path -- a later session replaying this
+        row's `detail` into `slow_program_note` through the dead-end branch of `attempt_sequence`, where
+        no comments accompany it -- and comments past the eighth."""
+        b = self.searched_bound
+        if b is None or self.budgets.extend_wall_s <= 0:
+            return None
+        measured = measured_rate(self.records)
+        if measured is None:
+            return None
+        calls_per_s, _window, _work = measured
+        gap = b.value - self.known.values[self.known.last_index]
+        if gap <= 0 or gap <= config.SEARCHED_BOUND_MARGIN * calls_per_s * self.budgets.extend_wall_s:
+            return None
+        return (f"the entry publishes a searched bound of {_short(b.value)}, beyond what the extension "
+                f"can reach in {self.budgets.extend_wall_s:g} s at the rate measured while verifying")
 
     def on_tick(self, t: float) -> str | None:
         if self.verified_at is None:
@@ -294,11 +522,13 @@ class Harness:
         n_next = self.records[-1].n + 1
         pts, unit = self.points()
         remaining = self.budgets.extend_wall_s - (t - self.verified_at)
-        a = estimate.assess(pts, n_next, unit=unit, time_budget_s=remaining, mem_budget=self.mem_cap, name=self.name)
+        mem_budget = self.stack_cap if self.stack_cap is not None else self.mem_cap    # like with like, see __init__
+        a = estimate.assess(pts, n_next, unit=unit, time_budget_s=remaining, mem_budget=mem_budget, name=self.name)
         self.predictions.append(Prediction.from_assessment(a, self.budgets.over_prediction_factor))
         self.term_started_at = t
         self.kill_after = a.kill_after_s(self.budgets.over_prediction_factor)
         if not a.feasible:
+            self.infeasible_on = list(a.infeasible_on)
             return self._halt(Stop.INFEASIBLE, "; ".join(a.reasons))
         return None
 
@@ -318,8 +548,7 @@ class Harness:
             return [str(config.SANDBOX_PYTHON), "-B", "-u", "-X", "utf8", "runner.py", "candidate.py"]
         if self.program.language == "gp":
             (scratch / "program.gp").write_text(self.program.executed, encoding="utf-8")
-            parisizemax = int(max(self.mem_cap, 1 << 28) * 0.8)
-            return [str(config.GP), "-q", "-f", "-D", f"parisizemax={parisizemax}", "program.gp"]
+            return [str(config.GP), "-q", "-f", "-D", f"parisizemax={self.stack_cap}", "program.gp"]
         raise ValueError(f"unsupported language {self.program.language!r}")
 
     def run(self, keep_scratch: bool = False) -> AttemptResult:
@@ -362,10 +591,18 @@ class Harness:
             last.censored_s = res.wall_s - self.term_started_at
         new = sum(1 for r in self.records if r.kind == "new")
         outcome = "extended" if verified and new else "verified" if verified else "failed"
+        below = None
+        if self.below_bound and self.searched_bound is not None:
+            below = {"bound": str(self.searched_bound.value), "quote": self.searched_bound.quote,
+                     "indices": list(self.below_bound)}
         return AttemptResult(self.program, self.known, outcome, stop, detail, verified, self.reproduced,
-                             self.records, self.predictions, res, self.verified_at, scratch)
+                             self.records, self.predictions, res, self.verified_at, scratch, self.mem_cap,
+                             self.scan_reached, self.heartbeats, self.heartbeats_ignored,
+                             self.first_bad_heartbeat, self.infeasible_on, below)
 
 
 def run_attempt(program: Program, known: KnownTerms, budgets: Budgets = config.DEFAULT_BUDGETS, *,
-                name: str = "", extend: bool = True, log_path: Path | None = None) -> AttemptResult:
-    return Harness(program, known, budgets, name=name, extend=extend, log_path=log_path).run()
+                name: str = "", extend: bool = True, log_path: Path | None = None,
+                searched_bound: "Bound | None" = None, scan: ScanTracking | None = None) -> AttemptResult:
+    return Harness(program, known, budgets, name=name, extend=extend, log_path=log_path,
+                   searched_bound=searched_bound, scan=scan).run()
