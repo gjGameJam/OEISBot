@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  BIN_LABELS, CHANGE_BINS, LUMP, MAX_ALPHA, MIN_DRAWN_SIDE, NEUTRAL_BIN, changeBin, failureReason, fmtChange, focusOrder, labelFits,
+  BIN_LABELS, CHANGE_BINS, LUMP, MAX_ALPHA, MIN_DRAWN_SIDE, MIN_FOCUS_SIDE, NEUTRAL_BIN, changeBin, failureReason, fmtChange, focusOrder, labelFits,
   layoutGroups, neighbour, parseAlpha, pickmapPath, squarify, undrawn, type Dir, type PlacedGroup, type Rect,
 } from "../src/treemap.ts";
 
@@ -61,7 +61,7 @@ test("squarify keeps tiles reasonably square", () => {
 
 const OPT = { headerH: 16, minLeafArea: 400, pad: 2 };
 
-test("layoutGroups: leaves sit inside their group and fill its inner box", () => {
+test("layoutGroups: leaves sit inside their group's frame and fill the part of it drawn to scale", () => {
   const box: Rect = { x: 0, y: 0, w: 1200, h: 600 };
   const groups = [
     { key: "a", leaves: heavyTail(300, 11).map((v, i) => ({ id: `a${i}`, value: v })) },
@@ -73,10 +73,12 @@ test("layoutGroups: leaves sit inside their group and fill its inner box", () =>
   const totalArea = placed.reduce((s, g) => s + area(g.rect), 0);
   assert.ok(Math.abs(totalArea - area(box)) < 1e-4);
   for (const g of placed) {
-    assert.ok(inside(g.rect, box) && inside(g.inner, g.rect));
+    assert.ok(inside(g.rect, box) && inside(g.inner, g.rect) && inside(g.leaf, g.inner));
     const filled = g.leaves.reduce((s, l) => s + area(l.rect), 0);
-    assert.ok(Math.abs(filled - area(g.inner)) < 1e-3, `${g.key}: leaves fill ${filled}, inner is ${area(g.inner)}`);
-    g.leaves.forEach((l) => assert.ok(inside(l.rect, g.inner)));
+    assert.ok(Math.abs(filled - area(g.leaf)) < 1e-3, `${g.key}: leaves fill ${filled}, the leaf box is ${area(g.leaf)}`);
+    g.leaves.forEach((l) => assert.ok(inside(l.rect, g.leaf)));
+    // the leaf box starts at the frame's corner and is cut along one side only
+    assert.ok(g.leaf.x === g.inner.x && g.leaf.y === g.inner.y && (g.leaf.w === g.inner.w || g.leaf.h === g.inner.h));
     for (let i = 0; i < g.leaves.length; i++) for (let j = i + 1; j < g.leaves.length; j++)
       assert.ok(overlap(g.leaves[i].rect, g.leaves[j].rect) === 0);
   }
@@ -100,9 +102,9 @@ test("layoutGroups: small leaves share one lump that holds exactly the members l
   const value = new Map(leaves.map((l) => [l.id, l.value]));
   const lumpValue = lump[0].members!.reduce((s, id) => s + value.get(id)!, 0);
   const total = leaves.reduce((s, l) => s + l.value, 0);
-  assert.ok(Math.abs(area(lump[0].rect) / area(g.inner) - lumpValue / total) < 1e-6);
+  assert.ok(Math.abs(area(lump[0].rect) / area(g.leaf) - lumpValue / total) < 1e-6);
   // every member of the lump would have been smaller than the threshold on its own
-  lump[0].members!.forEach((id) => assert.ok((value.get(id)! / total) * area(g.inner) < OPT.minLeafArea));
+  lump[0].members!.forEach((id) => assert.ok((value.get(id)! / total) * area(g.leaf) < OPT.minLeafArea));
 });
 
 test("layoutGroups: a lone small leaf is drawn as itself, not as a lump of one", () => {
@@ -149,7 +151,7 @@ test("layoutGroups: a leaf marked keep is drawn on its own however small, and is
   assert.equal(new Set(seen).size, 500);
   assert.equal(seen.length, 500);
   const filled = g.leaves.reduce((s, l) => s + area(l.rect), 0);
-  assert.ok(Math.abs(filled - area(g.inner)) < 1e-3);
+  assert.ok(Math.abs(filled - area(g.leaf)) < 1e-3);
 });
 
 test("layoutGroups: when every leaf is equal (alpha 0) a big group becomes one lump, a small one stays tiles", () => {
@@ -180,6 +182,35 @@ test("fmtChange: signed percent with a typeset minus, no negative zero", () => {
   assert.equal(fmtChange(0.99999), "0%");
 });
 
+test("fmtChange: the figure never reads as the next colour class, and both sides of an edge are written alike", () => {
+  // each of these used to round over the edge of its class: "−10.0%" on a tile coloured "down 1 to 10%"
+  assert.equal(fmtChange(0.90001), "−9.9%");
+  assert.equal(fmtChange(1.09999), "+9.9%");
+  assert.equal(fmtChange(0.5501), "−44%");
+  assert.equal(fmtChange(1.7996), "+79%");
+  // exactly on an edge: in the outer class, and written without a stray decimal on one side only
+  assert.equal(fmtChange(0.9), "−10%");
+  assert.equal(fmtChange(1.1), "+10%");
+  assert.equal(fmtChange(0.55), "−45%");
+  assert.equal(fmtChange(1.8), "+80%");
+  // for every ratio: the class of the figure shown is the class of the tile, or the figure sits on the edge of it
+  let seed = 5;
+  const rnd = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32;
+  const edges = [0.55, 0.9, 0.99, 1.01, 1.1, 1.8];
+  const samples = [...Array.from({ length: 20000 }, () => 0.3 + rnd() * 1.9),
+    ...edges.flatMap((e) => [-3e-4, -1e-5, -1e-9, 0, 1e-9, 1e-5, 3e-4].map((d) => e + d))];
+  for (const ratio of samples) {
+    const text = fmtChange(ratio);
+    const shown = text === "0%" ? 1 : 1 + Number(text.replace("−", "-").replace("%", "")) / 100;
+    const onEdge = edges.some((e) => Math.abs(shown - e) < 1e-9);
+    assert.ok(onEdge || changeBin(shown) === changeBin(ratio) || text === "0%", `${ratio} is shown as ${text}`);
+    if (onEdge && Math.abs(shown - 1) > 0.02) {
+      // on an outer edge the tile must really be in the outer class (the edge belongs to it)
+      assert.ok(Math.abs(ratio - 1) >= Math.abs(shown - 1) - 1e-9, `${ratio} is shown as ${text}, beyond itself`);
+    }
+  }
+});
+
 test("labelFits needs room for the text plus padding", () => {
   assert.equal(labelFits({ x: 0, y: 0, w: 60, h: 20 }, 7), true);
   assert.equal(labelFits({ x: 0, y: 0, w: 40, h: 20 }, 7), false);
@@ -200,30 +231,93 @@ test("layoutGroups: a header exactly where the group is at least 2.5 header-heig
   assert.equal(without.inner.h, h - 0.01 - 2 * OPT.pad);
 });
 
-test("layoutGroups: the same pick chance gets the same area in a small group as in a large one", () => {
-  // shares as in the real pool: one band holds half of everything, the others a few percent each
-  const shares = [0.539, 0.214, 0.078, 0.0295, 0.068, 0.0569, 0.0132];
-  const groups = shares.map((s, i) => ({ key: `b${i}`, leaves: Array.from({ length: 20 }, (_, k) => ({ id: `b${i}-${k}`, value: s / 20 })) }));
-  for (const [w, h] of [[1232, 680], [900, 600], [1600, 500]]) {
-    const placed = layoutGroups(groups, { x: 0, y: 0, w, h }, { headerH: 18, minLeafArea: 36, pad: 2 });
-    const perUnit = placed.map((g) => area(g.inner) / g.value);
-    const spread = Math.max(...perUnit) / Math.min(...perUnit);
-    assert.ok(spread < 1.02, `${w}x${h}: area per unit of chance differs by ${((spread - 1) * 100).toFixed(1)}% between groups`);
-    const rects = placed.reduce((s, g) => s + area(g.rect), 0);
-    assert.ok(Math.abs(rects - w * h) < 1e-3, "the group rects must still tile the canvas");
-    placed.forEach((g, i) => assert.ok(inside(g.rect, { x: 0, y: 0, w, h }) && (i === 0 || overlap(g.rect, placed[0].rect) === 0)));
+// The pools of 2026-11-17 at alpha 1, band by band: how many sequences and what share of the picks
+// (data/item56/pickmap_pari.json and pickmap_model.json). The model pool has a band of 9,395.
+const REAL_BANDS: [number, number][] = [[797, 0.53902585], [537, 0.21441558], [290, 0.07827056], [153, 0.02950805],
+  [546, 0.06801573], [701, 0.05692354], [306, 0.01316023], [25, 0.00065856], [2, 0.00002189]];
+const MODEL_BANDS: [number, number][] = [[1573, 0.199557], [2727, 0.195378], [1052, 0.0544509], [9395, 0.377329],
+  [3260, 0.0806917], [3529, 0.058533], [3783, 0.0285442], [1144, 0.00486185], [282, 0.000653579]];
+// the page's own height rule and options, as pickmap.tsx has them
+const pageHeight = (w: number) => Math.round(Math.min(680, Math.max(380, w * 0.55)));
+const pageOpt = (w: number, h: number) => ({ headerH: 18, minLeafArea: Math.max(36, (w * h) / 9000), pad: 2 });
+const bandGroups = (bands: [number, number][]) => bands.map(([n, share], i) =>
+  ({ key: `b${i}`, leaves: Array.from({ length: n }, (_, k) => ({ id: `b${i}-${k}`, value: share / n })) }));
+
+test("layoutGroups: one unit of pick chance is the same area in every band drawn to scale, at every width the page has", () => {
+  // Every integer width, because the old balancing loop passed at the three sizes its test picked and left the
+  // bands up to 2x apart at others (5% or more apart at 542 of these 999 widths).
+  for (const bands of [REAL_BANDS, MODEL_BANDS]) {
+    const groups = bandGroups(bands);
+    let emptiest = 0;
+    for (let w = 200; w <= 1198; w++) {
+      const h = pageHeight(w);
+      const placed = layoutGroups(groups, { x: 0, y: 0, w, h }, pageOpt(w, h));
+      const scaled = placed.filter((g) => g.scaled);
+      assert.ok(scaled.length >= 5, `${w}: only ${scaled.length} bands drawn to scale`);
+      const perUnit = scaled.map((g) => area(g.leaf) / g.value);
+      const spread = Math.max(...perUnit) / Math.min(...perUnit);
+      assert.ok(spread < 1 + 1e-9, `${w}x${h}: area per unit of chance differs by a factor ${spread} between bands`);
+      // and the tiles inside a band are at that scale too: every leaf (a lump as the sum of its members)
+      for (const g of scaled) {
+        const drawn = g.leaves.reduce((s, l) => s + area(l.rect), 0);
+        assert.ok(Math.abs(drawn / g.value / perUnit[0] - 1) < 1e-6, `${w}: band ${g.key}`);
+        assert.ok(inside(g.leaf, g.inner) && inside(g.inner, g.rect));
+      }
+      // a band not drawn to scale is exactly one `undrawn` names, so the page says so under the map
+      assert.deepEqual(placed.filter((g) => !g.scaled).map((g) => g.key), undrawn(placed));
+      assert.ok(Math.abs(placed.reduce((s, g) => s + area(g.rect), 0) - w * h) < 1e-3, "the band rects must still tile the canvas");
+      emptiest = Math.max(emptiest, 1 - scaled.reduce((s, g) => s + area(g.leaf), 0) / scaled.reduce((s, g) => s + area(g.inner), 0));
+    }
+    // the price of the common scale: framed area left empty. Measured 23.5% (PARI) and 25.0% (model) at worst.
+    assert.ok(emptiest < 0.3, `up to ${(emptiest * 100).toFixed(1)}% of the framed area is empty`);
   }
 });
 
-test("layoutGroups: a group the frame nearly swallows is not blown up to make up for it", () => {
-  // Without the MIN_KEPT guard these values spread the area per unit of chance 12-fold between the groups that
-  // have room (the measured spread with it is 1.8); the gap in the values is what makes a group's first rect tiny.
+test("layoutGroups: the scale is set by the tightest band that has room, and the others leave the difference empty", () => {
+  const opt = { headerH: 18, minLeafArea: 36, pad: 2 };
+  const groups = [{ key: "a", leaves: [{ id: "a1", value: 6 }] }, { key: "b", leaves: [{ id: "b1", value: 3 }] },
+                  { key: "c", leaves: [{ id: "c1", value: 1 }] }];
+  const placed = layoutGroups(groups, { x: 0, y: 0, w: 400, h: 200 }, opt);
+  const per = placed.map((g) => area(g.leaf) / g.value);
+  assert.ok(Math.max(...per) / Math.min(...per) < 1 + 1e-12);
+  assert.ok(placed.every((g) => g.scaled));
+  const room = placed.map((g) => area(g.inner) / g.value);
+  const tight = placed[room.indexOf(Math.min(...room))];
+  assert.deepEqual(tight.leaf, tight.inner);                                   // the tightest band is full
+  const roomy = placed.filter((g) => area(g.leaf) < area(g.inner) - 1);
+  assert.ok(roomy.length > 0);                                                 // and another one is not
+  // what is left empty is a strip off the end of the longer side, so the tiles keep the box's better proportions
+  for (const g of roomy) {
+    if (g.inner.w >= g.inner.h) assert.ok(g.leaf.w < g.inner.w && g.leaf.h === g.inner.h, g.key);
+    else assert.ok(g.leaf.h < g.inner.h && g.leaf.w === g.inner.w, g.key);
+  }
+});
+
+test("layoutGroups: a group with no room for tiles is not drawn to scale and does not set the scale", () => {
+  // the gap in the values is what makes the first group's rect a sliver: it must neither be blown up to make up
+  // for its frame nor drag every other group down to its scale
   const values = [0.00003, 0.03, 0.01, 0.001, 0.003, 0.03];
   const groups = values.map((v, i) => ({ key: `g${i}`, leaves: [{ id: `l${i}`, value: v }] }));
   const placed = layoutGroups(groups, { x: 0, y: 0, w: 1000, h: 600 }, { headerH: 18, minLeafArea: 36, pad: 2 });
-  const perUnit = placed.filter((g) => area(g.inner) >= 1500).map((g) => area(g.inner) / g.value);
-  assert.ok(perUnit.length >= 4, `only ${perUnit.length} groups have room`);
-  assert.ok(Math.max(...perUnit) / Math.min(...perUnit) < 3);
+  assert.equal(placed[0].scaled, false);
+  assert.deepEqual(undrawn(placed), ["g0"]);
+  assert.deepEqual(placed[0].leaf, placed[0].inner);              // it fills what little it has
+  const scaled = placed.filter((g) => g.scaled);
+  assert.equal(scaled.length, 5);
+  const perUnit = scaled.map((g) => area(g.leaf) / g.value);
+  assert.ok(Math.max(...perUnit) / Math.min(...perUnit) < 1 + 1e-9);
+  // the others still use most of the canvas: the sliver did not set the scale
+  assert.ok(scaled.reduce((s, g) => s + area(g.leaf), 0) > 0.6 * 1000 * 600);
+});
+
+test("layoutGroups: a band too dense for tiles is one lump on its own tab, and a keyboard can reach it", () => {
+  // the model pool's band of 9,395 at the default width: every tile would be under the 36 px² floor
+  const leaves = Array.from({ length: 9395 }, (_, k) => ({ id: `s${k}`, value: 1 / 9395 }));
+  const [g] = layoutGroups([{ key: "b3", leaves }], { x: 0, y: 0, w: 600, h: 380 }, { headerH: 0, minLeafArea: Math.max(36, (600 * 380) / 9000), pad: 2 });
+  assert.equal(g.leaves.length, 1);
+  assert.equal(g.leaves[0].members!.length, 9395);
+  assert.deepEqual(focusOrder([g], true).map((i) => i.id), [LUMP + "b3"]);
+  assert.deepEqual(focusOrder([g], false), []);
 });
 
 test("layoutGroups: empty groups, zero values and a group the frame would swallow give finite rects that still tile", () => {
@@ -258,7 +352,8 @@ test("pickmapPath: the rebuild flag appears once a rebuild is asked for, with a 
 
 // ----------------------------------------------------------------------------- undrawn
 
-const bare = (key: string, inner: Rect): PlacedGroup => ({ key, value: 0, rect: inner, inner, header: false, leaves: [] });
+const bare = (key: string, inner: Rect): PlacedGroup =>
+  ({ key, value: 0, rect: inner, inner, leaf: inner, scaled: Math.min(inner.w, inner.h) >= MIN_DRAWN_SIDE, header: false, leaves: [] });
 
 test("undrawn: a group is listed when either side of its inner rect is under the limit, edge included, in layout order", () => {
   assert.equal(MIN_DRAWN_SIDE, 6);
@@ -459,7 +554,7 @@ test("failureReason: the reason out of the text useApi keeps for a 503 with the 
 
 test("focusOrder: layout order, leaving out the leaves of a group too small to see, tiles with no area, and (unless asked for) lumps", () => {
   const placed = (key: string, inner: Rect, leaves: { id: string; rect: Rect; members?: string[] }[]): PlacedGroup =>
-    ({ key, value: 1, rect: inner, inner, header: false, leaves: leaves.map((l) => ({ id: l.id, rect: l.rect, members: l.members ?? null })) });
+    ({ key, value: 1, rect: inner, inner, leaf: inner, scaled: Math.min(inner.w, inner.h) >= MIN_DRAWN_SIDE, header: false, leaves: leaves.map((l) => ({ id: l.id, rect: l.rect, members: l.members ?? null })) });
   const r = (x: number, w: number, h = 40): Rect => ({ x, y: 0, w, h });
   const layout = [
     placed("b0", { x: 0, y: 0, w: 100, h: 40 }, [{ id: "a1", rect: r(0, 50) }, { id: "a2", rect: r(50, 30) }, { id: `${LUMP}b0`, rect: r(80, 20), members: ["z1", "z2"] }]),
@@ -497,4 +592,28 @@ test("focusOrder: on a layout with a speck band, the arrow keys reach every tile
     }
     assert.equal(seen.size, items.length, `W=${W}: ${items.length - seen.size} tiles cannot be reached by arrow keys`);
   }
+});
+
+test("focusOrder: a tile under three pixels on either side is not a keyboard stop, and the limit is inclusive", () => {
+  assert.equal(MIN_FOCUS_SIDE, 3);
+  const box: Rect = { x: 0, y: 0, w: 200, h: 40 };
+  const g: PlacedGroup = { key: "b0", value: 1, rect: box, inner: box, leaf: box, scaled: true, header: false, leaves: [
+    { id: "wide", rect: { x: 0, y: 0, w: 100, h: 40 }, members: null },
+    { id: "hair", rect: { x: 100, y: 0, w: 2.99, h: 40 }, members: null },      // a kept tile that came out a hair wide
+    { id: "flat", rect: { x: 103, y: 0, w: 40, h: 0.7 }, members: null },
+    { id: "three", rect: { x: 143, y: 0, w: 3, h: 3 }, members: null },
+  ] };
+  assert.deepEqual(focusOrder([g], true).map((i) => i.id), ["wide", "three"]);
+  assert.deepEqual(focusOrder([g], true, MIN_DRAWN_SIDE, 0).map((i) => i.id), ["wide", "hair", "flat", "three"]);   // the limit is a parameter
+});
+
+test("focusOrder: a drawn band whose tiles are all too small for a stop still gets one, on its largest tile", () => {
+  const box: Rect = { x: 0, y: 0, w: 60, h: 60 };
+  const tiny = (id: string, x: number, w: number) => ({ id, rect: { x, y: 0, w, h: 2 }, members: null });
+  const g: PlacedGroup = { key: "b3", value: 1, rect: box, inner: box, leaf: box, scaled: true, header: false,
+    leaves: [tiny("t1", 0, 2), tiny("t2", 2, 2.5), tiny("t3", 4.5, 1)] };
+  assert.deepEqual(focusOrder([g], true).map((i) => i.id), ["t2"]);
+  // not for a band with nothing drawn, and not when a real stop exists
+  assert.deepEqual(focusOrder([{ ...g, leaves: [{ id: "none", rect: { x: 0, y: 0, w: 0, h: 0 }, members: null }] }], true), []);
+  assert.deepEqual(focusOrder([{ ...g, leaves: [...g.leaves, { id: "ok", rect: { x: 10, y: 10, w: 9, h: 9 }, members: null }] }], true).map((i) => i.id), ["ok"]);
 });

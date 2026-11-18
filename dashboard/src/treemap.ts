@@ -55,7 +55,12 @@ export function squarify(values: readonly number[], rect: Rect): Rect[] {
 /** `keep`: draw this leaf on its own however small it comes out (a tile that changed must not vanish into a lump). */
 export interface Leaf { id: string; value: number; keep?: boolean }
 export interface PlacedLeaf { id: string; rect: Rect; members: string[] | null }   // members: set on a lump
-export interface PlacedGroup { key: string; value: number; rect: Rect; inner: Rect; header: boolean; leaves: PlacedLeaf[] }
+/** `rect` is the group's whole tile, `inner` what the frame (header and padding) leaves of it, and `leaf` the
+ *  part of `inner` the leaves are drawn in. `scaled` says the leaves are drawn at the layout's common scale;
+ *  false for a group with no room for that (see `layoutGroups`), whose leaves fill `inner` at a smaller one. */
+export interface PlacedGroup {
+  key: string; value: number; rect: Rect; inner: Rect; leaf: Rect; scaled: boolean; header: boolean; leaves: PlacedLeaf[];
+}
 
 export const LUMP = "~lump:";
 
@@ -69,44 +74,79 @@ function frame(r: Rect, opt: NestOptions): { header: boolean; inner: Rect } {
   return { header, inner: { x: r.x + opt.pad, y: r.y + top + opt.pad, w: Math.max(r.w - 2 * opt.pad, 0), h: Math.max(r.h - top - 2 * opt.pad, 0) } };
 }
 
-/** The group rects, sized so that the area left for the leaves is in proportion to the group's total, not the
- *  rect itself. The header and padding take a larger part of a narrow rect than of a wide one, so squarifying
- *  the plain totals would draw the same pick chance smaller in a small band than in a large one. Each pass
- *  enlarges a group's weight by the part of its rect the frame takes; a group whose frame takes nearly all of
- *  it (a band of two sequences) is left as it is. */
+/** Whether a group's inner rect has room for tiles at all (see MIN_DRAWN_SIDE). */
+const drawable = (inner: Rect, minSide: number): boolean => Math.min(inner.w, inner.h) >= minSide;
+
+/** The area per unit of value that every group with room for tiles can give its leaves: the least of
+ *  inner area / total among them. 0 when no group has room. */
+function commonScale(totals: readonly number[], rects: readonly Rect[], opt: NestOptions): { scale: number; roomy: number } {
+  let scale = Infinity, roomy = 0;
+  rects.forEach((r, i) => {
+    const { inner } = frame(r, opt);
+    if (totals[i] > 0 && drawable(inner, MIN_DRAWN_SIDE)) { roomy++; scale = Math.min(scale, (inner.w * inner.h) / totals[i]); }
+  });
+  return { scale: roomy ? scale : 0, roomy };
+}
+
+/** The group rects. Squarifying the plain totals would give every group a rect in proportion to its total, but
+ *  what the leaves get is the rect less its frame, and the header and padding take a larger part of a narrow
+ *  rect than of a wide one. So a few more layouts are tried, each enlarging a group's weight by the part of its
+ *  rect the frame took in the one before, and the layout kept is the one that leaves the tightest group the
+ *  most room (`commonScale`), among those that draw the most groups. This search does *not* make the groups
+ *  equal and was once trusted to: it cycles on squarify's row breaks and left bands up to 2x apart. Equality is
+ *  `layoutGroups`' job; all this does is waste less space getting there. */
 function fairRects(totals: number[], rect: Rect, opt: NestOptions): Rect[] {
-  let weights = totals;
-  let rects = squarify(weights, rect);
+  let rects = squarify(totals, rect);
+  let best = rects, bestFit = commonScale(totals, rects, opt);
   for (let pass = 0; pass < 8; pass++) {
-    weights = totals.map((t, i) => {
+    const weights = totals.map((t, i) => {
       const r = rects[i];
-      const kept = r.w * r.h > 0 ? frame(r, opt).inner.w * frame(r, opt).inner.h / (r.w * r.h) : 0;
+      const inner = frame(r, opt).inner;
+      const kept = r.w * r.h > 0 ? (inner.w * inner.h) / (r.w * r.h) : 0;
       return kept > MIN_KEPT ? t / kept : t;
     });
     rects = squarify(weights, rect);
+    const fit = commonScale(totals, rects, opt);
+    if (fit.roomy > bestFit.roomy || (fit.roomy === bestFit.roomy && fit.scale > bestFit.scale)) { best = rects; bestFit = fit; }
   }
-  return rects;
+  return best;
 }
 const MIN_KEPT = 0.25;
 
-/** Groups as one squarified level, then each group's leaves squarified inside it. A leaf that would get less
- *  than `minLeafArea` px² is not drawn on its own (unless it is marked `keep`): those leaves share one
- *  "lump" tile, so a group of 800 sequences does not turn into 800 specks. A lump of one leaf is just that leaf. */
+/** The part of `inner` with area `area`, from its top left corner, cut along its longer side. */
+function shrunk(inner: Rect, area: number): Rect {
+  if (!(area < inner.w * inner.h)) return inner;
+  return inner.w >= inner.h ? { ...inner, w: area / inner.h } : { ...inner, h: area / inner.w };
+}
+
+/** Groups as one squarified level, then each group's leaves squarified inside it, **all at one scale**: a
+ *  unit of value is the same number of px² in every group that has room for tiles. The scale is the tightest
+ *  such group's (`commonScale`); a roomier group draws its leaves in the part of its inner rect that this scale
+ *  fills (`leaf`) and leaves the rest of it empty, which is the price of areas that can be compared across
+ *  groups. A group with no room for tiles (`scaled: false`; `undrawn` lists it) fills its sliver at its own,
+ *  smaller scale.
+ *
+ *  A leaf that would get less than `minLeafArea` px² is not drawn on its own (unless it is marked `keep`):
+ *  those leaves share one "lump" tile, so a group of 800 sequences does not turn into 800 specks. A lump of one
+ *  leaf is just that leaf. */
 export function layoutGroups(groups: { key: string; leaves: Leaf[] }[], rect: Rect, opt: NestOptions): PlacedGroup[] {
   const totals = groups.map((g) => g.leaves.reduce((s, l) => s + Math.max(l.value, 0), 0));
   const rects = fairRects(totals, rect, opt);
+  const common = commonScale(totals, rects, opt).scale;
   return groups.map((g, gi) => {
     const r = rects[gi];
     const { header, inner } = frame(r, opt);
-    const scale = totals[gi] > 0 ? (inner.w * inner.h) / totals[gi] : 0;
+    const scaled = totals[gi] > 0 && drawable(inner, MIN_DRAWN_SIDE);
+    const scale = scaled ? common : totals[gi] > 0 ? (inner.w * inner.h) / totals[gi] : 0;
+    const leaf = scaled ? shrunk(inner, totals[gi] * scale) : inner;
     const live = g.leaves.filter((l) => l.value > 0).sort((a, b) => b.value - a.value || (a.id < b.id ? -1 : 1));
     let big = live.filter((l) => l.keep || l.value * scale >= opt.minLeafArea);
     let small = live.filter((l) => !l.keep && l.value * scale < opt.minLeafArea);
     if (small.length === 1) { big = [...big, small[0]]; small = []; }
     const entries: { id: string; value: number; members: string[] | null }[] = big.map((l) => ({ id: l.id, value: l.value, members: null }));
     if (small.length) entries.push({ id: LUMP + g.key, value: small.reduce((s, l) => s + l.value, 0), members: small.map((l) => l.id) });
-    const placed = squarify(entries.map((e) => e.value), inner);
-    return { key: g.key, value: totals[gi], rect: r, inner, header,
+    const placed = squarify(entries.map((e) => e.value), leaf);
+    return { key: g.key, value: totals[gi], rect: r, inner, leaf, scaled, header,
              leaves: entries.map((e, i) => ({ id: e.id, rect: placed[i], members: e.members })) };
   });
 }
@@ -130,14 +170,23 @@ export function changeBin(ratio: number): number {
   return ratio >= 1.8 ? 6 : ratio >= 1.1 ? 5 : 4;
 }
 
-/** "+12%", "−50%", "+0.4%" (U+2212 for the sign, as the typeset minus reads better in a tile). */
+/** "+12%", "−50%", "+0.40%" (U+2212 for the sign, as the typeset minus reads better in a tile). Rounded, except
+ *  where rounding would carry the figure over the edge of its colour class: a change of −9.999% is in "down 1 to
+ *  10%" and reads "−9.9%", never the "−10%" of the next class, so a tile's number and its colour cannot disagree.
+ *  The number of decimals follows the figure shown, so both sides of an edge are written alike. */
 export function fmtChange(ratio: number): string {
   const pct = (ratio - 1) * 100;
-  const a = Math.abs(pct);
-  const digits = a >= 10 ? 0 : a >= 1 ? 1 : 2;
-  const body = a.toFixed(digits);
-  if (Number(body) === 0) return "0%";
-  return `${pct < 0 ? "−" : "+"}${body}%`;
+  const sign = pct < 0 ? -1 : 1, a = Math.abs(pct);
+  const digitsFor = (x: number) => (x >= 10 ? 0 : x >= 1 ? 1 : 2);
+  let digits = digitsFor(a);
+  let shown = Number(a.toFixed(digits));
+  if (digitsFor(shown) < digits) { digits = digitsFor(shown); shown = Number(a.toFixed(digits)); }
+  if (shown !== 0 && changeBin(1 + (sign * shown) / 100) !== changeBin(ratio)) {
+    digits = digitsFor(a);
+    shown = Math.floor(a * 10 ** digits + 1e-9) / 10 ** digits;      // cut, not rounded; 1e-9 for 0.9 - 1 in floating point
+  }
+  if (shown === 0) return "0%";
+  return `${sign < 0 ? "−" : "+"}${shown.toFixed(digits)}%`;
 }
 
 // ----------------------------------------------------------------------------- request
@@ -179,13 +228,26 @@ export function undrawn(layout: readonly PlacedGroup[], minSide = MIN_DRAWN_SIDE
 
 // ----------------------------------------------------------------------------- keyboard
 
-/** The tiles a keyboard can land on, in layout order (group by group, each group's largest tile first): every leaf with
- *  an area, except the leaves of a group too small to see (the map lists those groups under it instead) and, unless
- *  `lumps`, the lumps (they only open their band when the map shows every band). */
-export function focusOrder(layout: readonly PlacedGroup[], lumps: boolean, minSide = MIN_DRAWN_SIDE): { id: string; rect: Rect }[] {
+/** A tile narrower than this in either direction is not a keyboard stop. A tile marked `keep` is drawn however
+ *  small, and once a model-pool snapshot exists thousands of them are under 3 px: a focus ring nobody can see, on
+ *  a tile nobody can read, thousands of times over. The table view has them. */
+export const MIN_FOCUS_SIDE = 3;
+
+/** The tiles a keyboard can land on, in layout order (group by group, each group's largest tile first): every leaf
+ *  at least `MIN_FOCUS_SIDE` on both sides, except the leaves of a group too small to see (the map lists those
+ *  groups under it instead) and, unless `lumps`, the lumps. A group that is drawn but has no leaf that large
+ *  (every one of them kept, and tiny) still gets one stop, its largest leaf: a band on the screen that a
+ *  keyboard cannot enter at all would be worse than one small focus ring. */
+export function focusOrder(layout: readonly PlacedGroup[], lumps: boolean, minSide = MIN_DRAWN_SIDE,
+                           minTile = MIN_FOCUS_SIDE): { id: string; rect: Rect }[] {
   const small = new Set(undrawn(layout, minSide));
-  return layout.filter((g) => !small.has(g.key)).flatMap((g) =>
-    g.leaves.filter((l) => l.rect.w > 0 && l.rect.h > 0 && (lumps || !l.members)).map((l) => ({ id: l.id, rect: l.rect })));
+  return layout.filter((g) => !small.has(g.key)).flatMap((g) => {
+    const drawn = g.leaves.filter((l) => l.rect.w > 0 && l.rect.h > 0 && (lumps || !l.members));
+    const big = drawn.filter((l) => Math.min(l.rect.w, l.rect.h) >= minTile);
+    const stops = big.length || !drawn.length ? big
+      : [drawn.reduce((m, l) => (l.rect.w * l.rect.h > m.rect.w * m.rect.h ? l : m))];
+    return stops.map((l) => ({ id: l.id, rect: l.rect }));
+  });
 }
 
 export type Dir = "left" | "right" | "up" | "down";

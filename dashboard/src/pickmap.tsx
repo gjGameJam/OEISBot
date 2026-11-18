@@ -1,5 +1,6 @@
-import { memo, useEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent, type MouseEvent } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { Tooltip, type TipRow, type TipState } from "./charts";
+import { describeError, fmtShare } from "./format";
 import { DataTable, OeisLink, Tile, fmtInt, fmtTime, useApi, useWidth, type Column } from "./lib";
 import {
   BIN_LABELS, CHANGE_BINS, LUMP, MAX_ALPHA, NEUTRAL_BIN, changeBin, failureReason, fmtChange, focusOrder, labelFits, layoutGroups,
@@ -26,6 +27,12 @@ const BAND_PREFIX = "b";
 const bandKey = (band: number) => `${BAND_PREFIX}${band}`;
 const bandOfKey = (key: string) => Number(key.slice(BAND_PREFIX.length));
 
+/** How far a tile's paint stops short of its rect on each side, in px: half a pixel, so neighbours are a pixel
+ *  apart. It was 1, and a band of small tiles then lost so much of itself to gutters that it showed about 1.8x
+ *  less paint per unit of chance than a band drawn as one lump; at 0.5 that is about 1.3x
+ *  (data/item56/area_spread.ts, which must use the same figure). */
+const TILE_INSET = 0.5;
+
 /** Tiles in these classes are drawn on their own however small; the rest of the small ones share a lump. */
 const NOTABLE = new Set([0, 1, 5, 6]);
 /** Class of a row: -1 for "new in the pool" (nothing to compare), else 0..6. */
@@ -35,14 +42,6 @@ function binOf(r: PmRow, compared: boolean): number {
   if (!compared) return NEUTRAL_BIN;
   if (r.new) return NEW;
   return r.ratio == null ? NEUTRAL_BIN : changeBin(r.ratio);
-}
-
-function fmtShare(p: number): string {
-  const pct = p * 100;
-  if (pct === 0) return "0%";
-  if (pct >= 10) return `${pct.toFixed(0)}%`;
-  if (pct >= 1) return `${pct.toFixed(1)}%`;
-  return `${pct.toPrecision(2)}%`;
 }
 
 function ago(seconds: number): string {
@@ -95,17 +94,17 @@ interface LeafTileProps {
 const LeafTile = memo(function LeafTile({ l, byId, names, compared, headers, baselineId, tab }: LeafTileProps) {
   const look = lookOf(l.id, l.members, byId, compared);
   const r = l.rect;
-  const inset = Math.min(1, Math.min(r.w, r.h) / 4);
+  const inset = Math.min(TILE_INSET, Math.min(r.w, r.h) / 4);
   const hatched = look.bin === NEW;
   const text = look.bin === NEW ? "new" : compared ? fmtChange(look.ratio ?? 1) : fmtShare(look.p);
   const first = l.members ? `${fmtInt(l.members.length)} small` : l.id;
   const lines = labelFits(r, Math.max(first.length, text.length), 2) ? 2 : labelFits(r, first.length) ? 1 : 0;
   const about = tab == null ? undefined : l.members
-    ? `${fmtInt(l.members.length)} small tiles in band ${names.get(l.id.slice(LUMP.length)) ?? ""}, ${describeLook(look, compared, baselineId)}; opens the band`
+    ? `${fmtInt(l.members.length)} small tiles in band ${names.get(l.id.slice(LUMP.length)) ?? ""}, ${describeLook(look, compared, baselineId)}; ${headers ? "opens the band" : "opens the table view, which lists them"}`
     : `${l.id}, ${byId.get(l.id)!.name}, ${describeLook(look, compared, baselineId)}`;
   return (
     <g>
-      <rect className={l.members ? (headers ? "pm-tile lump" : "pm-tile lump flat") : "pm-tile"} data-id={l.id} x={r.x + inset} y={r.y + inset} width={Math.max(r.w - 2 * inset, 0)}
+      <rect className={l.members ? "pm-tile lump" : "pm-tile"} data-id={l.id} x={r.x + inset} y={r.y + inset} width={Math.max(r.w - 2 * inset, 0)}
             height={Math.max(r.h - 2 * inset, 0)} rx={1.5}
             fill={hatched ? "url(#pm-new)" : `var(--chg-${look.bin})`}
             tabIndex={tab ?? undefined} role={tab == null ? undefined : l.members ? "button" : "link"} aria-label={about} />
@@ -150,9 +149,11 @@ interface Shown { tip: TipState; by: "mouse" | "focus" }
 
 const ARROWS: Record<string, Dir> = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" };
 
-function Canvas({ layout, rows, byId, bands, compared, headers, width, height, baselineId, onBand }: {
+function Canvas({ layout, rows, byId, bands, compared, headers, width, height, baselineId, onBand, onTable }: {
   layout: PlacedGroup[]; rows: PmRow[]; byId: Map<string, PmRow>; bands: PmBand[]; compared: boolean; headers: boolean;
   width: number; height: number; baselineId: number | null; onBand: (band: number) => void;
+  /** Open the table view: what a lump does on a band's own tab, where there is no band left to open. */
+  onTable: () => void;
 }) {
   const [shown, setShown] = useState<Shown | null>(null);
   const [stop, setStop] = useState<string | null>(null);
@@ -168,8 +169,9 @@ function Canvas({ layout, rows, byId, bands, compared, headers, width, height, b
   const names = useMemo(() => new Map(bands.map((b) => [bandKey(b.band), b.label])), [bands]);
   const bandLabel = (band: number) => bands.find((b) => b.band === band)?.label ?? String(band);
 
-  // The tiles a keyboard can land on. One of them is the tab stop: the one last focused, else the first.
-  const order = useMemo(() => focusOrder(layout, headers), [layout, headers]);
+  // The tiles a keyboard can land on, lumps included: a lump opens its band, or on a band's own tab the table.
+  // One of them is the tab stop: the one last focused, else the first.
+  const order = useMemo(() => focusOrder(layout, true), [layout]);
   const focusIds = useMemo(() => new Set(order.map((i) => i.id)), [order]);
   const stopId = stop != null && focusIds.has(stop) ? stop : order[0]?.id ?? null;
 
@@ -187,7 +189,7 @@ function Canvas({ layout, rows, byId, bands, compared, headers, width, height, b
     if (lump) {
       const band = bandOfKey(id.slice(LUMP.length));
       rowsOut.push({ label: "Difficulty band", value: bandLabel(band) });
-      if (headers) rowsOut.push({ label: "Click or Enter", value: "to open this band" });
+      rowsOut.push({ label: "Click or Enter", value: headers ? "to open this band" : "to open the table view" });
       return { x, y, title: `${fmtInt(lump.length)} small tiles`, rows: rowsOut };
     }
     const r = byId.get(id)!;
@@ -197,7 +199,7 @@ function Canvas({ layout, rows, byId, bands, compared, headers, width, height, b
   };
 
   const activate = (id: string) => {
-    if (id.startsWith(LUMP)) { if (headers) onBand(bandOfKey(id.slice(LUMP.length))); }
+    if (id.startsWith(LUMP)) { if (headers) onBand(bandOfKey(id.slice(LUMP.length))); else onTable(); }
     else window.open(`https://oeis.org/${id}`, "_blank", "noopener,noreferrer");
   };
   const focusTile = (id: string) => {
@@ -224,6 +226,21 @@ function Canvas({ layout, rows, byId, bands, compared, headers, width, height, b
     refocus.current = false;
     if (order.length) focusTile(order[0].id);
   }, [order]);
+
+  // A tooltip is placed in the window, once, from where its tile or the pointer was. When the page scrolls, the
+  // tile moves and the tooltip would stay behind, pointing at whatever slid under it. So a scroll ends the
+  // pointer's tooltip and puts the keyboard's back where its tile now is. It must not simply close that one: the
+  // browser scrolls a half-hidden tile into view just after it takes the focus, which is a scroll too.
+  const onScroll = useRef<() => void>(() => undefined);
+  onScroll.current = () => {
+    const el = document.activeElement;
+    if (!(el && svgRef.current?.contains(el) && showFor(el))) setShown(null);
+  };
+  useEffect(() => {
+    const handler = () => onScroll.current();
+    window.addEventListener("scroll", handler, { capture: true, passive: true });
+    return () => window.removeEventListener("scroll", handler, { capture: true });
+  }, []);
 
   const idOf = (e: { target: EventTarget }) => (e.target as Element).getAttribute?.("data-id") ?? null;
 
@@ -255,7 +272,7 @@ function Canvas({ layout, rows, byId, bands, compared, headers, width, height, b
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();                                               // Space must not scroll the page
       if (e.repeat) return;                                             // a held key must not open a tab per repeat
-      if (id.startsWith(LUMP)) refocus.current = true;
+      if (id.startsWith(LUMP) && headers) refocus.current = true;         // the band's map replaces this one; the table takes its own focus
       activate(id);
       return;
     }
@@ -270,7 +287,7 @@ function Canvas({ layout, rows, byId, bands, compared, headers, width, height, b
     <>
       <svg ref={svgRef} width={width} height={height} role="group" onMouseMove={onMove} onClick={onClick}
            onMouseLeave={() => setShown((s) => (s?.by === "mouse" ? null : s))} onFocus={onFocus} onBlur={onBlur} onKeyDown={onKeyDown}
-           aria-label={`Treemap of ${fmtInt(rows.length)} sequences; area is pick chance, colour is the change since the earlier snapshot. Arrow keys move between tiles, Enter opens one, Escape closes the tooltip. The table view below has the same data.`}>
+           aria-label={`Treemap of ${fmtInt(rows.length)} sequences; area is pick chance${compared ? ", colour is the change since the earlier snapshot" : ""}. Arrow keys move between tiles, Enter opens one, Escape closes the tooltip. The table view below has the same data.`}>
         <defs>
           <pattern id="pm-new" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
             <rect width="7" height="7" style={{ fill: "var(--chg-3)" }} />
@@ -291,7 +308,7 @@ function Undrawn({ keys, bands, onBand }: { keys: string[]; bands: PmBand[]; onB
   if (hidden.length === 0) return null;
   return (
     <div className="pm-undrawn" role="group" aria-label="Bands too small to draw">
-      <span className="secondary">Too small to draw here:</span>
+      <span className="secondary">Too small to draw to scale here:</span>
       {hidden.map((b) => (
         <button key={b.band} className="chip" onClick={() => onBand(b.band)}
                 title={`${fmtInt(b.n)} sequences holding ${fmtShare(b.share)} of the picks; open this band to see them`}>
@@ -317,8 +334,9 @@ function Legend({ compared, baselineId }: { compared: boolean; baselineId: numbe
   );
 }
 
-function TableTwin({ rows, compared, bands }: { rows: PmRow[]; compared: boolean; bands: PmBand[] }) {
-  const [open, setOpen] = useState(false);
+function TableTwin({ rows, compared, bands, open, onOpen }: {
+  rows: PmRow[]; compared: boolean; bands: PmBand[]; open: boolean; onOpen: (open: boolean) => void;
+}) {
   const bandLabel = (band: number) => bands.find((b) => b.band === band)?.label ?? String(band);
   const columns: Column<PmRow>[] = [
     { key: "a", label: "Sequence", render: (r) => <OeisLink a={r.a} /> },
@@ -334,8 +352,8 @@ function TableTwin({ rows, compared, bands }: { rows: PmRow[]; compared: boolean
     ] : []),
   ];
   return (
-    <details className="twin" onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}>
-      <summary>Table view ({fmtInt(rows.length)} sequences)</summary>
+    <details className="twin" open={open} onToggle={(e) => onOpen((e.currentTarget as HTMLDetailsElement).open)}>
+      <summary id="pm-table-summary">Table view ({fmtInt(rows.length)} sequences)</summary>
       {open && <DataTable rows={rows} columns={columns} rowKey={(r) => r.a} initialSort={{ key: "p", desc: true }} />}
     </details>
   );
@@ -346,7 +364,20 @@ export function PickMapView() {
   const [alphaText, setAlphaText] = useState("1");
   const [alpha, setAlpha] = useState(1);
   const [rebuilds, setRebuilds] = useState(0);
-  const [band, setBand] = useState<number | null>(null);
+  const [band, setBandState] = useState<number | null>(null);
+  const [tableOpen, setTableOpen] = useState(false);
+  // another band is another table: it starts closed, as it did when the table was remounted per band
+  const setBand = (b: number | null) => { setBandState(b); setTableOpen(false); };
+  // A lump on a band's own tab: the band is too dense for tiles, so the table is where its sequences are. The
+  // focus goes with it, or a keyboard user would be left on a tile that did nothing they could see.
+  const openTable = () => {
+    setTableOpen(true);
+    window.requestAnimationFrame(() => {
+      const summary = document.getElementById("pm-table-summary");
+      summary?.focus();
+      summary?.scrollIntoView({ block: "nearest" });
+    });
+  };
   const [wrapRef, width] = useWidth<HTMLDivElement>();
   const typed = parseAlpha(alphaText);
 
@@ -358,7 +389,8 @@ export function PickMapView() {
 
   // A rebuild is asked for once: the first request carries the flag, every later one (the hourly refresh) does not,
   // and choosing another pool or alpha drops it.
-  const pickPool = (p: Pool) => { setPool(p); setBand(null); setRebuilds(0); };
+  // Pressing the pool that is already chosen does nothing: it used to reset the band and drop a rebuild in flight.
+  const pickPool = (p: Pool) => { if (p === pool) return; setPool(p); setBand(null); setRebuilds(0); };
   const { data, error, loading } = useApi<PmData>(pickmapPath(pool, alpha, rebuilds), 3600000, false, pickmapPath(pool, alpha));
   const shown = data && data.pool === pool ? data : null;
   // Dimmed while a request is out, or while the map is for another alpha than the box says; not once a request failed,
@@ -410,14 +442,21 @@ export function PickMapView() {
   }, [shown, derived, activeBand, width, height]);
   const hidden = useMemo(() => (activeBand == null ? undrawn(layout) : []), [layout, activeBand]);
 
-  const notes: string[] = [];
+  // `alarm` marks a note that says the colours may mislead; the others only describe the state of things.
+  const notes: { key: string; text: ReactNode; alarm?: boolean }[] = [];
+  const cmd = (text: string) => <span className="mono">{text}</span>;
   if (shown) {
-    if (shown.snapshots === 0) notes.push(`No snapshot of the ${pool} pool is stored yet. Run \`oeisbot snapshot\` (every \`oeisbot run\` stores one too); until then there is nothing to compare with.`);
-    else if (!shown.baseline) notes.push("Every stored snapshot is identical to the live pool, so there is no change to show yet.");
-    if (shown.baseline?.budgets_differ) notes.push("The baseline was taken under other time budgets than the live pool, so part of the change comes from that and not from what happened.");
-    if (shown.baseline?.rules_differ === true) notes.push("The selection rules (the code that scores candidates) changed since the baseline, so part of the change comes from the code.");
-    if (shown.baseline && shown.baseline.rules_differ === null) notes.push("The selection rules could not be compared with the baseline's (it recorded none, or this server could not read its own source files), so a change in them cannot be ruled out.");
-    if (shown.running_session) notes.push(`Session ${shown.running_session.id} (started ${fmtTime(shown.running_session.started_at)}) has not finished; the map shows the attempts it has recorded so far.`);
+    // which commands store which pool: cli.cmd_snapshot stores the model pool only with --all, a session stores
+    // the pool it drew from, and a sync stores the PARI pool only (attempt.snapshot_after_sync)
+    if (shown.snapshots === 0) {
+      notes.push({ key: "none", text: pool === "model"
+        ? <>No snapshot of the model pool is stored yet. Run {cmd("oeisbot snapshot --all")} (a session started with {cmd("oeisbot run --model")} stores one too); until then there is nothing to compare with.</>
+        : <>No snapshot of the PARI pool is stored yet. Run {cmd("oeisbot snapshot")} (every {cmd("oeisbot run")}, and an {cmd("oeisbot sync")} that changes the pool, stores one too); until then there is nothing to compare with.</> });
+    } else if (!shown.baseline) notes.push({ key: "same", text: "Every stored snapshot is identical to the live pool, so there is no change to show yet." });
+    if (shown.baseline?.budgets_differ) notes.push({ key: "budgets", alarm: true, text: "The baseline was taken under other time budgets than the live pool, so part of the change comes from that and not from what happened." });
+    if (shown.baseline?.rules_differ === true) notes.push({ key: "rules", alarm: true, text: "The selection rules (the code that scores candidates) changed since the baseline, so part of the change comes from the code." });
+    if (shown.baseline && shown.baseline.rules_differ === null) notes.push({ key: "rules-unknown", alarm: true, text: "The selection rules could not be compared with the baseline's (it recorded none, or this server could not read its own source files), so a change in them cannot be ruled out." });
+    if (shown.running_session) notes.push({ key: "running", text: `Session ${shown.running_session.id} (started ${fmtTime(shown.running_session.started_at)}) has not finished; the map shows the attempts it has recorded so far.` });
   }
 
   const base = shown?.baseline ?? null;
@@ -443,7 +482,7 @@ export function PickMapView() {
       {error && (
         <div className="error pm-failure" role="alert">
           <p>
-            {reason != null ? `The ${poolName} pool could not be built: ${reason}` : `Could not load: ${error}`}
+            {reason != null ? `The ${poolName} pool could not be built: ${reason}` : `Could not load: ${describeError(error)}`}
             {shown ? (shown.alpha !== alpha ? `. The map below still shows α ${shown.alpha}.` : ". The map below is the last one that loaded.") : null}
           </p>
           <button className="chip" aria-disabled={loading} onClick={tryAgain}>{loading ? "Building…" : "Try again"}</button>
@@ -460,7 +499,7 @@ export function PickMapView() {
             <Tile label="In / out of the pool" value={base ? `${fmtInt(shown.entered.n)} / ${fmtInt(shown.gone.n)}` : "–"}
                   sub={base ? `in: ${fmtShare(shown.entered.share)} of the picks now; out: ${fmtShare(shown.gone.share)} of the picks then` : undefined} />
           </div>
-          {notes.length > 0 && <ul className="notes">{notes.map((n) => <li key={n}>{n}</li>)}</ul>}
+          {notes.length > 0 && <ul className="notes">{notes.map((n) => <li key={n.key} className={n.alarm ? "alarm" : undefined}><span>{n.text}</span></li>)}</ul>}
           <div className={`card ${stale ? "stale" : ""}`} aria-busy={loading}>
             <h2>Pick map</h2>
             <p className="caption">
@@ -468,30 +507,32 @@ export function PickMapView() {
               a likely one. Colour is how that chance has moved since the earlier snapshot, measured against the sequences that were in both
               pools: when a few sequences leave or fail, the rest do not all drift together. The &ldquo;before&rdquo; chance in a tooltip or
               the table is scaled the same way (the sequences in both pools hold the same total of it as they do now), so before and now
-              divide into the change shown. Click a tile to open the entry on oeis.org. From the keyboard, Tab enters the map, the arrow
-              keys move between tiles, and Enter opens the entry (or, on a lump of small tiles, its band).
+              divide into the change shown. Every band is drawn at one scale, so a tile in one band can be compared with a tile in
+              another; a band with room to spare leaves some of its box empty for that. Click a tile to open the entry on oeis.org. From
+              the keyboard, Tab enters the map, the arrow keys move between tiles, and Enter opens the entry. A dashed tile stands for
+              many sequences too small to draw: it opens their band, or, on the band&rsquo;s own tab, the table view that lists them.
             </p>
             {shown.n === 0 ? (
               <p className="muted">The {pool === "model" ? "model" : "PARI"} pool is empty: no sequence is a candidate for it right now.</p>
             ) : (
               <>
                 <div className="subtabs" role="tablist" aria-label="Difficulty band">
-                  <button className="chip" role="tab" aria-selected={activeBand == null} onClick={() => setBand(null)}>All bands</button>
+                  <button className="chip" role="tab" id="pm-tab-all" aria-controls="pm-panel" aria-selected={activeBand == null} onClick={() => setBand(null)}>All bands</button>
                   {shown.bands.map((b) => (
-                    <button key={b.band} id={`pm-tab-${b.band}`} className="chip" role="tab" aria-selected={activeBand === b.band} onClick={() => setBand(b.band)}
+                    <button key={b.band} id={`pm-tab-${b.band}`} className="chip" role="tab" aria-controls="pm-panel" aria-selected={activeBand === b.band} onClick={() => setBand(b.band)}
                             title={`${fmtInt(b.n)} sequences holding ${fmtShare(b.share)} of the picks`}>
                       {b.label}{" "}<span className="muted">{fmtInt(b.n)} · {fmtShare(b.share)}</span>
                     </button>
                   ))}
                 </div>
-                <div className="chart pm-wrap" ref={wrapRef}>
+                <div className="chart pm-wrap" ref={wrapRef} id="pm-panel" role="tabpanel" aria-labelledby={`pm-tab-${activeBand ?? "all"}`}>
                   <Canvas layout={layout} rows={rows} byId={derived.byId} bands={shown.bands} compared={derived.compared}
                           headers={activeBand == null} width={Math.max(width, 200)} height={height}
-                          baselineId={base?.id ?? null} onBand={setBand} />
+                          baselineId={base?.id ?? null} onBand={setBand} onTable={openTable} />
                 </div>
                 <Undrawn keys={hidden} bands={shown.bands} onBand={(b) => { focusTab.current = b; setBand(b); }} />
                 <Legend compared={derived.compared} baselineId={base?.id ?? null} />
-                <TableTwin key={activeBand ?? "all"} rows={rows} compared={derived.compared} bands={shown.bands} />
+                <TableTwin key={activeBand ?? "all"} rows={rows} compared={derived.compared} bands={shown.bands} open={tableOpen} onOpen={setTableOpen} />
               </>
             )}
           </div>

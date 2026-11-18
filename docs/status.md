@@ -8,22 +8,33 @@ not to build resume, the runtime versions, review #1's independent check, sessio
 false wins, bundle A's three defect fixes, the conjectural-program check and its model-pool half,
 the three reviews, session 11, the day every open decision was answered and the chosen items built,
 session 12 with the offer (a) backfill, the two refusals that followed, the dashboard's Pick map and
-its loose ends (history items 21 to 55), and the commit that landed items 34 to 54 (item 55 is built and
-not committed).
+its loose ends (history items 21 to 55), the commit that landed items 34 to 54, and the dashboard defect
+sweep (item 56; item 55 is committed and pushed, item 56 is built and not committed).
 This page
 exists so work can resume in a new session without the history of the one that built the project. Update
 it at the end of each working session.
 
-**No task is in progress.** The latest is **history item 55** (2026-10-14): the Pick map's loose ends, each
+**No task is in progress** (2026-11-18). The latest is **history item
+56**: the user saw points drawn outside the axes of the estimator chart and asked for an audit of the whole
+dashboard, a plan, and an audit of the plan. Three audit agents and a browser walk found about 45 defects;
+the plan's critic found 25 problems with the plan (3 blockers); four decisions were the user's, by option
+question ("Exclude everywhere", "Commit item 55 first", "Lump opens the table", "Exact common scale"). Built
+in four sections with tests first, 96 mutation checks, two independent audits of the diff and a browser pass
+after each section. The ones that showed wrong information: the estimator's axes now hold every point; **a
+win is an `extended` run whose review was not rejected or refused, so the header reads 1 win and not 3**; the
+Pick map draws every band at exactly one scale; and a band too dense for tiles opens the table view. **Not
+committed, by the user's word ("The sweep can stay uncommitted", 2026-11-18).** While it was built `C:` had
+7.3 GB free, under the sandbox's 8 GiB reserve, so the 90 tests that run the sandbox stopped with `disk_cap`;
+the user freed space, **the whole suite then passed (634, with 9.6 GiB free) and item 55's commit `a6ae951`
+was pushed**, both later the same day. The item before it was **history item 55** (2026-10-14): the Pick map's loose ends, each
 one decided by the user as an option question ("Also after every sync", "Keep it fixed", "Add a footer chip",
 "Make tiles focusable", "PARI only", "The newest snapshot's budgets", "Friendly message + retry"). `oeisbot
 sync` now records a PARI snapshot after the sync (about 5.5 s on the real pool), the "All bands" view names
 the bands it cannot draw, the tiles are reachable and operable from the keyboard, and a pool that cannot be
 built shows its reason with a retry button instead of a bare 500. A critic on the plan (13 findings, all
 accepted), mutation checks (Python 22 + 4 + 19 mutants, TypeScript 71, no survivor), an independent
-audit (`data/item55/audits.txt`) and **no browser pass yet**, because the dashboard server was killed for
-memory pressure and is not restarted unprompted. **Built on top of `f0081d9` and not committed**; the user
-asked for the commit of items 34 to 54 only, so this waits for its own request. The one before it (the
+audit (`data/item55/audits.txt`); its browser pass was done on 2026-11-17 and it was **committed as
+`a6ae951` on 2026-11-18** (the user: "Commit item 55 first") and pushed the same day. The one before it (the
 user, 2026-10-13: "I like the idea of making the pick chance display a heat map like that one of the S&P such
 that the pick chance is correlated with the size of the square on the map and the delta of pick chance can
 also be displayed") was finished as **history item 54**:
@@ -277,17 +288,20 @@ added two tables to the live database and wrote one snapshot into them** (`pick_
 tables there by accident, so the backup contains them (the history entry has the account). Nothing else
 in the database changed.
 
-**Item 55 is not in the commit.** It was built on top of `f0081d9` on 2026-10-14 and sits in the working tree;
-`git status` is the authority on which files (a hand-kept list drifted before), and its plan, critic, timing
-scripts, mutation runs and audits are in the gitignored `data/item55/`. **It wrote nothing to the live
-database:** at the time of writing `data/oeisbot.sqlite3` still has the modification time of item 54's
+**Item 55 is its own commit, `a6ae951` ("Item 55: the Pick map's loose ends"), on top of `f0081d9`, and
+it is `origin/main`.** The user chose "Commit item 55 first" on 2026-11-17, so that item 56 would be a separate diff, and
+the answer included the push. The push waited a day: the suite could not be run whole until the disk had room (see
+item 56), and it was made on 2026-11-18 after 634 tests passed and a fetch showed `origin/main` still at `f0081d9`. **Item 56 is in
+the working tree, uncommitted**; `git status` is the authority on which files. Item 55's plan, critic, timing
+scripts, mutation runs and audits are in the gitignored `data/item55/`, item 56's in `data/item56/`. **It wrote nothing to the live
+database, and nor did item 56:** on 2026-11-18 `data/oeisbot.sqlite3` still has the modification time of item 54's
 snapshot (2026-10-13 21:30) and the one snapshot in it, and the sync snapshot was timed on a `VACUUM INTO`
-copy. The rules fingerprint is unchanged by it as well (`attempt.rules_fingerprint()` is `af16ba7ce8d3`,
+copy. The rules fingerprint is unchanged by both as well (`attempt.rules_fingerprint()` is `af16ba7ce8d3`,
 equal to snapshot #1's), because `budgets_of` and `snapshot_after_sync` sit outside what the fingerprint
 hashes; so the first snapshot a sync records will not carry a "the selection rules changed" note on that
 account.
 
-587 tests pass and `scripts/check_docs.py` reports no link problems. Every decision made so far is in the
+634 tests pass and `scripts/check_docs.py` reports no link problems. (Seen on 2026-11-18, with item 56 in the working tree, once the disk had room; see item 56.) Every decision made so far is in the
 table below; what could come next is in [next steps](#open-offers-and-next-steps).
 
 ## Offers G, H and F, one at a time (done)
@@ -475,8 +489,9 @@ critic's findings, summarised in history item 41.
 3. **Confirm the machine is still set up** (every command should succeed without reinstalling):
 
    ```
-   .venv\Scripts\python -m pytest            # expect 587 passed (on an otherwise idle machine: history item 30)
-   cd dashboard && npm test                  # 33 node tests (the Pick map's pure logic); npm run build must be clean too
+   .venv\Scripts\python -m pytest            # expect 634 passed (on an otherwise idle machine: history item 30).
+                                             # 90 failures that all say disk_cap mean C: has under 8 GiB free, not a bug
+   cd dashboard && npm test                  # 68 node tests (the dashboard's pure logic, three files); npm run build must be clean too
    .venv\Scripts\oeisbot model-check         # expect 'ready' (first call loads the model, about a minute)
    .venv\Scripts\oeisbot stats               # expect 26,814 candidates (14,436 with no program)
    .venv\Scripts\oeisbot attempts --limit 300 # expect 280 rows, ids 1-280; failure modes include
@@ -707,7 +722,13 @@ critic's findings, summarised in history item 41.
 
 ## Where things stand
 
-- **Build:** all eight steps of the [design spec](design-spec.md) are implemented, with 587 passing tests.
+- **Build:** all eight steps of the [design spec](design-spec.md) are implemented, with 634 passing tests.
+- **The dashboard had a defect sweep** (item 56, 2026-11-17 and 18), **built, tested, and in the working
+  tree uncommitted** (19 modified files and 5 new; `git status`). The page now reads 1 win, 2 rejected and
+  18.6 hours per win. The frontend is built into `oeisbot/dashboard/static` (not committed; `npm run build`
+  in `dashboard/` remakes it). **A dashboard server may still be running** at `http://127.0.0.1:8765`: the
+  user asked for it on 2026-11-17 and uses it; it is a process of that session, so check the port before
+  starting another, and do not start one unprompted.
 - **Session 11 ran** (item 50, 2026-09-29): 25 PARI picks at the 60 s gate, 5 verified, **0 new terms**,
   2.78 h, 8.98 picks/h. Its lasting output is a **method and a defect class**, not a term. The method:
   read every pick's program before the run (`data/session11/progs.py`), pre-register a per-pick
@@ -1059,8 +1080,14 @@ critic's findings, summarised in history item 41.
 | Leave the over-prediction kill rules as they are (no kill on untrusted risky fits, no withdrawal of trust when risky) | user, on the replay (4,423 s saved on record against a six-term sample of finished terms) | history item 53 |
 | Defer Wolfram Engine, scoping note attached; value dependence: leave it (nothing on the record gains) | user | history item 53; `data/measure0930/wolfram_scoping.md`, `valuedep.txt` |
 | Pick map: a tile's colour is the change since the last snapshot, and the tiles are grouped by difficulty band, with an "All bands" tab and a tab per band, so 5,000 tiles are never in one display | user ("Change since the last snapshot"; "Group them by difficulty band but also make tabs...", 2026-10-13) | history item 54 |
-| Pick map follow-ups: **also snapshot after every `oeisbot sync`** (PARI pool only, under the newest snapshot's budgets); the colour horizon stays **fixed** at the newest *different* snapshot, no picker; a **footer chip** for the bands too small to draw in "All bands"; tiles **keyboard-focusable**; a failed pool build shows a **friendly message with a retry** | user, asked 2026-10-14 ("Also after every sync", "Keep it fixed", "Add a footer chip", "Make tiles focusable", "PARI only", "The newest snapshot's budgets", "Friendly message + retry") | history item 55: built 2026-10-14, not yet committed |
+| Pick map follow-ups: **also snapshot after every `oeisbot sync`** (PARI pool only, under the newest snapshot's budgets); the colour horizon stays **fixed** at the newest *different* snapshot, no picker; a **footer chip** for the bands too small to draw in "All bands"; tiles **keyboard-focusable**; a failed pool build shows a **friendly message with a retry** | user, asked 2026-10-14 ("Also after every sync", "Keep it fixed", "Add a footer chip", "Make tiles focusable", "PARI only", "The newest snapshot's budgets", "Friendly message + retry") | history item 55: built 2026-10-14, committed and pushed 2026-11-18 as `a6ae951` |
 | Commit and push everything through item 54 | user ("Commit and push", 2026-10-14) | `f0081d9`; [what is committed](#what-is-committed) |
+| Dashboard: **a win excludes a run whose review was rejected or refused, everywhere** (header, history, per-session, recomputed at read time, no database write; Attempts keeps the stored outcome and marks the row) | user ("Exclude everywhere", 2026-11-17) | history item 56; `app.WIN` |
+| Commit and push item 55 on its own before the defect sweep | user ("Commit item 55 first", 2026-11-17) | `a6ae951`, pushed 2026-11-18 after the full suite passed |
+| Pick map: a band too dense to draw **opens the table view from its lump**; the bands share **one exact scale**, accepting empty space in roomier bands | user ("Lump opens the table", "Exact common scale", 2026-11-17) | history item 56; [dashboard](dashboard.md) |
+| Pick map: the old balancing search is kept as a pre-step that picks the least wasteful of nine layouts; the tile inset is 0.5 px, not 1 | assistant, reported to the user, not objected to | history item 56; `data/item56/area_spread.txt` |
+| The server answers only to its own host names and refuses an API request made by another page, `same-site` included; a wildcard `--host` turns the host check off with a warning | assistant (in the approved plan; the `same-site` refusal is stricter than the plan and was reported) | history item 56; `app.guard` |
+| Item 56 stays uncommitted for now | user ("The sweep can stay uncommitted", 2026-11-18) | [what is committed](#what-is-committed) |
 
 ## History (condensed)
 
@@ -3814,6 +3841,138 @@ critic's findings, summarised in history item 41.
     treemap.ts,styles.css}`, `dashboard/test/treemap.test.ts`, `tests/test_attempt.py`,
     `tests/test_pickmap.py`, and the docs; no new tracked file. Not committed.
 
+56. **The dashboard defect sweep: points off the estimator's axes, wins that were not wins, bands that were
+    not to one scale, and forty smaller things** (2026-11-17 and 18). The user, looking at the dashboard after
+    item 55's browser pass: "there are entries on the graph that are below the y axis or to the left of the x
+    axis. Run an audit on the dashboard to look for other defects before proposing a plan to fix all the
+    discovered/known defects. spin up an audit to review the plan before you present it to me."
+
+    **The reported defect.** `charts.tsx`'s tick ladder began at 1 ms and `decades()` fell back to its first
+    rung when the data went lower, so the estimator's axes started above the data and nothing clipped or
+    clamped: seven finished terms of A385331's attempt 139 (0.28 to 0.60 ms; predictions #27-30, 33, 34, 36)
+    were drawn 9 to 23 px below the x axis, on its tick labels, and prediction #12 (predicted 0.475 ms) 45 px
+    left of the y axis. The values are real measurements. The same function drew the "within 2x" band with
+    its corners clamped into the plot, a parallelogram that is 2x wide nowhere but the middle, so prediction
+    #32 (ratio 0.505), the one term the tile counts as within 2x, sat outside it. Fixed in `scale.timeDomain`
+    (a ladder with no first or last rung, always holding every positive value) and `scale.bandCorners` (the
+    exact hexagon). Checked in the browser by reading every circle's `cx`/`cy` against the plot rectangle:
+    20 points, none outside, the nearest 16 px from an edge.
+
+    **The audit.** Three read-only agents (the estimator and table tabs, the backend API with hostile
+    requests against the live server and read-only SQL, the Pick map with `treemap.ts` run under node on the
+    live payloads) and a browser walk of the six tabs. About 45 findings. The ones that showed wrong
+    information: the header and Run history said **3 wins and 6.2 hours per win** where there is 1 win and
+    18.6 hours, because a win was counted as outcome `extended` and reviews #2 and #3 leave their rejected
+    runs `extended`; the Pick map's bands were **not drawn to one scale** (5% or more apart at 542 of the 999
+    widths the page gives the map, 2.0x at 323 px), against documentation that said they agreed to a
+    thousandth, a figure measured at three sizes the page never produces and passed by a test at sizes it
+    picked; and the model pool's band of 9,395 sequences was, on its own tab, **one tile that did nothing**.
+
+    **The plan and its critic.** The plan (`data/item56/plan.md`) was reviewed against the code before the
+    user saw it: 25 findings, 3 of them blockers, all taken. The critic measured that the planned fix for the
+    band scale (hold the header decision across the balancing passes) does not converge, nor do five
+    variants of it; that Starlette's `TrustedHostMiddleware` cannot do what the plan wanted (it cuts
+    `[::1]:8765` at the first colon and cannot be configured after the first request); and that a 3 px tile
+    floor contradicted the code's own 6 px threshold. Four decisions were then the user's, by option
+    question: **wins exclude rejected and refused wins everywhere**; **commit item 55 first**; **a band too
+    dense to draw opens the table view from its lump**; **one exact common scale for the bands, accepting
+    empty space in roomier ones**.
+
+    **What was built**, in the plan's four sections.
+    - *A, the chart and the numbers.* `dashboard/src/scale.ts` and `dashboard/src/format.ts`, both without
+      imports so that node can test them. Durations never in exponent notation ("1.1e+2 ms" on the Attempts
+      tab is "110 ms"); the year in a timestamp when it is not this year; a point's position computed in one
+      place for the dot, its focus target and the pointer search; a visible focus ring; the legend following
+      the filter; "nothing has run yet" no longer shown while loading or on an error.
+    - *B, the server.* `app.WIN` and `app.REJECTED_WIN` (an `extended` run whose review is `rejected`, or
+      which has `extra.review_refused`, is not a win) used by the summary, the per-day counts and the
+      per-session counts, which are now counted from attempts and not read from `sessions.wins`; `alpha`
+      bounded on `/api/queue` as on `/api/pickmap` (it returned a 500 from about 598 up and inverted the
+      weighting below 0); limits not negative; the page served at `/` only, every other unclaimed path a 404
+      (`/api`, `/API/...`, `/docs` used to return the page with a 200); a middleware that answers only to the
+      server's own host names (DNS rebinding), refuses an API request another page made (`Sec-Fetch-Site`),
+      and sets `nosniff`; names cut at a word with an ellipsis; `total` on attempts and sessions.
+    - *C, the Pick map.* `layoutGroups` draws every band that has room at **one scale**, the tightest band's,
+      and a roomier band leaves the rest of its box empty; `fairRects`, the old balancing loop, is kept only
+      to choose, of nine layouts, the one that wastes least. **This is a small departure from the option as
+      it was worded** ("lay the bands out once"): the search is still run first, because without it the
+      tightest band sets a scale that leaves far more empty; the outcome asked for, identical area per unit
+      of chance at every width, is what is delivered. A lump on a band's own tab opens the table view and
+      takes the focus there; tiles under 3 px are not keyboard stops; a change is never written as the next
+      colour class; the notes say which command stores which pool's snapshot, and only a caveat carries the
+      red mark. The tile inset went from 1 px to 0.5 px, which was not in the plan: the measurement showed
+      that gutters made a band of small tiles show 1.5 to 2.0x less paint per unit of chance than a lumped
+      band, and half the gutter brings that to 1.2 to 1.4x.
+    - *D, the other tabs.* The inbox shows a review's note and sets a rejected one apart; the header says
+      "sequences with keyword more", not "candidates"; the Queue's alpha is parsed and debounced like the
+      Pick map's and its caption says that sorting reorders the 2,000 rows sent; the history charts have one
+      column per calendar day (UTC, said so), empty days as slots and long gaps as one marker; an unknown URL
+      fragment no longer adds a history entry.
+
+    **Measured** (`data/item56/area_spread.ts`, the page's own layout call at every integer width from 200 to
+    1198 px, on both pools as saved on 2026-11-17; output in `area_spread.txt`). Tile rect area per unit of
+    chance, largest band over smallest among the bands drawn to scale: **1.000000000000** at all 999 widths,
+    both pools. Framed area left empty for that: median 0.4%, 90th percentile 5.1%, worst 23.5% on the PARI
+    pool; 0.0%, 11.7% and 25.0% on the model pool. Painted area per unit of chance between bands: 1.21x to
+    1.38x (PARI), 1.11x to 1.32x (model); with the old 1 px inset 1.48x to 2.04x. Not to scale (no room):
+    band 8 at 999 widths and band 7 at 678 on the PARI pool, band 8 at 102 on the model pool.
+
+    **Checks.** Tests written with or before each fix: **634 Python tests collected** (587 before: 46 more in
+    `tests/test_dashboard.py`, which went from 3 functions to 18, and 1 more in `tests/test_pickmap.py`) and
+    **68 node tests in three files** (33 in one before). **Mutation checks**: 96 deliberate breaks, each
+    run against the suite (the specs and the runner are in `data/item56/mutation/`; 13 of the first round
+    were typed at the shell and are not kept): 46 in `app.py` and `cli.py`, 13 in `treemap.ts`, 20 in
+    `format.ts`, 17 in `scale.ts`. Five survived at first. Four got a test (a single-tick axis, the side a
+    roomy band's box is cut along, tiny tiles as keyboard stops, and day arithmetic in local time, which only
+    shows east of Greenwich); one is left because it changes nothing observable (`sigFixed` against
+    `toPrecision` in `fmtShare`'s last branch). One mutant found a
+    real bug in the change itself: `--host ::` was parsed as a Host header and came out as ":". **Two
+    independent audits of the diff**: section A (14 findings: the date tests passed only because this
+    machine's zone and locale are the ones they pinned, now pinned to Kiritimati and `de-DE`; "round once"
+    in `fmtSeconds`, which the audit suggested, was tried and rejected by a test, since rounding the seconds
+    first rounds twice: 3,066 s read 51.2 min) and sections B, C and D (15 findings, none must-fix; fixed: a
+    scroll closed the keyboard's tooltip the moment the browser scrolled a focused tile into view, no test
+    pinned the real allow-set, dimming a rejected review took its text under 4.5:1, a 500 had no `nosniff`,
+    `same-site` requests were allowed, `host_name` accepted `[::1]evil.example`, an `extra` that is not JSON
+    would have been a 500 on three endpoints, and a band whose tiles are all under 3 px had no keyboard stop
+    at all). **Browser passes** in Chrome after each section, at full width and in a 390 px frame, no
+    console errors: the estimator, the wins figures against read-only SQL (1 win, 2 rejected, 18 new terms,
+    18.56 h; session 7 reads 1, session 9 "0 (2 rejected)"), the hostile requests replayed with curl (422s,
+    404s, a 400 for `Host: attacker.example`, a 403 for another page's request), the model pool's dense
+    band opened from its lump by keyboard, and the keyboard tooltip following a scroll.
+
+    **Not done, and why.**
+    - **The full Python suite could not be run while this was built, and was run afterwards.** Drive C: had
+      7.3 GB free, under the sandbox's 8 GiB reserve (`limits.reserve_disk_bytes`), so every sandboxed run
+      stopped at once with `disk_cap` and 90 tests in the six files that use the sandbox failed for that
+      reason alone, before and after this item; the other 544 passed. The user freed space ("You should have
+      enough space, continue if possible. The sweep can stay uncommitted"), and with 9.6 GiB free **all 634
+      passed** in 79 s.
+    - **Item 55's commit `a6ae951` was pushed after that run**, not before: the push was to follow a green
+      suite. The run was of the working tree, so of items 55 and 56 together; item 55's tree alone was never
+      run whole (497 of its 587 passed on the full disk, and the 90 others are the sandbox tests, whose code
+      item 56 does not touch).
+    - **This item is not committed**, by the user's word above.
+    - **Not seen on a touch screen, and resize cost not measured** (the Pick map audit's two suspicions: a
+      tap opens oeis.org before the tooltip can be read, and a resize lays out every tile per pixel).
+    - **Left as they are, on purpose**: the Attempts bar charts count all runs whatever the filters say (they
+      are the filter's control; the caption now says so); a HEAD or OPTIONS request is a 405; a repeated query
+      parameter takes its last value; the tabs have `aria-controls` and a tabpanel but no arrow-key
+      movement, which would touch the band-tab focus hand-off item 55 built; an `extended` run with a
+      refused review would be labelled "review rejected" on the Attempts tab though it has no review of its
+      own (none exists).
+    - `data/item49/recheck_numbers.py` is re-baselined to 634 tests; its git section expects the tree as it
+      is now (item 56 uncommitted on `a6ae951`, which is `origin/main`).
+
+    **No database row was written**, no schema changed, and the dashboard still opens every connection
+    read-only. A running dashboard needs a restart for the server changes, and `npm run build` rebuilds
+    `oeisbot/dashboard/static`, which is not committed.
+    Files: new `dashboard/src/scale.ts`, `dashboard/src/format.ts`, `dashboard/test/scale.test.ts`,
+    `dashboard/test/format.test.ts`, `tests/conftest.py`; changed `oeisbot/dashboard/app.py`,
+    `oeisbot/cli.py`, `dashboard/src/{charts,views,lib,main,pickmap}.tsx`, `dashboard/src/treemap.ts`,
+    `dashboard/src/styles.css`, `dashboard/test/treemap.test.ts`, `tests/test_dashboard.py`,
+    `tests/test_pickmap.py`, and the docs. Evidence in the gitignored `data/item56/`. Not committed.
+
 ## Open offers and next steps
 
 **No offer waits for an answer (2026-09-30).** Offer (b), recording the gp version, was **taken** —
@@ -3823,7 +3982,13 @@ the user chose the **backfill** of `program_sha` (46 of 47 rows map to exactly o
 scheduled after session 12 because it changes the pool and so the draw; see item 52 for whether it has
 run. The paragraph below is the offer as it stood.
 
-**Built 2026-10-14, uncommitted: history item 55, the Pick map's loose ends.** What it left is two things,
+**Built 2026-11-17 and 18, uncommitted: history item 56, the dashboard defect sweep.** What it leaves is
+**its own request to commit** (the user, 2026-11-18: "The sweep can stay uncommitted"); the whole suite has
+passed with it in the tree (634) and item 55's commit is pushed. Smaller, and optional: look at the Pick map on a touch screen and measure a resize
+(two suspicions of the audit that nobody checked), arrow-key movement between tabs, and a label for a
+refused win on the Attempts tab, which today would read "review rejected".
+
+**History item 55, the Pick map's loose ends, is committed and pushed (`a6ae951`).** What it left was two things,
 neither a decision: **a browser pass** and **its own request to commit**. **The browser pass was done on
 2026-11-17** (the user: "start the server and do the browser pass"), in Chrome against
 `oeisbot dashboard` on 127.0.0.1:8765, PARI pool, 3,357 candidates, no console errors: Tab enters the map

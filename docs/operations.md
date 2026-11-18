@@ -25,7 +25,7 @@ uv venv .venv --python 3.11
 uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
 .venv\Scripts\oeisbot setup
 .venv\Scripts\oeisbot sync
-.venv\Scripts\python -m pytest            # 587 tests, about 100 s; confirms the sandbox works on this machine
+.venv\Scripts\python -m pytest            # 634 tests, about 100 s; confirms the sandbox works on this machine
 ```
 
 Optional dashboard: see [dashboard](dashboard.md#running-it).
@@ -96,7 +96,7 @@ attempt row, but every term it produced is already in `data/runs/`.
 | `review list` | all reviews | |
 | `review set ID STATUS` | change a review's status | `STATUS` = `new`, `reviewing`, `submitted`, `rejected`; `--note TEXT` |
 | `snapshot` | store the pool `run` would draw from, with each candidate's effective difficulty, as a snapshot the dashboard's Pick map can compare against later; prints how many candidates it held and whether anything was stored (a pool identical to the newest snapshot adds nothing). Takes about 10 s for PARI, about 30 s more with `--all`. Default budgets | `--all` (also the `run --model` pool) |
-| `dashboard` | read-only web UI; starts building the Pick map's PARI pool in the background so that tab opens quickly | `--host` (127.0.0.1), `--port` (8765) |
+| `dashboard` | read-only web UI; starts building the Pick map's PARI pool in the background so that tab opens quickly. It answers only to `127.0.0.1`, `localhost`, `::1` and the `--host` given; `--host 0.0.0.0` turns that check off and says so ([dashboard](dashboard.md#safety-properties)) | `--host` (127.0.0.1), `--port` (8765) |
 
 Budget flags on `attempt` and `run`: `--verify-s` (60), `--extend-s` (10800), `--mem-gib` (6),
 `--max-new` (200). Every other limit is a constant in the code:

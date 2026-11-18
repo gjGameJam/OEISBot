@@ -61,38 +61,8 @@ export function useWidth<T extends HTMLElement>(): [(el: T | null) => void, numb
   return [ref, width];
 }
 
-export function fmtSeconds(s: number | null | undefined): string {
-  if (s == null || !isFinite(s)) return "–";
-  const round: Record<number, string> = { 0.001: "1 ms", 0.01: "10 ms", 0.1: "100 ms", 1: "1 s", 10: "10 s", 60: "1 min",
-    600: "10 min", 3600: "1 h", 36000: "10 h", 86400: "1 d", 864000: "10 d", 8640000: "100 d" };
-  if (round[s]) return round[s];
-  if (s < 1) return `${(s * 1000).toPrecision(2)} ms`;
-  if (s < 120) return `${s.toPrecision(3)} s`;
-  if (s < 7200) return `${(s / 60).toPrecision(3)} min`;
-  if (s < 172800) return `${(s / 3600).toPrecision(3)} h`;
-  return `${(s / 86400).toPrecision(3)} d`;
-}
-
-export function fmtBytes(b: number | null | undefined): string {
-  if (b == null) return "–";
-  if (b < 1 << 20) return `${(b / 1024).toFixed(0)} KiB`;
-  if (b < 1 << 30) return `${(b / (1 << 20)).toFixed(0)} MiB`;
-  return `${(b / (1 << 30)).toFixed(2)} GiB`;
-}
-
-export function fmtPct(x: number | null | undefined, digits = 0): string {
-  return x == null ? "–" : `${(x * 100).toFixed(digits)}%`;
-}
-
-export function fmtInt(x: number | null | undefined): string {
-  return x == null ? "–" : x.toLocaleString();
-}
-
-export function fmtTime(iso: string | null | undefined): string {
-  if (!iso) return "–";
-  const d = new Date(iso);
-  return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-}
+// The formatters live in format.ts, which node can test; they are re-exported so call sites need not care.
+export { fmtBytes, fmtInt, fmtPct, fmtSeconds, fmtTime } from "./format";
 
 export function Tile({ label, value, sub }: { label: string; value: ReactNode; sub?: ReactNode }) {
   return (

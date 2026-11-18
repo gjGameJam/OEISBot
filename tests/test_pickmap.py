@@ -734,14 +734,30 @@ def test_only_the_ten_largest_departures_are_listed(pm):
     assert out["top"][-1]["a"] == "A000003" and len(out["top"]) == 10
 
 
-def test_a_long_name_is_cut_to_ninety_characters_in_the_rows_and_the_departures(pm):
+def test_a_long_name_is_cut_and_marked_as_cut_in_the_rows_and_the_departures(pm):
     client, conn, state = pm
     db.upsert_sequences(conn, [db.SequenceRow("A000002", "y" * 300, 0, "nonn,more", 20, 3, "pari", 0, False)])
     db.record_pick_snapshot(conn, "pari", [("A000001", 1.0), ("A000002", 1.0)])
     state["pari"] = {"A000001": 1.0}
     state["name"] = "n" * 300
     out = get(client)
-    assert len(out["rows"][0]["name"]) == 90 and len(out["gone"]["top"][0]["name"]) == 90
+    # ninety characters and an ellipsis: a cut name must never read as a whole one
+    assert out["rows"][0]["name"] == "n" * 90 + "…" and out["gone"]["top"][0]["name"] == "y" * 90 + "…"
+
+
+def test_a_name_is_cut_between_words_and_a_short_one_is_left_alone():
+    # A102997's name, which the map used to end at "(A00227"
+    name = ("Numbers n such that 4*10^n + 8*R_n - 7 is prime, where R_n = 11...1 is the repunit "
+            "(A002275) of length n.")
+    assert len(name) > 90
+    cut = dashboard.short_name(name)
+    assert cut == "Numbers n such that 4*10^n + 8*R_n - 7 is prime, where R_n = 11...1 is the repunit…"
+    assert name.startswith(cut[:-1]) and name[len(cut) - 1] == " "      # it stops where a word stops
+    assert dashboard.short_name("x" * 90) == "x" * 90                   # exactly at the limit: whole, unmarked
+    assert dashboard.short_name("short name") == "short name"
+    assert dashboard.short_name(None) == ""
+    # one early space is no reason to throw most of the name away
+    assert dashboard.short_name("ab " + "c" * 200) == "ab " + "c" * 87 + "…"
 
 
 def test_a_departure_with_no_sequence_row_is_not_blamed_on_the_more_list(pm):

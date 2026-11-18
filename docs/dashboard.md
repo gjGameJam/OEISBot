@@ -15,7 +15,8 @@ cd ..
 ```
 
 Without a build, `oeisbot dashboard` says so and serves only the API (interactive API docs at
-`/api/docs`). The dashboard needs the `dashboard` extra (`fastapi`, `uvicorn`), which the `dev` extra
+`/api/docs`; `/` is then a 404 that names the build command). The frontend can be built while the server
+runs: the page and its assets are looked for at each request. The dashboard needs the `dashboard` extra (`fastapi`, `uvicorn`), which the `dev` extra
 includes.
 
 For frontend development run `oeisbot dashboard` and, separately, `npm run dev` in `dashboard/`. Vite
@@ -26,8 +27,14 @@ It can run while a session is writing: SQLite WAL lets it read mid-write.
 ## Views
 
 Tabs are addressable by URL hash (`#estimator`, `#pickmap`, `#queue`, `#attempts`, `#reviews`,
-`#history`). The header shows candidates, runs, wins, reviews awaiting action, machine hours, and the
-oeisdata commit and sync time. Data refreshes every 15 s (the queue every 60 s, the Pick map every hour).
+`#history`); choosing a tab adds a browser-history entry, and an address with no fragment or an unknown
+one is corrected in place to the first tab. The header shows the number of sequences with keyword `more`
+in the mirror (`sequences.in_more`: far more than any pool a session draws from, which the Queue and the
+Pick map each count for themselves), runs, **wins** and, after them, how many more were rejected in review,
+reviews awaiting action, machine hours, and the oeisdata commit and sync time. **A win, everywhere on the
+dashboard, is a run recorded `extended` whose review was not rejected and not refused** (`app.WIN`; history
+item 56): reviews #2 and #3 were rejected as conjectural and their runs stay `extended`, so `extended` alone
+counted them (the header read "3 wins" where there is one). Data refreshes every 15 s (the queue every 60 s, the Pick map every hour).
 The previous data stays on screen while it reloads; the estimator card, the queue table, the attempts table
 and the Pick map are also dimmed during a reload.
 
@@ -47,17 +54,33 @@ Whether the feasibility step works.
   - share inside the reported range, widened ×2 (low/2 ≤ actual ≤ high×2);
   - number stopped at more than 2× their high estimate.
 - **Chart**: log-log scatter of predicted vs actual seconds per new term. Blue = work-count projections,
-  orange = CPU-time projections. The diagonal is a perfect prediction; the shaded band is within 2×.
-  Hollow points were stopped before finishing, so the true cost is at least the plotted value. Hovering
-  or focusing a point shows sequence, index, predicted, range, ratio and model.
-- **Table**: the same rows, sortable (defaults to worst ratio first).
+  orange = CPU-time projections. The diagonal is a perfect prediction; the shaded band is within 2×
+  (between `y = 2x` and `y = x/2` along its whole length). Hollow points were stopped before finishing, so
+  the true cost is at least the plotted value. Hovering or focusing a point shows sequence, index,
+  predicted, range, ratio and model; a focused point has a visible ring and an `aria-label` with the same
+  figures. The legend lists only the series the cost-unit filter leaves.
+  - **The axes always hold every point** (`scale.timeDomain`, history item 56). The tick ladder is powers
+    of ten of a second up to 10 s, then 1 min, 10 min, 1 h, 1 d and powers of ten of a day, with no first or
+    last rung, and the axes run from the tick at or below the smallest value (less a margin) to the one at or
+    above the largest. Until item 56 the ladder stopped at 1 ms, so seven terms of A385331 that finished in
+    0.28 to 0.60 ms were drawn below the axis, on its labels. Nothing is clipped: a clip would hide such a
+    point instead of showing the mistake. Tick labels are thinned when they would overlap.
+  - A point is a finished time or, failing that, the time the term was stopped at (`scale.actualOrBound`,
+    using the `finished` flag the server sends). A row with neither is not drawn; the table still lists it.
+- **Table**: the same rows, sortable (defaults to worst ratio first). The Actual column sorts a stopped
+  term by the time it was stopped at.
+- **Durations** everywhere on the dashboard are written by `format.fmtSeconds`: three significant digits
+  in µs, ms, s, min, h or d, never in exponent notation (an Attempts runtime used to read "1.1e+2 ms").
 
 A point appears once a verified run has a time projection whose term finished (filled) or was cut short
 (hollow, a genuine lower bound). A projection that stopped the run as `infeasible` does not appear: its
 term never started, so it has neither an actual nor a censored time (see
 [verification](verification-and-estimation.md#where-predictions-are-stored)). On the real database as
-of 2026-09-19 the view has five points, all hollow: A277532 and A390295 twice each, and A247883's model
-program (attempt 92), which ran its whole 120 s extension without a new term. In session 5 the first
+of 2026-11-17 the view has 20 points (`/api/estimator`: 10 finished, 10 stopped). **All ten finished points
+are one run**, A385331's attempt 139, so the tiles above the chart describe that run and not the estimator
+in general: its median actual/predicted is 0.0000013, because terms projected at minutes arrived in under a
+millisecond. As of 2026-09-19 the view had five points, all hollow: A277532 and A390295 twice each, and
+A247883's model program (attempt 92), which ran its whole 120 s extension without a new term. In session 5 the first
 new terms of A277532 and A390295 were killed for over-prediction after 24 s and 10 s (before only trustworthy projections
 could kill); in the offer-B check the same terms ran the whole 300 s extension without finishing.
 
@@ -97,7 +120,9 @@ make), not the wider one the Queue tab shows.
     "The PARI pool could not be built: <reason>" (`treemap.failureReason` reads the reason out of the error text
     `useApi` keeps) and a **Try again** button that asks for a rebuild, above the map of the last request that
     loaded, which the message says it is. Any other failure (including the 503 for a missing database, whose
-    body is not this one) reads "Could not load: ..." with the same button. The message goes as soon as the
+    body is not this one) reads "Could not load: ..." with the same button; the text after the colon is
+    `format.describeError`'s reading of the failure (the status and the server's reason, at most 200
+    characters, never a raw JSON body or a whole HTML page), on this tab and every other. The message goes as soon as the
     new request starts, taking the button with it, so **Try again moves the keyboard focus to Rebuild now**
     (which then reads "Building…"); otherwise the focus would fall to the top of the page. The map is dimmed only while a
     request is out, not behind the message. The failure is not stored anywhere: the message goes when the page
@@ -106,7 +131,11 @@ make), not the wider one the Queue tab shows.
 - **Tiles** above the map: candidates; the snapshot compared with (id, time, session, size); how many
   sequences **moved 10% or more** and what share of the picks they hold; how many sequences entered and left
   the pool and what share of the picks each side held.
-- **Notes** appear when the comparison needs a caveat: no snapshot is stored yet; every stored snapshot equals
+- **Notes** appear when the comparison needs a caveat. One that says the colours may mislead carries a red
+  "!"; one that only describes the state of things a gray "i" (they all carried the "!" until item 56). The
+  note for a pool with no snapshot names the command that stores one **for that pool**: `oeisbot snapshot`
+  stores the PARI pool only, and the model pool needs `oeisbot snapshot --all` or a session started with
+  `oeisbot run --model`. The cases: no snapshot is stored yet; every stored snapshot equals
   the live pool; the baseline was taken under other **budgets** than the live pool; the **selection rules**
   (the code that scores and gates candidates) changed since the baseline, or **could not be compared** with
   it (the baseline recorded none, or either side's fingerprint is `unknown` because a source file could not
@@ -119,29 +148,33 @@ make), not the wider one the Queue tab shows.
   so a band of 800 sequences is readable on its own. The bands are on the *effective* difficulty
   (`pickmap.BAND_EDGES`: 0.5, 0.75, 1, 1.5, 2, 4, 8, 16; a value equal to an edge belongs to the band above),
   and each tab carries the band's size and share. Clicking a band's header, or a lump inside it, opens that
-  band's tab.
+  band's tab. Pressing the pool button that is already chosen does nothing (it used to reset the band).
 - **Bands too small to draw are named under the map** (history item 55). In *All bands*, a band whose tiles get
   less than 6 px (`treemap.MIN_DRAWN_SIDE`) in either direction, inside its frame and padding, can be neither
-  seen nor pointed at (`treemap.undrawn`; a band that got no area at all counts). A line under the map,
-  "Too small to draw here:", lists each as a button reading the band's label, size and share; it opens the band's
-  tab and puts the keyboard focus on that tab (the button it came from is gone). The area maths is not touched.
-  Measured on the real PARI pool (`data/item55/inner_sizes.ts`, the page's own `layoutGroups` call, widths 360
-  to 1600 px in steps of 40, 32 widths): **band 8 (2 sequences, 0.002%) has no inner width at any of them, and
-  band 7 has 0 to 5.1 px at 30 of the 32** (8.2 px at 1240 and 11.4 px at 1440). So the line is normally there,
-  and a band tab's own view never has it, because the band fills the box.
+  seen nor pointed at (`treemap.undrawn`; a band that got no area at all counts). Such a band is also the one
+  band not drawn at the map's common scale (`scaled: false`, below). A line under the map,
+  "Too small to draw to scale here:", lists each as a button reading the band's label, size and share; it
+  opens the band's tab and puts the keyboard focus on that tab (the button it came from is gone).
+  Measured on the real PARI pool at every width the page gives the map, 200 to 1198 px
+  (`data/item56/area_spread.txt`): **band 8 (2 sequences, 0.002%) is listed at all 999 widths and band 7
+  (25 sequences, 0.07%) at 678 of them**; on the model pool only band 8, at 102 widths. So the line is
+  normally there on the PARI pool, and a band tab's own view never has it, because the band fills the box.
 - **Keyboard** (history item 55). Tab reaches the map at **one** tile, the one last focused or else the first
-  drawn; the arrow keys then move to the nearest tile in that direction (`treemap.neighbour`: of the tiles whose
+  in `treemap.focusOrder`; the arrow keys then move to the nearest tile in that direction (`treemap.neighbour`: of the tiles whose
   centre lies beyond the current one's that way, the one with the smallest gap along the axis plus **twice** the
   miss across it, 0 when they overlap there; then the closer centre across the axis, then the smaller
   A-number; nothing happens at an edge), Home and End go to the first and the last, **Enter or Space** opens
-  the entry on oeis.org (a lump opens its band, in *All bands* only, and the focus then goes to the new map's
-  first tile; a key held down acts once, not once per repeat, so it cannot open a tab per repeat), and
+  the entry on oeis.org (a lump opens its band and the focus then goes to the new map's first tile; on a
+  band's own tab, where there is no band left to open, a lump opens the **table view** and the focus goes to
+  its heading; a key held down acts once, not once per repeat, so it cannot open a tab per repeat), and
   **Escape** closes the tooltip (and it stays closed through a resize or a refresh, until the focus moves to
   a tile again). A focused tile shows the same 2 px outline as a hovered one
   and, when the browser calls the focus keyboard-driven (`:focus-visible`), its tooltip; a click that focuses a
-  tile shows none. A sequence tile is a `link`, a lump in *All bands* a `button`, each with an `aria-label` of
-  its name and figures. **Not reachable:** a lump on a band's own tab (it does nothing there), a tile with no
-  area, and every tile of a band listed in the "too small to draw" line; the table view reaches all of them.
+  tile shows none. A sequence tile is a `link`, a lump a `button`, each with an `aria-label` of
+  its name and figures. **Not reachable:** a tile under 3 px on either side (`treemap.MIN_FOCUS_SIDE`: a tile
+  that changed is drawn however small, and a focus ring on a speck helps nobody; a band left with no stop at
+  all by that rule keeps one, on its largest tile), a tile with no area, and every tile of a band listed in
+  the "too small to draw to scale" line; the table view reaches all of them.
 - **Colour** is one of seven classes of `ratio`, the chance now over the chance then (red is down, blue is
   up, gray is within 1%): down 45% or more (ratio at most 0.55), down 10 to 45%, down 1 to 10%, within 1%,
   up 1 to 10%, up 10 to 80%, up 80% or more (at least 1.8). The outer edges are 0.55 and 1.8 rather than 0.5
@@ -165,27 +198,47 @@ make), not the wider one the Queue tab shows.
   drawn on its own; a band's small tiles share one dashed-outline "N small" tile, coloured by what its
   members hold between them. **A tile that changed (down 10% or more, up 10% or more) and a new tile are never
   lumped**, however small: the map exists to show them. A lump of one is just that tile. A lump has no entry
-  to open: in *All bands* clicking it opens its band's tab, and on a band's own tab it does nothing.
-- **Area means the same thing in every band.** In *All bands* each band's block loses a header strip and
-  padding, which take a larger part of a small block than of a large one, so laying out the plain band totals
-  would draw the same pick chance smaller in a small band. `treemap.fairRects` therefore enlarges each band's
-  weight by the part of its block the frame takes, over eight passes, before the leaves are laid out. A band
-  the frame all but swallows (less than a quarter of its block left, `MIN_KEPT`) is left as it was: it has
-  nothing to compensate with. Two things still shave area, both listed in
-  [known limitations](known-limitations.md#the-pick-map): that case, and the 1 px inset of every tile.
+  to open: in *All bands* clicking it opens its band's tab, and on a band's own tab it opens the table view,
+  which lists what it stands for. That second case is the only way into a band too dense for tiles: the model
+  pool's band "1 to 1.5" holds 9,395 sequences, and its tab is one lump at the default width and a lump of
+  6,851 beside 2,544 tiles at full width (it used to be a tile that did nothing).
+- **Area means the same thing in every band, exactly** (history item 56). In *All bands* each band's block
+  loses a header strip and padding, which take a larger part of a small block than of a large one, so laying
+  out the plain band totals would draw the same pick chance smaller in a small band. `treemap.layoutGroups`
+  therefore draws every band **at one scale**: the px² per unit of pick chance of the tightest band that has
+  room for tiles (`commonScale`). A roomier band draws its tiles in the part of its inner box that scale fills
+  (the box's top-left, cut along its longer side) and **leaves the rest of the box empty**; that empty strip is
+  the price, and the caption says so. Before that, `treemap.fairRects` tries nine layouts of the band blocks
+  (the plain totals, then eight in which each band's weight is enlarged by the part of its block the frame took
+  in the layout before) and keeps the one whose tightest band has the most room, so that little is left
+  empty: on the PARI pool a median of 0.4% of the framed area over the page's 999 widths, 23.5% at the worst
+  one (`data/item56/area_spread.txt`). Until item 56 that search was the whole mechanism and was assumed to
+  converge; it cycles on the squarified layout's row breaks, and bands were drawn 5% or more apart at 542 of
+  the 999 widths and 2.0× apart at 323 px. A band with no room for tiles (under 6 px either way inside its
+  frame) cannot be drawn at the common scale and does not set it; it is the band the line under the map
+  names. A tile's paint stops 0.5 px short of its rect on each side (`pickmap.TILE_INSET`), so what is
+  exactly equal is the tile's rect, gutter included; what that leaves is in
+  [known limitations](known-limitations.md#the-pick-map).
 - **Hover or keyboard focus** shows the chance of being picked first, the chance before (rescaled) and the change,
   the difficulty and the band; **clicking a tile opens its entry on oeis.org**. Whichever of the two moved last
   owns the tooltip: the mouse leaving, or moving over a band's header or frame, does not close one the keyboard
-  opened, nor does blurring close one the mouse opened. A new layout (another band, a resize, a refresh) closes
+  opened, nor does blurring close one the mouse opened. A new layout (another band, a resize, a refresh) or a
+  scroll (of the page or of anything in it) closes
   the tooltip, except that a tile which still has the keyboard focus gets its tooltip back, placed where the tile
-  now is (it would otherwise stay closed until a key moved the focus). If the new layout no longer has the
+  now is (it would otherwise stay closed until a key moved the focus, and the browser scrolls a half-hidden
+  tile into view just after focusing it). A tooltip is not a live region: the focused tile's own label
+  already says what it shows. If the new layout no longer has the
   focused tile (a refresh that lumps it, a pool without it) the browser drops the focus to the page and the next Tab
   starts from the top of it, by reading of the DOM rules and not seen in a browser; only opening a lump from
   the keyboard moves the focus on. The map is an SVG with `role="group"` and a
   label that names the keys, and a **table
-  view** (`details` under the legend, built only when opened) of the rows of the tab shown: sequence, name,
+  view** (`details` under the legend, built only when opened; opened by hand or by a lump on a band's tab,
+  and closed again when another band is chosen) of the rows of the tab shown: sequence, name,
   difficulty, band, pick chance, before (rescaled), change, sortable; a new sequence has no "before" and reads
-  `new`.
+  `new`. A name longer than 90 characters is cut at a word and ends in "…" (`app.short_name`), in the map,
+  the table and the "Left the pool" card alike; it used to stop mid-word with no mark. A change is written so
+  that it never reads as the next colour class (`treemap.fmtChange`: −9.999% is "−9.9%", in "down 1 to 10%"),
+  and a share too small for four decimals reads "< 0.0001%" (`format.fmtShare`).
 - **"Left the pool since #N"**: the sequences in the baseline that are not in the live pool, how much of the
   baseline's picks they held, **why** (`pickmap.departure_reason`, read from what the database recorded after
   the snapshot) and the ten that held most. In order of precedence: an open review (`review new`, ...); the
@@ -224,9 +277,14 @@ make), not the wider one the Queue tab shows.
 
 The candidate pool as selection sees it, before the last check a session applies (see the last point):
 
-- **Controls**: α, "only sequences with a PARI program".
+- **Controls**: α, "only sequences with a PARI program". α follows the Pick map's rule: only a number from
+  0 to 6 is sent, half a second after typing stops (`treemap.parseAlpha`); anything else marks the field
+  invalid and the message names the α the table still shows. The server refuses the same values with a 422.
 - **Table** (up to 2,000 rows, sortable): A-number (links to oeis.org), name, difficulty, pick chance,
-  programs, known terms, b-file status, extension credits, search flag.
+  programs, known terms, b-file status, extension credits, search flag. **Sorting reorders the rows that
+  were sent, not the whole queue** (5,315 with a PARI program on 2026-11-17, of which the 2,000 most likely
+  are sent), and at α 0 every sequence is equally likely, so which 2,000 are sent is arbitrary; the caption
+  says both.
 - Sequences with an open review or a `recheck_pending` win are excluded, exactly as in selection.
 - Unlike a session, `oeisbot queue` and `oeisbot pick`, the tab does **not** leave out sequences an attempt
   could only skip (no supported PARI program, all programs dead ends or out of reach): that check reads
@@ -238,17 +296,24 @@ The candidate pool as selection sees it, before the last check a session applies
 What to fix next.
 
 - **Filters**: outcome, strategy.
-- **"Why runs stopped"**: bar chart of stop reasons for program runs. Clicking a bar filters the table;
-  a chip above clears the filter.
+- **"Why runs stopped"**: bar chart of stop reasons for program runs. Clicking a bar (or Enter or Space on
+  it) filters the table; a chip above clears the filter. **Both bar charts count all runs**, whatever the
+  outcome and strategy filters say: they are the control that filters, not a view of the filtered rows. A run
+  with no stop reason is counted, and filtered, as `none`.
 - **"Why sequences were skipped"**: bar chart of skip reasons.
-- **Table** (latest 1,000 matching rows): id, start time, sequence, strategy, outcome, stop reason,
-  reproduced/known, new terms, runtime, peak memory, detail.
+- **Table** (latest 1,000 matching rows, with a line saying so when more match): id, start time, sequence,
+  strategy, outcome, stop reason, reproduced/known, new terms, runtime, peak memory, detail. An `extended`
+  run that is not a win is marked "review rejected". Peak memory reads "–" for a gp run that ended before
+  reporting any stack figure (the stored value is 0 there, which is "not measured": 20 rows on 2026-11-17).
 
 ### Review inbox
 
-Wins waiting for a person.
+Runs that produced new terms, open reviews first.
 
 - **Tiles**: counts by status.
+- **A rejected review is set apart** (a rule down its left side, a red pill) **and shows its note**, which is
+  where the rejection says why; `oeisbot review list` prints the note, and until item 56 this page dropped it,
+  so reviews #2 and #3 read "200 new terms" under a caption about successes.
 - **Each review** opens with the same three facts, in the same order, as `oeisbot review list`
   (`cli.review_block`): the sequence (status, A-number, name, review id), then the addition and where it
   came from (`N new terms, a(i)..a(j), from <program origin>, attempt #k`, with strategy, runtime and
@@ -258,19 +323,30 @@ Wins waiting for a person.
   programs), program rewrites (gp), and, since 2026-09-30, a term that lands below the entry's published
   searched bound (`extra.below_published_bound`: the bound, the quoted comment and the indices).
 - **Files**: buttons open the artifact's text files (`.md`, `.txt`, `.csv`, `.json`, `.gp`, `.py`) in
-  an inline viewer.
+  an inline viewer, which starts empty for each file (it used to show the last file's text while the next
+  one loaded).
 - **Read-only**: the page shows the command to change status (`oeisbot review set <id> ...`).
 
 ### Run history
 
-- **Tiles**: machine hours, program runs, wins (and the share of runs), hours per win.
-- **"Runs and wins per day"**: stacked columns, wins (outcome `extended`) in blue and every other program
-  run in gray, including superseded and `recheck_pending` runs, which did find new terms. Runs are dated by
-  when they started.
-- **"Machine hours per day"**: columns.
-- **Sessions table**: id, start, finish (or "running"), attempts, wins, machine time, settings note. The
-  counts are the ones stored when the session ended, so a `recheck_pending` win resolved later is missing
-  from its session's wins.
+- **Tiles**: machine hours, program runs, wins (the share of runs, and how many more were rejected in
+  review), hours per win. On 2026-11-17: 1 win, 2 rejected, 18.6 hours per win (it read 3 wins and 6.2).
+- **"Runs and wins per day"**: stacked columns, wins in blue, runs whose win was rejected in review in
+  orange (the series appears only when there are any), and every other program run in gray ("Other runs"),
+  including superseded and `recheck_pending` runs, which did find new terms. Runs are dated by when they
+  started, **by UTC day**, which the captions say: an evening run in a zone west of Greenwich falls on the
+  next day's column (session 10 started Sep 24, 8:20 PM local and is charted on 09-25).
+- **One column per calendar day** from the first run to the last (`scale.dayColumns`): a day without runs is
+  an empty slot, and a run of more than three such days is one "…" marker whose tooltip gives the dates, so
+  that columns side by side are days side by side. Labels carry the year only when the chart spans more than
+  one.
+- **"Machine hours per day"**: columns, the same days.
+- **Sessions table**: id, start, finish (or "running"), attempts, wins, machine time, settings note. **Wins
+  are counted from the session's attempts when the page asks** (`app.history`), not read from
+  `sessions.wins`: the stored figure was written when the session ended and still counts a win rejected
+  since (session 9's stored 2 reads "0 (2 rejected)"), and it misses a `recheck_pending` win resolved later,
+  which the count from attempts includes. Attempts and machine time are the stored figures. A line says so
+  when more sessions exist than the 100 loaded.
 
 Skip rows are excluded from the header's run count and from the Run history tiles and per-day charts.
 They are included elsewhere: the Attempts table (filter the outcome to exclude `skipped`), the "Why
@@ -279,22 +355,27 @@ sequences were skipped" chart, and the Sessions table's Attempts column (`sessio
 ## API
 
 All endpoints are `GET`, return JSON (except file contents), and open a fresh read-only connection. A
-missing database returns 503, and so does a Pick map pool that cannot be built (below).
+missing database returns 503, and so does a Pick map pool that cannot be built (below). A number out of
+its range is a 422 (FastAPI's validation), a request addressed to a host name the server does not answer to
+is a 400, and an API request a browser says another page made is a 403 (both under
+[safety properties](#safety-properties)).
 
 | Endpoint | Parameters | Returns |
 |---|---|---|
-| `/api/summary` | | `candidates`, `attempts` (non-skip), `skipped`, `wins`, `new_terms`, `open_reviews` (new + reviewing), `machine_hours`, `oeisdata_commit`, `synced_at` |
-| `/api/estimator` | | `points`: prediction rows with a positive prediction and an actual or censored time, joined with sequence and strategy; `stats`: `finished`, `censored`, `within_2x`, `median_ratio`, `mean_abs_log10_error`, `in_reported_range_2x`, `underestimated_censored` |
-| `/api/queue` | `alpha` (1.0), `pari_only` (true), `limit` (500, max 30,000), `sort` (`weight`, `difficulty`, `a_number`) | `total`, `alpha`, `rows` with difficulty, weight, pick probability, languages, keywords, b-file status, known terms, credits, search flag |
-| `/api/attempts` | `failure_mode`, `outcome`, `strategy`, `limit` (300, max 5,000) | `rows` (newest first), `failure_counts` (non-skip), `skip_counts`, `outcome_counts`, `strategies` |
-| `/api/reviews` | | `rows`, ordered new, then reviewing, then the rest, newest first; each with attempt facts (`strategy`, `program_origin`, `new_terms`, `runtime_s`, ...), sequence name, `files`, `weak_verification`, `rewrites` |
-| `/api/reviews/{id}/files/{name}` | | plain text of one artifact file |
-| `/api/history` | | `days` (per UTC day: runs, wins, skipped, machine hours); `sessions` (latest 100) |
+| `/api/summary` | | `candidates` (sequences with keyword `more`), `attempts` (non-skip), `skipped`, `wins` and `new_terms` (of runs that are wins: `extended`, review neither rejected nor refused), `rejected_wins` (the other `extended` runs), `open_reviews` (new + reviewing), `machine_hours`, `oeisdata_commit`, `synced_at` |
+| `/api/estimator` | | `points`: prediction rows with a positive prediction and an actual or censored time, joined with sequence and strategy, each with `finished` (it has a positive actual time; a zero is not one); `stats`: `finished`, `censored`, `within_2x`, `median_ratio`, `mean_abs_log10_error`, `in_reported_range_2x`, `underestimated_censored` |
+| `/api/queue` | `alpha` (1.0; 0 to 6, as the Pick map's), `pari_only` (true), `limit` (500; 0 to 30,000), `sort` (`weight`, `difficulty`, `a_number`) | `total`, `alpha`, `rows` with difficulty, weight, pick probability, languages, keywords, b-file status, known terms, credits, search flag |
+| `/api/attempts` | `failure_mode` (`none` selects runs with no stop reason), `outcome`, `strategy`, `limit` (300; 0 to 5,000) | `rows` (newest first, each with `win_rejected`: an `extended` run that is not a win), `total` (how many match in all), `failure_counts` (non-skip; a missing reason under `none`), `skip_counts`, `outcome_counts`, `strategies` |
+| `/api/reviews` | | `rows`, ordered new, then reviewing, then the rest, newest first; each with `status`, `note`, attempt facts (`strategy`, `program_origin`, `new_terms`, `runtime_s`, ...), sequence name, `files`, `weak_verification`, `rewrites`, `below_bound` (the published bound a new term lands below, or null) |
+| `/api/reviews/{id}/files/{name}` | `id` from 1 to 2⁶³ − 1 | plain text of one artifact file |
+| `/api/history` | `session_limit` (100; 0 to 5,000) | `days` (per UTC day: runs, `wins`, `rejected_wins`, skipped, machine hours); `sessions` (the latest, with `wins` and `rejected_wins` counted from their attempts); `sessions_total` |
 | `/api/pickmap` | `pool` (`pari` or `model`, default `pari`; anything else is a 422), `alpha` (1.0; outside 0 to 6, or `nan`, is a 422), `refresh` (false: rebuild the live pool now instead of using the cache) | `pool`, `alpha`, `n`, `bands` (per non-empty band: `band`, `label`, `n`, `share`), `built_at`, `age_s`, `note` (what the pool left out), `running_session`, `snapshots` (how many are stored for this pool), `baseline` (`id`, `taken_at`, `n`, `session_id`, `budgets_differ`, `rules_differ`; null when there is nothing to compare with), `entered` (`n`, `share`), `gone` (`n`, `share`, `reasons`, `top`), `rows` (largest first: `a`, `name`, `d`, `band`, `p`, `p0`, `ratio`, `new`). **When the live pool cannot be built** (any exception from `session_pool`, a locked or unreadable database among them) the answer is a 503 with the body `{"error": "pool_build_failed", "reason": "<ExceptionType>: <message>"}` (the message on one line, cut at 200 characters) and the traceback goes to the `oeisbot.dashboard` logger; nothing is cached for it. A missing database keeps FastAPI's own 503 body (`no database at …`), which the tab shows as `Could not load: …` (also with the retry button) |
 
 ### Safety properties
 
-- **Never writes.** Every query runs on a `mode=ro` connection. `tests/test_dashboard.py` checks the
+- **Never writes the database.** Every query runs on a `mode=ro` connection. (SQLite itself rewrites the
+  `-shm` file beside a WAL database on every read: [known limitations](known-limitations.md#the-pick-map).)
+  `tests/test_dashboard.py` checks the
   database file is unchanged after calling the seven JSON endpoints (not the file endpoint), that every
   connection they opened was read-only (a spy on `db.connect`, which also covers the Pick map's pool build
   and the start-up warm-up), and that the read-only connection refuses an `UPDATE`. The Pick map reads
@@ -302,8 +383,29 @@ missing database returns 503, and so does a Pick map pool that cannot be built (
 - **Artifact files are confined.** The artifact folder must resolve inside `artifacts/`, and the file
   name must be one of that folder's own text files. Tested: path traversal (`..%2F...`, `..\...`) and
   unknown names return 404.
-- **Unknown `/api/...` paths return 404** rather than the frontend's `index.html`. This catch-all route
-  exists only when the frontend is built, and it is not covered by a test.
+- **Only `/` is the page; every other path that no route claims is a 404** (history item 56). The tabs are
+  addressed by the URL's fragment, which never reaches the server, so nothing else has a page behind it.
+  `/api`, `/API/summary`, `/docs`, `/openapi.json` and `/index.html` used to come back as the page with a
+  200, and `/redoc` as FastAPI's second set of API docs, now turned off. The route is registered whether or
+  not the frontend is built, and tested.
+- **The server answers only to its own names** (`app.ALLOWED_HOSTS`: `127.0.0.1`, `localhost`, `::1`, and
+  whatever `--host` names; the `Host` header is compared without its port, in lower case, an IPv6 literal
+  without its brackets, and a header that is not a host and an optional port is refused). A request under any
+  other name is a **400**. This is what stops a page on another site from reading the API through the
+  user's own browser by pointing a host name it controls at 127.0.0.1 (DNS rebinding); the API holds
+  unsubmitted terms. **`--host 0.0.0.0` or `::` turns the check off**, with a printed warning, because a
+  wildcard address is reachable under names nobody can list.
+- **An API request made by another page is refused** with a **403**: any `Sec-Fetch-Site` other than
+  `same-origin` (the dashboard's own page, the Vite dev server's proxied one included) or `none` (an address
+  typed in). An `<img>` on any site, or on another port of this machine, could otherwise make the server build
+  a pool or serialize the whole queue. curl and other clients that send no such header are unaffected, and
+  the page itself (`/`) can be linked to from anywhere.
+- **Every response carries `X-Content-Type-Options: nosniff`**, the 500 of an endpoint that raised included:
+  the file route serves text that programs wrote.
+- **Numbers are bounded**: `alpha` 0 to 6 on both endpoints that take it (`nan` and `inf` included in the
+  refusal; the queue's used to return a 500 from about 598 up and to invert the weighting below 0), `limit`
+  and `session_limit` not negative (a negative `LIMIT` is "no limit" to SQLite), a review id within SQLite's
+  integers.
 
 The server binds to `127.0.0.1` by default and has no authentication. Do not expose it on a network.
 
@@ -313,10 +415,12 @@ The server binds to `127.0.0.1` by default and has no authentication. Do not exp
 |---|---|
 | `src/main.tsx` | app shell, tabs, header summary |
 | `src/views.tsx` | five of the six views (the Pick map has its own file) |
-| `src/pickmap.tsx` | the Pick map view: controls, band tabs, the SVG treemap with its roving-tabindex keyboard handling and tooltip ownership, the "Too small to draw here" chips, the failure message with its retry button, legend, table view, "Left the pool" card. Node cannot run `.tsx`, so this file has no automated test |
-| `src/treemap.ts` | pure layout, colour binning and request building for the Pick map: squarified treemap, nested layout with lumping and `fairRects`, the seven change classes, `parseAlpha`, `pickmapPath`, and the logic the keyboard and the footer chip rest on (`undrawn`, `focusOrder`, `neighbour`, `failureReason`). No React, so `npm test` (`test/treemap.test.ts`, run by node itself) covers it |
-| `src/charts.tsx` | SVG charts: `LogScatter`, `BarList`, `StackedColumns`, tooltips, legend keys |
-| `src/lib.tsx` | `useApi` (polling fetch; `pollPath` is what the repeats ask for, so a forced rebuild is asked once), `useWidth` (responsive width via a callback ref), formatters, `Tile`, sortable `DataTable` |
+| `src/pickmap.tsx` | the Pick map view: controls, band tabs, the SVG treemap with its roving-tabindex keyboard handling and tooltip ownership, the "Too small to draw to scale here" chips, the failure message with its retry button, legend, table view, "Left the pool" card. Node cannot run `.tsx`, so this file has no automated test |
+| `src/treemap.ts` | pure layout, colour binning and request building for the Pick map: squarified treemap, nested layout at one common scale with lumping (`layoutGroups`, `commonScale`, `fairRects`), the seven change classes and `fmtChange`, `parseAlpha` (the Queue uses it too), `pickmapPath`, and the logic the keyboard and the footer chip rest on (`undrawn`, `focusOrder`, `neighbour`, `failureReason`). No React and no imports, so `npm test` (`test/treemap.test.ts`, run by node itself) covers it |
+| `src/scale.ts` | pure scale arithmetic for the charts: the time-tick ladder and `timeDomain`, `logFraction`, the 2× band's corners, label thinning, `niceStep`, `actualOrBound`, `dayColumns`. No imports; `test/scale.test.ts` |
+| `src/format.ts` | pure formatting: `fmtSeconds`, `sigFixed`, `fmtBytes`, `fmtPct`, `fmtInt`, `fmtTime` (the year shown when it is not this one), `fmtShare`, `describeError`. No imports; `test/format.test.ts`. Nothing in it may print exponent notation |
+| `src/charts.tsx` | SVG charts: `LogScatter`, `BarList`, `StackedColumns` (with empty-day slots and gap markers), tooltips, legend keys |
+| `src/lib.tsx` | `useApi` (polling fetch; `pollPath` is what the repeats ask for, so a forced rebuild is asked once; it keeps the raw error text, which `failureReason` parses), `useWidth` (responsive width via a callback ref), the formatters re-exported from `format.ts`, `Tile`, sortable `DataTable` |
 | `src/styles.css` | color tokens for light and dark themes (follows the OS setting), layout |
 
 There is no chart library; charts are hand-written SVG. Series colors are validated for color-vision

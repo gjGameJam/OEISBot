@@ -13,10 +13,27 @@ so do not redo them; **step 7 was re-run 2026-09-28 and still passes** (item 49)
 what a human may do: **step 8, submitting by hand, and step 9, recording the outcome**, with the material
 assembled in `data/review1/SUBMISSION.md`. Nothing has been submitted. Do not close the review, change
 its status, submit anything, or re-run A385331 on your own initiative. **History items 34 and 36 to 54 are
-committed and pushed as `f0081d9`** (2026-10-14, on the user's "Commit and push"; `HEAD` and `origin/main`,
+committed and pushed as `f0081d9`** (2026-10-14, on the user's "Commit and push"; `origin/main`,
 what it holds is in `docs/status.md#what-is-committed`). That answer covered the work to item 54 only:
-anything built after it still waits for its own request to commit. **Item 55 (the Pick map's loose ends,
-2026-10-14) is built, audited and uncommitted** (`git status` lists it; the evidence is in `data/item55/`).
+anything built after it still waits for its own request to commit. **Item 55 (the Pick map's loose ends) is
+commit `a6ae951`, pushed, and `origin/main`** (2026-11-18, on the user's "Commit item 55 first", which included
+the push). **Item 56 (the dashboard
+defect sweep, 2026-11-17 and 18) is built, audited and uncommitted**, and the user said it "can stay
+uncommitted" (`git status` lists it; the evidence is in `data/item56/`); all 634 tests pass with it in the tree.
+
+**If 90 tests fail and every one says `disk_cap`, the disk is full, not the code** (2026-11-18). The sandbox
+stops any run when the drive has less than `reserve_disk_bytes` (8 GiB) free, and `C:` had 7.3 GB. Do not
+lower the reserve to get a green run; ask for disk space (the user freed some and the suite passed).
+
+**The dashboard after item 56: what binds.** **A win is `app.WIN`**, an `extended` run whose review is not
+`rejected` and which has no `extra.review_refused`; never count `outcome = 'extended'` for a figure a person
+reads (it said 3 wins where there is 1), and the Sessions table counts from attempts, not from
+`sessions.wins`. **The Pick map's bands share one exact scale** (`treemap.layoutGroups`, `commonScale`); the
+price is empty space in roomier bands, and `fairRects` only picks the least wasteful of nine layouts: do not
+restore it as the mechanism, it does not converge. **`scale.ts`, `format.ts` and `treemap.ts` must have no
+imports**, or node cannot test them, and nothing in `format.ts` may print exponent notation. **The server
+answers only to `app.ALLOWED_HOSTS`** and refuses API requests from other pages (`Sec-Fetch-Site`); tests
+get `testserver` through `tests/conftest.py`, which first asserts the real set. Only `/` serves the page.
 
 **Session 12 ran on 2026-09-30 (item 52): 25 PARI picks, seed 212, 27 program runs, 0.85 h, 2 verified,
 0 new terms, Brier 0.000185 for the per-pick reading against 0.076756 pooled.** Fifteen of seventeen
@@ -25,7 +42,7 @@ misreads** retiring their sequences untested (16% in session 11, 20% here). The 
 `data/session12/`: `planS12.md` with a critic, a Monte Carlo that *pins* what the page proves, then
 `resultsS12.md` audited (16 findings, all held). The offer (a) backfill then re-keyed 48 attempt rows
 (`data/offerA/`, backup `data/oeisbot-before-backfill.sqlite3`): `queue` is **3,357 / 1,958
-(1432 / 383 / 143)**, `queue --all` **26,745 / 18**, attempts **280**, **587 tests**.
+(1432 / 383 / 143)**, `queue --all` **26,745 / 18**, attempts **280**, **587 tests** (634 since item 56).
 
 **The dashboard has a Pick map tab (item 54, 2026-10-13):** a treemap whose tile area is a sequence's
 chance of being the first pick (`pickmap.chances`) and whose colour is its change since the newest
@@ -36,17 +53,19 @@ anything leaves the pool (55 left between the pool before session 12 and now, an
 `db.connect()` aimed at the real file (a test, a mutation run) creates them there: give tests and workers
 their own `OEISBOT_HOME` (`pymut.py` does). **Snapshots are written by `run_session`, `oeisbot snapshot` and
 (item 55) `oeisbot sync`**, never by the dashboard, which stays read-only; `data/oeisbot.sqlite3` holds snapshot #1 (3,357 rows,
-2026-10-13) and `data/oeisbot-before-pickmap.sqlite3` is the backup taken before it. The map says area is
-about 0.9 of the chance and that bands share a scale to within about 2.5x; do not tighten that without
-re-running `data/item54/area_spread.ts`. **Item 55 built those loose ends (2026-10-14, uncommitted):**
+2026-10-13) and `data/oeisbot-before-pickmap.sqlite3` is the backup taken before it. Since item 56 the
+bands are drawn at exactly one scale (tile rects; paint differs up to about 1.4x between bands because of the
+0.5 px tile inset, and up to a quarter of the framed area can be empty at the worst width): **restate any of
+those figures only from `data/item56/area_spread.ts`**, which measures what the page draws at the page's own
+sizes. Item 54's `area_spread.ts` measures the frame's inner box, which tiles no longer fill. **Item 55 built those loose ends (2026-10-14, uncommitted):**
 `attempt.snapshot_after_sync` makes `oeisbot sync` record a PARI-only snapshot (never fails the sync;
 budgets from the newest PARI snapshot, `attempt.budgets_of`), the colour horizon stays fixed (no
 picker), a footer line names the bands "All bands" cannot draw (`treemap.undrawn`), tiles are
 keyboard-focusable (roving tabindex, `treemap.focusOrder` / `neighbour`), and a pool that cannot be built
 is a 503 `pool_build_failed` with a reason and a **Try again** button. **Only the pure logic has automated
 tests; `pickmap.tsx` had its browser pass on 2026-11-17** (all four pieces seen working, the 503 simulated
-in the page; `docs/status.md`, "Open offers and next steps"). The dashboard server is not started
-unprompted.
+in the page), and item 56's changes to it were each seen in a browser too. The dashboard server is not
+started unprompted; the user started it on 2026-11-17 and it was restarted for item 56's server changes.
 
 **Session 11 ran on 2026-09-29 (item 50): 25 PARI picks, 5 verified, 0 new terms, no code changed.** Two
 things from it bind later work. **Four picks were program-selection misreads**, each now a dead end
@@ -215,7 +234,7 @@ Windows-only in practice: the sandbox is a Job Object + AppContainer (`oeisbot/s
 ## Commands
 
 ```
-.venv\Scripts\python -m pytest                 # 587 tests, ~100 s; sandbox tests skip if `oeisbot setup` has not run
+.venv\Scripts\python -m pytest                 # 634 tests, ~100 s; sandbox tests skip if `oeisbot setup` has not run
 .venv\Scripts\python -m pytest tests/test_sandbox.py
 .venv\Scripts\oeisbot setup                    # sandbox runtimes + AppContainer grants + database (idempotent)
 .venv\Scripts\oeisbot sync --no-pull           # rebuild the candidate table from the local oeisdata clone

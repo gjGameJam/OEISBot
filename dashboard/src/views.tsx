@@ -1,11 +1,14 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { BarList, LegendDot, LogScatter, StackedColumns, type ScatterPoint } from "./charts";
 import {
   DataTable, OeisLink, Tile, fmtBytes, fmtInt, fmtPct, fmtSeconds, fmtTime, useApi, type Column,
 } from "./lib";
+import { describeError, sigFixed } from "./format";
+import { actualOrBound, dayColumns } from "./scale";
+import { MAX_ALPHA, parseAlpha } from "./treemap";
 
 export function Status({ error, loading, hasData }: { error: string | null; loading: boolean; hasData: boolean }) {
-  if (error) return <p className="error">Could not load: {error}</p>;
+  if (error) return <p className="error" role="alert">Could not load: {describeError(error)}{hasData ? ". What is shown is the last answer that arrived." : ""}</p>;
   if (loading && !hasData) return <p className="muted">Loading…</p>;
   return null;
 }
@@ -16,7 +19,7 @@ interface PredictionPoint {
   id: number; attempt_id: number; a_number: string; strategy: string; n: number; cost_unit: string;
   model: string | null; trustworthy: number; feasible: number; value_dependent: number;
   predicted_s: number; predicted_s_low: number | null; predicted_s_high: number | null;
-  actual_s: number | null; censored_s: number | null; started_at: string;
+  actual_s: number | null; censored_s: number | null; started_at: string; finished?: boolean;
 }
 interface EstimatorData {
   points: PredictionPoint[];
@@ -30,32 +33,39 @@ export function EstimatorView() {
   const [trusted, setTrusted] = useState(false);
   const [table, setTable] = useState(false);
   const pts = (data?.points ?? []).filter((p) => (unit === "all" || p.cost_unit === unit) && (!trusted || p.trustworthy));
-  const scatter: ScatterPoint[] = pts.map((p) => {
-    const hollow = p.actual_s == null;
-    const y = (hollow ? p.censored_s : p.actual_s) ?? p.predicted_s;
-    return {
-      id: p.id, x: p.predicted_s, y: Math.max(y, 1e-6), series: p.cost_unit === "work" ? 0 : 1, hollow,
+  // A point is what `actualOrBound` says it is: a finished time, or the time the term was stopped at. A row
+  // with neither is not drawn at all (it used to be drawn at its own prediction, as if it had been measured).
+  const scatter: ScatterPoint[] = pts.flatMap((p) => {
+    // `finished` is the server's word (app.estimator); a zero or missing time is never a finished one
+    const got = actualOrBound(p.finished === false ? null : p.actual_s, p.censored_s);
+    if (!got || !(p.predicted_s > 0)) return [];
+    const { y } = got, hollow = !got.finished;
+    return [{
+      id: p.id, x: p.predicted_s, y, series: p.cost_unit === "work" ? 0 : 1, hollow,
       title: `${p.a_number} a(${p.n}) · ${p.strategy}`,
       rows: [
         { label: hollow ? "stopped after" : "actual", value: fmtSeconds(y) },
         { label: "predicted", value: fmtSeconds(p.predicted_s) },
         { label: "predicted range", value: `${fmtSeconds(p.predicted_s_low)} – ${fmtSeconds(p.predicted_s_high)}` },
-        { label: "actual / predicted", value: hollow ? `≥ ${(y / p.predicted_s).toPrecision(2)}` : (y / p.predicted_s).toPrecision(2) },
+        { label: "actual / predicted", value: `${hollow ? "≥ " : ""}${sigFixed(y / p.predicted_s, 2)}` },
         { label: "model", value: `${p.model ?? "none"}${p.trustworthy ? "" : " (untrusted)"}` },
       ],
-    };
+    }];
   });
   const s = data?.stats;
+  const timeOf = (r: PredictionPoint) => actualOrBound(r.actual_s, r.censored_s);
   const columns: Column<PredictionPoint>[] = [
     { key: "a_number", label: "Sequence", render: (r) => <OeisLink a={r.a_number} /> },
     { key: "n", label: "n", numeric: true },
     { key: "cost_unit", label: "Unit" },
     { key: "model", label: "Model", render: (r) => r.model ?? "–" },
     { key: "predicted_s", label: "Predicted", numeric: true, render: (r) => fmtSeconds(r.predicted_s) },
-    { key: "actual_s", label: "Actual", numeric: true, render: (r) => r.actual_s != null ? fmtSeconds(r.actual_s) : `≥ ${fmtSeconds(r.censored_s)}` },
+    // sorted by the time shown: a term that was stopped sorts by the time it was stopped at, its lower bound
+    { key: "actual_s", label: "Actual", numeric: true, sortValue: (r) => timeOf(r)?.y ?? null,
+      render: (r) => { const t = timeOf(r); return !t ? "–" : `${t.finished ? "" : "≥ "}${fmtSeconds(t.y)}`; } },
     { key: "ratio", label: "Actual / predicted", numeric: true,
-      sortValue: (r) => (r.actual_s ?? r.censored_s ?? 0) / r.predicted_s,
-      render: (r) => `${r.actual_s == null ? "≥ " : ""}${((r.actual_s ?? r.censored_s ?? 0) / r.predicted_s).toPrecision(2)}` },
+      sortValue: (r) => { const t = timeOf(r); return t ? t.y / r.predicted_s : null; },
+      render: (r) => { const t = timeOf(r); return !t ? "–" : `${t.finished ? "" : "≥ "}${sigFixed(t.y / r.predicted_s, 2)}`; } },
     { key: "trustworthy", label: "Trusted", render: (r) => (r.trustworthy ? "yes" : "no") },
   ];
   return (
@@ -73,7 +83,7 @@ export function EstimatorView() {
       <div className="kpis">
         <Tile label="Terms predicted and finished" value={fmtInt(s?.finished)} sub={`${fmtInt(s?.censored)} stopped before finishing`} />
         <Tile label="Within 2× of prediction" value={fmtPct(s?.within_2x)} sub="finished terms" />
-        <Tile label="Median actual / predicted" value={s?.median_ratio != null ? s.median_ratio.toPrecision(2) : "–"} sub="above 1 means underestimates" />
+        <Tile label="Median actual / predicted" value={s?.median_ratio != null ? sigFixed(s.median_ratio, 2) : "–"} sub="above 1 means underestimates" />
         <Tile label="Inside reported range (±2×)" value={fmtPct(s?.in_reported_range_2x)} sub="low/2 ≤ actual ≤ high×2" />
         <Tile label="Stopped far past prediction" value={fmtInt(s?.underestimated_censored)} sub="ran over 2× the high estimate" />
       </div>
@@ -84,15 +94,19 @@ export function EstimatorView() {
           the shaded band is within 2×. Hollow points were stopped before they finished, so the true cost is at least that high.
           If most points sit well above the band, the feasibility step is not working.
         </p>
-        {pts.length === 0 ? (
+        {!data ? null : data.points.length === 0 ? (
           <div className="empty">No projected terms have run yet. Points appear once a verified program starts computing new terms.</div>
+        ) : pts.length === 0 ? (
+          <div className="empty">No projected term matches these filters ({fmtInt(data.points.length)} without them).</div>
         ) : table ? (
           <DataTable rows={pts} columns={columns} rowKey={(r) => r.id} initialSort={{ key: "ratio", desc: true }} />
+        ) : scatter.length === 0 ? (
+          <div className="empty">None of these {fmtInt(pts.length)} terms has a time to plot; the table lists them.</div>
         ) : (
           <>
             <div className="legend">
-              <LegendDot color="var(--series-1)">Work counts (instrumented)</LegendDot>
-              <LegendDot color="var(--series-2)">CPU time (uninstrumented)</LegendDot>
+              {unit !== "cpu" && <LegendDot color="var(--series-1)">Work counts (instrumented)</LegendDot>}
+              {unit !== "work" && <LegendDot color="var(--series-2)">CPU time (uninstrumented)</LegendDot>}
               <LegendDot color="var(--text-muted)" hollow>Stopped before finishing (actual ≥ shown)</LegendDot>
             </div>
             <LogScatter points={scatter} />
@@ -110,11 +124,24 @@ interface QueueRow {
   keywords: string | null; bfile_status: string | null; known_terms: number | null; more_credits: number | null; value_dependent: boolean;
 }
 
+const QUEUE_LIMIT = 2000;
+
 export function QueueView() {
+  // The box holds text; a request goes out only for a number the server takes (`parseAlpha`, the Pick map's
+  // rule and the same bounds, app.queue), half a second after the typing stops. It used to send every
+  // keystroke as it stood, and an empty box as 0.
+  const [alphaText, setAlphaText] = useState("1");
   const [alpha, setAlpha] = useState(1);
+  const typed = parseAlpha(alphaText);
+  useEffect(() => {
+    if (typed == null || typed === alpha) return;
+    const t = window.setTimeout(() => setAlpha(typed), 500);
+    return () => window.clearTimeout(t);
+  }, [typed, alpha]);
   const [pariOnly, setPariOnly] = useState(true);
-  const { data, error, loading } = useApi<{ total: number; rows: QueueRow[] }>(
-    `/api/queue?alpha=${alpha}&pari_only=${pariOnly}&limit=2000`, 60000);
+  const { data, error, loading } = useApi<{ total: number; alpha: number; rows: QueueRow[] }>(
+    `/api/queue?alpha=${alpha}&pari_only=${pariOnly}&limit=${QUEUE_LIMIT}`, 60000);
+  const cut = data != null && data.rows.length < data.total;
   const columns: Column<QueueRow>[] = [
     { key: "a_number", label: "Sequence", render: (r) => <OeisLink a={r.a_number} /> },
     { key: "name", label: "Name", render: (r) => <div className="wrap">{r.name}</div> },
@@ -130,15 +157,25 @@ export function QueueView() {
     <>
       <div className="filters">
         <label>α (preference for easy targets)
-          <input type="number" min={0} max={6} step={0.25} value={alpha} onChange={(e) => setAlpha(Number(e.target.value) || 0)} />
+          <input type="number" min={0} max={MAX_ALPHA} step={0.25} value={alphaText} onChange={(e) => setAlphaText(e.target.value)}
+                 aria-invalid={typed == null} aria-describedby={typed == null ? "queue-alpha-error" : undefined} />
         </label>
         <label><input type="checkbox" checked={pariOnly} onChange={(e) => setPariOnly(e.target.checked)} /> Only sequences with a PARI program</label>
-        <span className="muted">{data ? `${fmtInt(data.total)} candidates; showing the ${fmtInt(data.rows.length)} most likely picks` : ""}</span>
+        <span className="muted">{data ? `${fmtInt(data.total)} in this queue${cut ? `; showing the ${fmtInt(data.rows.length)} most likely picks` : ""}` : ""}</span>
       </div>
+      {typed == null && (
+        <p id="queue-alpha-error" className="error" role="alert">α must be a number from 0 to {MAX_ALPHA}; the table still shows α {data?.alpha ?? alpha}.</p>
+      )}
       <Status error={error} loading={loading} hasData={!!data} />
+      {error && data && data.alpha !== alpha && <p className="error">The table below still shows α {data.alpha}.</p>}
       <div className={`card ${loading && data ? "stale" : ""}`}>
         <h2>Candidate queue</h2>
-        <p className="caption">Pick chance is proportional to 1 / difficulty^α. Sort by any column to sanity-check the weighting.</p>
+        <p className="caption">
+          Pick chance is proportional to 1 / difficulty^α, over every sequence the queue holds. This is the queue before a
+          session checks what it can actually run; the Pick map shows the pool a session draws from.
+          {cut ? ` Sorting a column reorders the ${fmtInt(data!.rows.length)} rows shown here, not all ${fmtInt(data!.total)}` +
+            (data!.alpha === 0 ? "; at α 0 every sequence is equally likely, so which rows are shown is arbitrary." : ".") : ""}
+        </p>
         {data && <DataTable rows={data.rows} columns={columns} rowKey={(r) => r.a_number} initialSort={{ key: "pick_probability", desc: true }} />}
       </div>
     </>
@@ -152,9 +189,10 @@ interface AttemptRow {
   verified: number; known_terms: number | null; known_source: string | null; reproduced: number | null; new_terms: number;
   runtime_s: number | null; cpu_s: number | null; peak_mem_bytes: number | null; cost_unit: string | null;
   projected_next_s_high: number | null; outcome: string; failure_mode: string | null; detail: string | null; artifact_path: string | null;
+  win_rejected?: boolean;
 }
 interface AttemptsData {
-  rows: AttemptRow[]; failure_counts: Record<string, number>; skip_counts: Record<string, number>;
+  rows: AttemptRow[]; total?: number; failure_counts: Record<string, number>; skip_counts: Record<string, number>;
   outcome_counts: Record<string, number>; strategies: string[];
 }
 
@@ -176,7 +214,8 @@ export function AttemptsView() {
     { key: "started_at", label: "Started", render: (r) => fmtTime(r.started_at) },
     { key: "a_number", label: "Sequence", render: (r) => <OeisLink a={r.a_number} /> },
     { key: "strategy", label: "Strategy", render: (r) => <span className="mono">{r.strategy}</span> },
-    { key: "outcome", label: "Outcome" },
+    // an `extended` run whose review was rejected (or refused) keeps its outcome, and is not a win: say so here
+    { key: "outcome", label: "Outcome", render: (r) => r.win_rejected ? <>{r.outcome} <span className="pill rejected">review rejected</span></> : r.outcome },
     { key: "failure_mode", label: "Stopped because", render: (r) => r.failure_mode?.replace(/_/g, " ") ?? "–" },
     { key: "reproduced", label: "Verified", numeric: true, render: (r) => (r.known_terms ? `${r.reproduced ?? 0}/${r.known_terms}` : "–") },
     { key: "new_terms", label: "New", numeric: true },
@@ -205,17 +244,20 @@ export function AttemptsView() {
       <div className="grid-2">
         <div className="card">
           <h2>Why runs stopped</h2>
-          <p className="caption">Program runs by final stop reason. Timeouts vs memory caps vs wrong terms vs crashes show what to fix next. Select a bar to filter.</p>
+          <p className="caption">All program runs by final stop reason, whatever the filters above say. Timeouts vs memory caps vs wrong terms vs crashes show what to fix next. Select a bar to filter the table.</p>
           <BarList bars={toBars(data?.failure_counts ?? {})} selected={failure} onSelect={(k) => setFailure(k === failure ? null : k)} />
         </div>
         <div className="card">
           <h2>Why sequences were skipped</h2>
-          <p className="caption">Sequences never run, by reason (for example no supported program form).</p>
+          <p className="caption">All sequences never run, by reason (for example no supported program form). Select a bar to filter the table.</p>
           <BarList bars={toBars(data?.skip_counts ?? {})} selected={failure} onSelect={(k) => setFailure(k === failure ? null : k)} />
         </div>
       </div>
       <div className={`card ${loading && data ? "stale" : ""}`} style={{ marginTop: 20 }}>
         <h2>Attempts</h2>
+        {data && data.total != null && data.rows.length < data.total && (
+          <p className="caption">Showing the latest {fmtInt(data.rows.length)} of {fmtInt(data.total)} that match; the older ones are not loaded.</p>
+        )}
         {data && (data.rows.length ? <DataTable rows={data.rows} columns={columns} rowKey={(r) => r.id} initialSort={{ key: "id", desc: true }} />
           : <div className="empty">No attempts match.</div>)}
       </div>
@@ -234,7 +276,7 @@ interface ReviewRow {
 
 function FileViewer({ reviewId, name }: { reviewId: number; name: string }) {
   const { data, error } = useApi<string>(`/api/reviews/${reviewId}/files/${encodeURIComponent(name)}`, 3600_000, true);
-  if (error) return <p className="error">{error}</p>;
+  if (error) return <p className="error" role="alert">Could not load {name}: {describeError(error)}</p>;
   return <pre className="viewer">{data == null ? "Loading…" : String(data)}</pre>;
 }
 
@@ -252,17 +294,18 @@ export function ReviewsView() {
       <div className="card">
         <h2>Review inbox</h2>
         <p className="caption">
-          Successes waiting for a human. Nothing here has been submitted. Read the program until you understand it before
-          doing anything with the terms. This page is read-only; change status from the terminal with{" "}
+          Runs that produced new terms, open reviews first. One marked new or reviewing is waiting for a human: read the
+          program until you understand it before doing anything with the terms. One marked rejected is not a result, and
+          its note says why. The dashboard never submits anything and this page is read-only; change status from the terminal with{" "}
           <span className="mono">oeisbot review set &lt;id&gt; reviewing|submitted|rejected</span>.
         </p>
-        {rows.length === 0 && <div className="empty">No successes yet.</div>}
+        {data && rows.length === 0 && <div className="empty">No run has produced new terms yet.</div>}
         {rows.map((r) => (
-          <div className="review" key={r.id}>
+          <div className={`review ${r.status === "rejected" ? "closed" : ""}`} key={r.id}>
             {/* The same three facts, in the same order, as `oeisbot review list` (cli.review_block): the
                 sequence, the addition and where it came from, then the bookkeeping. Keep them in step. */}
             <div className="review-head">
-              <span className="pill">{r.status}</span>
+              <span className={`pill ${r.status === "rejected" ? "rejected" : ""}`}>{r.status}</span>
               <OeisLink a={r.a_number} />
               {r.name && <span className="secondary">{r.name}</span>}
               <span className="muted mono">review #{r.id}</span>
@@ -272,6 +315,8 @@ export function ReviewsView() {
               {", from "}{r.program_origin ?? r.strategy}{", attempt #"}{r.attempt_id}
               <span className="secondary">{" · "}{r.strategy} · {fmtSeconds(r.runtime_s)} · {fmtTime(r.created_at)}</span>
             </div>
+            {/* the note is where a rejection says why; `oeisbot review list` prints it, and so must this */}
+            {r.note && <div className="note"><b>{r.status === "rejected" ? "Rejected: " : "Note: "}</b>{r.note}</div>}
             {r.weak_verification && <div className="warn">Weak verification: only {r.known_terms} known terms to check against.</div>}
             {r.below_bound && <div className="warn">A term lands below a published bound ({r.below_bound.bound}): a({r.below_bound.indices.join("), a(")}).
               The entry says "{r.below_bound.quote}". Either that search or this program is wrong; resolve which before submitting.</div>}
@@ -292,7 +337,8 @@ export function ReviewsView() {
               ))}
               <span className="muted mono">{r.artifact_path}</span>
             </div>
-            {open?.id === r.id && <FileViewer reviewId={r.id} name={open.name} />}
+            {/* keyed by file: a new file starts empty, and never shows the last one's text while it loads */}
+            {open?.id === r.id && <FileViewer key={open.name} reviewId={r.id} name={open.name} />}
           </div>
         ))}
       </div>
@@ -302,9 +348,12 @@ export function ReviewsView() {
 
 // ============================================================================ run history
 
+interface HistoryDay { day: string; attempts: number; wins: number; rejected_wins?: number; skipped: number; machine_hours: number }
 interface HistoryData {
-  days: { day: string; attempts: number; wins: number; skipped: number; machine_hours: number }[];
-  sessions: { id: number; started_at: string; finished_at: string | null; attempts: number; wins: number; machine_s: number; note: string | null }[];
+  days: HistoryDay[];
+  sessions: { id: number; started_at: string; finished_at: string | null; attempts: number; wins: number; rejected_wins?: number;
+              machine_s: number; note: string | null }[];
+  sessions_total?: number;
 }
 
 export function HistoryView() {
@@ -312,42 +361,64 @@ export function HistoryView() {
   const days = data?.days ?? [];
   const totalHours = days.reduce((s, d) => s + d.machine_hours, 0);
   const totalWins = days.reduce((s, d) => s + d.wins, 0);
+  const totalRejected = days.reduce((s, d) => s + (d.rejected_wins ?? 0), 0);
   const totalAttempts = days.reduce((s, d) => s + d.attempts, 0);
-  const label = (d: string) => d.slice(5);
+  // One column per calendar day from the first run to the last (scale.dayColumns): a day without runs is an
+  // empty slot and a long quiet stretch one marker, so that neighbouring columns are neighbouring days. The year
+  // is in the label only when the chart spans more than one.
+  const years = new Set(days.map((d) => d.day.slice(0, 4))).size;
+  const label = (d: string) => (years > 1 ? d : d.slice(5));
+  const columns = <V,>(values: (d: HistoryDay) => V, none: V) => dayColumns(days.map((d) => d.day)).map((c) =>
+    c.kind === "gap"
+      ? { key: `gap-${c.from}`, label: "…", values: none, gap: `${c.days} days without runs, ${c.from} to ${c.to}` }
+      : { key: c.day, label: label(c.day), values: c.index == null ? none : values(days[c.index]), empty: c.index == null });
   return (
     <>
       <Status error={error} loading={loading} hasData={!!data} />
       <div className="kpis">
         <Tile label="Machine hours" value={totalHours.toFixed(1)} />
         <Tile label="Program runs" value={fmtInt(totalAttempts)} />
-        <Tile label="Wins" value={fmtInt(totalWins)} sub={totalAttempts ? `${fmtPct(totalWins / totalAttempts, 1)} of runs` : undefined} />
+        <Tile label="Wins" value={fmtInt(totalWins)}
+              sub={[totalAttempts ? `${fmtPct(totalWins / totalAttempts, 1)} of runs` : null,
+                    totalRejected ? `${fmtInt(totalRejected)} more rejected in review` : null].filter(Boolean).join(" · ") || undefined} />
         <Tile label="Hours per win" value={totalWins ? (totalHours / totalWins).toFixed(1) : "–"} />
       </div>
       <div className="grid-2">
         <div className="card">
           <h2>Runs and wins per day</h2>
-          <p className="caption">Wins are runs that produced verified new terms that survived the live re-check.</p>
-          <StackedColumns data={days.map((d) => ({ label: label(d.day), values: { other: d.attempts - d.wins, wins: d.wins } }))}
-                          series={[{ key: "other", label: "Runs without new terms", color: "var(--deemph)" },
+          <p className="caption">
+            A win is a run whose new terms were verified, survived the live re-check, and were not rejected in review.
+            Days are UTC days, so an evening run can fall on the next day's column.
+          </p>
+          <StackedColumns data={columns((d) => ({ other: d.attempts - d.wins - (d.rejected_wins ?? 0), rejected: d.rejected_wins ?? 0, wins: d.wins }),
+                                        { other: 0, rejected: 0, wins: 0 })}
+                          series={[{ key: "other", label: "Other runs", color: "var(--deemph)" },
+                                   ...(totalRejected ? [{ key: "rejected", label: "Rejected in review", color: "var(--series-2)" }] : []),
                                    { key: "wins", label: "Wins", color: "var(--series-1)" }]} />
         </div>
         <div className="card">
           <h2>Machine hours per day</h2>
-          <p className="caption">Wall-clock time spent inside the sandbox.</p>
-          <StackedColumns data={days.map((d) => ({ label: label(d.day), values: { hours: d.machine_hours } }))}
+          <p className="caption">Wall-clock time spent inside the sandbox, by UTC day.</p>
+          <StackedColumns data={columns((d) => ({ hours: d.machine_hours }), { hours: 0 })}
                           series={[{ key: "hours", label: "Machine hours", color: "var(--series-1)" }]}
                           format={(v) => (v < 10 ? v.toFixed(1) : v.toFixed(0))} />
         </div>
       </div>
       <div className="card" style={{ marginTop: 20 }}>
         <h2>Sessions</h2>
+        <p className="caption">
+          Wins are counted from each session's runs as they stand now, so a win rejected in review since is not in the count.
+          {data && data.sessions_total != null && data.sessions.length < data.sessions_total
+            ? ` Showing the latest ${fmtInt(data.sessions.length)} of ${fmtInt(data.sessions_total)} sessions.` : ""}
+        </p>
         {data && (
           <DataTable rows={data.sessions} rowKey={(r) => r.id} initialSort={{ key: "id", desc: true }} columns={[
             { key: "id", label: "#", numeric: true },
             { key: "started_at", label: "Started", render: (r) => fmtTime(r.started_at) },
             { key: "finished_at", label: "Finished", render: (r) => (r.finished_at ? fmtTime(r.finished_at) : "running") },
             { key: "attempts", label: "Attempts", numeric: true },
-            { key: "wins", label: "Wins", numeric: true },
+            { key: "wins", label: "Wins", numeric: true,
+              render: (r) => (r.rejected_wins ? <>{r.wins} <span className="muted">({r.rejected_wins} rejected)</span></> : r.wins) },
             { key: "machine_s", label: "Machine time", numeric: true, render: (r) => fmtSeconds(r.machine_s) },
             { key: "note", label: "Settings", render: (r) => <span className="mono secondary">{r.note}</span> },
           ]} />

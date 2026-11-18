@@ -140,9 +140,12 @@ with `--model` the model stage runs next and is told the entry's program is corr
   sequence stays blocked either way, so stopping the retries would only move the work to a human without
   releasing anything. The manual release above is still the only exit.
 - **A session's `wins` count misses late re-checks.** `sessions.wins` is computed when the session ends,
-  so a `recheck_pending` win resolved later is not added to the session that found it. The dashboard's
-  Sessions table shows that stored count. The header and the per-day chart count `attempts` directly, and
-  a late win appears on the day its run started.
+  so a `recheck_pending` win resolved later is not added to the session that found it, and a win whose
+  review is rejected later is not taken off it (session 9's stored 2 are reviews #2 and #3). The dashboard
+  no longer shows that stored count (history item 56): its Sessions table, header and per-day chart all
+  count `attempts` when asked, and a late win appears on the day its run started. `sessions.wins` itself
+  is still written the old way (`db.finish_session`: `extended` runs at the session's end), and nothing in
+  the code reads it any more; a query that does gets the old meaning.
 - **An unreadable live entry costs the win.** If the entry text cannot be parsed or returns nothing, or
   neither it nor the live b-file yields any terms, the run is recorded as `superseded` ("could not read
   the live entry", "could not read any terms from the live entry") and no artifact is written.
@@ -865,7 +868,7 @@ these is a way it can be read too strongly.
   exception's type and message, whitespace collapsed and cut to 200 characters), and the tab shows the
   reason with **Try again**. Two limits. The guard covers the call to `live_pool` only: a failure in the
   rest of the handler (the read of the snapshot headers before it, the comparison after it) is still an
-  unguarded 500. The tab then reads "Could not load: Error: 500: ..." with the same **Try again** button,
+  unguarded 500. The tab then reads "Could not load: 500: Internal Server Error" with the same **Try again** button,
   because only a 503 carrying `pool_build_failed` is recognised as a pool failure
   (`treemap.failureReason`). And nothing is cached for a failure (`live_pool` assigns its cache entry after
   the build returns), so a build that fails for a lasting reason fails again at every retry, taking as long
@@ -876,14 +879,17 @@ these is a way it can be read too strongly.
   that is drawn, `treemap.neighbour`, in the order of `treemap.focusOrder`), and those two functions are
   covered by `dashboard/test/treemap.test.ts`. The component that wires them (`pickmap.tsx`: the focus,
   the tooltip's owner, Enter, Space, Escape) has no automated test: node cannot run `.tsx`, and no browser
-  was driven. **A tile that is not drawn cannot be reached by keyboard**: a tile with no area, and every tile
-  of a band too small to draw in *All bands*. For the bands, a footer line ("Too small to draw here")
+  was driven for item 55 (the browser pass of 2026-11-17 and item 56's saw the focus ring, the tooltip, the
+  arrows, Enter on a tile and on a lump, and the chips). **A tile that is not drawn cannot be reached by
+  keyboard**: a tile with no area, a tile under 3 px on either side (`treemap.MIN_FOCUS_SIDE`, item 56; a
+  band left with no stop at all keeps one on its largest tile), and every tile
+  of a band too small to draw in *All bands*. For the bands, a footer line ("Too small to draw to scale here")
   lists each as a button that opens its tab, which draws it. A band is too small when its inner box is under
   `treemap.MIN_DRAWN_SIDE` = 6 px in either direction, a threshold chosen from the live pool's inner sizes at
   widths 360 to 1600 (`data/item55/inner_sizes.ts`), not a measurement of what a pointer can hit; at another
   width or for another pool a different set of bands falls under it. The line is computed from the layout
-  the map draws, so it cannot disagree with the map. In a band's own tab the lumps of small tiles are not
-  focusable (they only open the band, which is already open). Three smaller edges, all from reading the
+  the map draws, so it cannot disagree with the map. In a band's own tab a lump of small tiles is
+  focusable since item 56 and opens the table view (there is no band left to open). Three smaller edges, all from reading the
   code and none seen in a browser: a refresh or resize whose new layout no longer has the focused tile
   (it became part of a lump, say) drops the focus to the page, because only opening a lump from the
   keyboard moves it on; **Space** opens a sequence's entry as Enter does, which a real link would not
@@ -892,26 +898,56 @@ these is a way it can be read too strongly.
   fixes added three more, none seen in a browser: a resize or refresh while the pointer is over one tile and
   the keyboard is on another puts the keyboard's tooltip in place of the pointer's (the next mouse move
   corrects it); a tooltip is placed from where the focused tile is when its `focus` event fires, which may
-  be before the browser scrolls a half-hidden tile into view; and `:focus-visible` is the browser's own
+  be before the browser scrolls a half-hidden tile into view (since item 56 that scroll puts the tooltip back
+  where the tile now is, seen in a browser; any scroll closes a tooltip the pointer opened); and `:focus-visible` is the browser's own
   heuristic for a focus set by script (after an arrow key), so a browser that says no would show neither the
   ring nor the tooltip.
-- **Area is equal across bands, but only about 0.9 of the chance, and a very small band is not drawn.**
-  `treemap.fairRects` makes the area a band's tiles get proportional to the band's pick chance, whatever the
-  size of its frame. Measured on the live PARI pool at α 1 (3,357 tiles, `data/item54/area_spread.ts` on a
-  saved `/api/pickmap`): the drawn area inside the frames per unit of pick chance is **0.93** of the canvas at
-  1232 × 680, 0.92 at 900 × 600 and 0.90 at 400 × 700, the same to three places for bands 0 to 6 (which hold
-  99.9% of the chance). It is below 1 because every band's header, padding and the 1 px inset of every tile
-  take 7 to 10% of the canvas, and nothing gives that back. Two things go beyond it. A band the frame all but
-  swallows is left uncompensated (`MIN_KEPT`, less than a quarter of its block left): band 7 (8 to 16, 25
-  sequences, 0.07%) gets a block 12 px tall at 1232 × 680 and keeps its 0.93, but at 400 × 700 only 0.04, and
-  **band 8 (16 and up, 2 sequences, 0.002%) has an inner width of 0 at all three sizes, so its tiles do not
-  show in *All bands* at all, a changed one included** (the "never lumped" rule cannot help a tile that has no
-  room); its own tab shows them. And when band shares span six orders of magnitude, those that are big enough
-  to see (1,500 px² or more) can differ by more than the frame explains: in the worst of 5,000 random layouts
-  in the script, one band is drawn 2.5 times larger per unit of chance than another. That is a property of the
-  layout and of that range, not of the real pool, whose band shares span 2.5 × 10⁴ (band 0 against band 8) and
-  agree to a thousandth for bands 0 to 6; it is here so that nobody reads area as exact for a pool that is not
-  this one.
+- **Area is exactly equal across bands; paint is not, some of a band's box can be empty, and a very small
+  band is not drawn to scale** (history item 56; every figure from `data/item56/area_spread.txt`, the page's own
+  `layoutGroups` call at every width the page gives the map, 200 to 1198 px, on the pools of 2026-11-17 at
+  α 1). `treemap.layoutGroups` draws every band that has room for tiles at one scale, so the **rect** of a tile
+  or a lump is the same number of px² per unit of pick chance in every such band: the largest band over the
+  smallest is 1.000000000000 at all 999 widths, for both pools. Four things that is not:
+  - **It is not the whole canvas.** Headers, padding and the empty part of roomier boxes leave the tile rects
+    66.1% to 92.4% of the canvas per unit of chance on the PARI pool (median 87.7%; 92.4% at the full
+    1198 × 659) and 61.4% to 92.6% on the model pool.
+  - **Part of a box can be empty.** A band roomier than the tightest one leaves the rest of its inner box
+    blank: a median of 0.4% of the framed area on the PARI pool (0.0% on the model pool), 5.1% (11.7%) at the
+    90th percentile of widths, and **23.5% (25.0%) at the worst width**. The emptiness is the visible form of
+    the difference the old layout hid, and a reader who does not know that may take it for missing data; the
+    caption says a band with room to spare leaves some of its box empty.
+  - **Paint is not rect.** Each tile is painted 0.5 px short of its rect on every side
+    (`pickmap.TILE_INSET`), so a band of many small tiles shows less paint per unit of chance than a band
+    drawn as one lump: between bands the painted area per unit of chance differs by **1.21× to 1.38×** on the
+    PARI pool (1.11× to 1.32× on the model pool) across the widths. With the 1 px inset used until item 56 it
+    was 1.48× to 2.04× (`area_spread_inset1.txt`). The eye compares paint, so two bands' *textures* are not
+    comparable to better than that; two *tiles* are.
+  - **A band with no room is not at the common scale.** A band whose inner box is under 6 px either way
+    (`MIN_DRAWN_SIDE`) fills its sliver at its own, smaller scale and is named under the map: band 8 (16 and
+    up, 2 sequences, 0.002%) at all 999 widths and band 7 (8 to 16, 25 sequences, 0.07%) at 678 of them on
+    the PARI pool, band 8 at 102 widths on the model pool. **A changed tile in such a band does not show in
+    *All bands*** (the "never lumped" rule cannot help a tile that has no room); its own tab shows it. One
+    more hair: the part of a box a band draws in can itself come out a little under 6 px wide while the box
+    passes (5.97 px at one model-pool width in a review's sweep), which nothing enforces.
+
+  The figures are for these two pools. Item 54's script (`data/item54/area_spread.ts`) still runs, but it
+  measures the frame's inner box, which the tiles no longer fill, at three sizes the page never produces; its
+  0.93 and its 2.5× are not figures about what is drawn now.
+- **The dashboard's safety checks have edges** (history item 56).
+  - *Reading the database touches a file.* SQLite rewrites the `-shm` file beside a WAL database on every
+    read, read-only connection or not; the database file and the WAL are not written
+    (`tests/test_dashboard.py::test_api_never_writes` checks the database file's mtime and that every
+    connection was opened read-only, and says so in its docstring).
+  - *The Host check is off for a wildcard bind.* `oeisbot dashboard --host 0.0.0.0` (or `::`) prints a warning
+    and accepts any `Host`, so DNS rebinding is possible again on such a server; a specific address keeps it.
+    uvicorn's own 400s (a request with two `Host` headers, say) are sent before the app runs and carry no
+    `nosniff` header.
+  - *The refusal of other pages' requests trusts the browser.* It reads `Sec-Fetch-Site`, which every
+    current browser sends; a client that sends none is taken for a tool, so the check is against a web page
+    in a browser, not against a program on this machine, which could read the database file anyway. A link
+    from another page straight to `/api/docs` is refused too (type the address instead).
+  - *A HEAD or OPTIONS request is a 405 on every route*, `/` included, and when a query parameter is given twice
+    the last one wins without a word. Neither was changed.
 - **Freshness is ordered by a build counter, so a map can be one commit behind a running session.** A request
   accepts a live pool that finished building after the request asked, even if the database has changed
   since (`app.live_pool`, `_generation`); without that, every waiter behind a build would build again while a
@@ -919,11 +955,16 @@ these is a way it can be read too strongly.
   the next visit rebuilds. The counter replaces a clock because Windows' monotonic clock ticks every 16 ms,
   which let a build and the next request read the same value; the age shown on the page and the one-hour
   backstop (`POOL_TTL_S`) still use that clock.
-- **The frontend tests are not type-checked.** `npm test` runs `dashboard/test/treemap.test.ts` under node's
+- **The frontend tests are not type-checked, and some depend on the Node they run under.** `npm test` runs
+  the three files in `dashboard/test/` (`treemap`, `scale`, `format`) under node's
   own type stripping, and `npm run build`'s `tsc --noEmit` covers `src` only (`tsconfig.json` `include`),
   because checking the test would need `@types/node` and a tsconfig option that allows imports ending in
   `.ts`, which the build does not
-  otherwise want. A type error in the test shows up as a failed run, not at build time.
+  otherwise want. A type error in the test shows up as a failed run, not at build time. `format.test.ts`
+  compares formatted dates and grouped numbers with exact strings, which come from the ICU data in the Node
+  that runs it (checked on Node 24.19); it normalises the one difference known between ICU releases, the kind
+  of space before "PM". And `src/scale.ts`, `src/format.ts` and `src/treemap.ts` must stay free of imports,
+  or node cannot load them.
 
 ## Observations from real runs
 

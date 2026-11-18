@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
-import { fmtSeconds, useWidth } from "./lib";
+import { useWidth } from "./lib";
+import { bandCorners, labelEvery, logFraction, niceStep, timeDomain } from "./scale";
 
 // ----------------------------------------------------------------------------- tooltip
 
@@ -8,10 +9,11 @@ export interface TipState { x: number; y: number; title: string; rows: TipRow[] 
 
 export function Tooltip({ tip }: { tip: TipState | null }) {
   if (!tip) return null;
-  const left = Math.min(tip.x + 14, window.innerWidth - 330);
+  // the document's width, not the window's: the window's includes a classic scrollbar, which then covers the edge
+  const left = Math.max(4, Math.min(tip.x + 14, document.documentElement.clientWidth - 330));
   const above = tip.y + 14 + 36 + tip.rows.length * 22 > window.innerHeight && tip.y > window.innerHeight / 2;
   return (
-    <div className="tooltip" style={above ? { left, bottom: window.innerHeight - tip.y + 14 } : { left, top: tip.y + 14 }} role="status">
+    <div className="tooltip" style={above ? { left, bottom: window.innerHeight - tip.y + 14 } : { left, top: tip.y + 14 }} aria-hidden="true">
       <div className="t-title">{tip.title}</div>
       {tip.rows.map((r) => (
         <div className="t-row" key={r.label}>
@@ -40,32 +42,24 @@ export interface ScatterPoint {
 
 const SERIES = ["var(--series-1)", "var(--series-2)"];
 
-// gridlines at round units of time rather than powers of ten of seconds
-const TIME_TICKS = [1e-3, 1e-2, 0.1, 1, 10, 60, 600, 3600, 86400, 864000, 8640000];
-
-function decades(lo: number, hi: number): number[] {
-  const first = TIME_TICKS.filter((t) => t <= lo).pop() ?? TIME_TICKS[0];
-  const last = TIME_TICKS.find((t) => t >= hi) ?? TIME_TICKS[TIME_TICKS.length - 1];
-  return TIME_TICKS.filter((t) => t >= first && t <= last);
-}
-
+/** Predicted against actual seconds on log axes. The axes come from `timeDomain`, which always holds every
+ *  point: an axis that stopped at 1 ms once drew the sub-millisecond terms below it, on the tick labels.
+ *  Nothing is clipped, on purpose, since a clip would hide such a point instead of showing the mistake. `at`
+ *  is the one place a point's position is worked out; the dot, its focus target and the pointer search all
+ *  use it. */
 export function LogScatter({ points, height = 380 }: { points: ScatterPoint[]; height?: number }) {
   const [ref, width] = useWidth<HTMLDivElement>();
   const [tip, setTip] = useState<TipState | null>(null);
   const [active, setActive] = useState<number | null>(null);
   const m = { top: 12, right: 16, bottom: 44, left: 64 };
-  const w = Math.max(width, 320), h = height;
-  const all = points.flatMap((p) => [p.x, p.y]).filter((v) => v > 0);
-  const lo = all.length ? Math.min(...all) / 1.5 : 1e-3;
-  const hi = all.length ? Math.max(...all) * 1.5 : 10;
-  const ticks = decades(lo, hi);
-  const dlo = Math.log10(ticks[0]), dhi = Math.log10(ticks[ticks.length - 1]);
-  const sx = (v: number) => m.left + ((Math.log10(v) - dlo) / (dhi - dlo)) * (w - m.left - m.right);
-  const sy = (v: number) => h - m.bottom - ((Math.log10(v) - dlo) / (dhi - dlo)) * (h - m.top - m.bottom);
-  const [t0, t1] = [ticks[0], ticks[ticks.length - 1]];
-  // within-2x band around y = x
-  const band = [[t0, t0 * 2], [t1, t1 * 2], [t1, t1 / 2], [t0, t0 / 2]]
-    .map(([x, y]) => `${sx(x)},${sy(Math.min(Math.max(y, t0), t1))}`).join(" ");
+  const w = Math.max(Math.min(width, 4000), 240), h = height;       // 240: the x-axis title still fits
+  const plotW = w - m.left - m.right, plotH = h - m.top - m.bottom;
+  const { ticks, lo, hi } = timeDomain(points.flatMap((p) => [p.x, p.y]));
+  const sx = (v: number) => m.left + logFraction(v, lo, hi).f * plotW;
+  const sy = (v: number) => h - m.bottom - logFraction(v, lo, hi).f * plotH;
+  const at = (p: ScatterPoint) => ({ cx: sx(p.x), cy: sy(p.y) });
+  const band = bandCorners(lo, hi).map(([x, y]) => `${sx(x)},${sy(y)}`).join(" ");
+  const everyX = labelEvery(plotW / (ticks.length - 1), 52), everyY = labelEvery(plotH / (ticks.length - 1), 18);
 
   const show = (p: ScatterPoint, cx: number, cy: number) => {
     setActive(p.id);
@@ -76,7 +70,8 @@ export function LogScatter({ points, height = 380 }: { points: ScatterPoint[]; h
     const px = e.clientX - rect.left, py = e.clientY - rect.top;
     let best: ScatterPoint | null = null, bestD = 24 * 24;
     for (const p of points) {
-      const d = (sx(p.x) - px) ** 2 + (sy(p.y) - py) ** 2;
+      const { cx, cy } = at(p);
+      const d = (cx - px) ** 2 + (cy - py) ** 2;
       if (d < bestD) { bestD = d; best = p; }
     }
     if (best) show(best, e.clientX, e.clientY);
@@ -85,35 +80,35 @@ export function LogScatter({ points, height = 380 }: { points: ScatterPoint[]; h
 
   return (
     <div ref={ref} className="chart" style={{ position: "relative" }}>
-      <svg width={w} height={h} role="img" aria-label="Predicted versus actual seconds per term, log-log">
+      <svg width={w} height={h} role="group" aria-label="Predicted versus actual seconds per term, log-log. Each point can be focused; the table view has the same data.">
         <polygon points={band} fill="var(--band)" />
-        {ticks.map((t) => (
-          <g key={t}>
-            <line x1={sx(t)} x2={sx(t)} y1={m.top} y2={h - m.bottom} stroke="var(--grid)" strokeWidth="1" />
-            <line x1={m.left} x2={w - m.right} y1={sy(t)} y2={sy(t)} stroke="var(--grid)" strokeWidth="1" />
-            <text x={sx(t)} y={h - m.bottom + 16} textAnchor="middle" fontSize="11" fill="var(--text-muted)">{fmtSeconds(t)}</text>
-            <text x={m.left - 8} y={sy(t) + 4} textAnchor="end" fontSize="11" fill="var(--text-muted)">{fmtSeconds(t)}</text>
+        {ticks.map((t, i) => (
+          <g key={t.v}>
+            <line x1={sx(t.v)} x2={sx(t.v)} y1={m.top} y2={h - m.bottom} stroke="var(--grid)" strokeWidth="1" />
+            <line x1={m.left} x2={w - m.right} y1={sy(t.v)} y2={sy(t.v)} stroke="var(--grid)" strokeWidth="1" />
+            {i % everyX === 0 && <text x={sx(t.v)} y={h - m.bottom + 16} textAnchor="middle" fontSize="11" fill="var(--text-muted)">{t.label}</text>}
+            {i % everyY === 0 && <text x={m.left - 8} y={sy(t.v) + 4} textAnchor="end" fontSize="11" fill="var(--text-muted)">{t.label}</text>}
           </g>
         ))}
-        <line x1={sx(t0)} y1={sy(t0)} x2={sx(t1)} y2={sy(t1)} stroke="var(--axis)" strokeWidth="1" />
-        <text x={sx(t1) - 6} y={sy(t1) + 14} textAnchor="end" fontSize="11" fill="var(--text-muted)">actual = predicted</text>
-        <text x={(m.left + w - m.right) / 2} y={h - 6} textAnchor="middle" fontSize="12" fill="var(--text-secondary)">predicted seconds for the term</text>
-        <text transform={`translate(14 ${(m.top + h - m.bottom) / 2}) rotate(-90)`} textAnchor="middle" fontSize="12" fill="var(--text-secondary)">actual seconds</text>
+        <line x1={sx(lo)} y1={sy(lo)} x2={sx(hi)} y2={sy(hi)} stroke="var(--axis)" strokeWidth="1" />
+        <text x={sx(hi) - 6} y={sy(hi) + 14} textAnchor="end" fontSize="11" fill="var(--text-muted)">actual = predicted</text>
+        <text x={m.left + plotW / 2} y={h - 6} textAnchor="middle" fontSize="12" fill="var(--text-secondary)">predicted seconds for the term</text>
+        <text transform={`translate(14 ${m.top + plotH / 2}) rotate(-90)`} textAnchor="middle" fontSize="12" fill="var(--text-secondary)">actual seconds</text>
         {points.map((p) => {
           const color = SERIES[p.series];
           const big = active === p.id;
           return (
-            <circle key={p.id} cx={sx(p.x)} cy={sy(p.y)} r={big ? 6 : 4.5}
+            <circle key={p.id} {...at(p)} r={big ? 6 : 4.5} data-point={p.id}
                     fill={p.hollow ? "var(--surface-1)" : color}
                     stroke={p.hollow ? color : "var(--surface-1)"} strokeWidth="2" />
           );
         })}
-        <rect x={m.left} y={m.top} width={w - m.left - m.right} height={h - m.top - m.bottom} fill="transparent"
+        <rect x={m.left} y={m.top} width={plotW} height={plotH} fill="transparent" data-plot=""
               onPointerMove={onMove} onPointerLeave={() => { setActive(null); setTip(null); }} />
         {points.map((p) => (
-          <circle key={`hit-${p.id}`} cx={sx(p.x)} cy={sy(p.y)} r="12" fill="transparent" tabIndex={0}
-                  style={{ outline: "none" }} aria-label={p.title}
-                  onFocus={(e) => { const r = e.currentTarget.getBoundingClientRect(); show(p, r.left + 12, r.top + 12); }}
+          <circle key={`hit-${p.id}`} {...at(p)} r="9" fill="transparent" tabIndex={0} role="img"
+                  className="pt-focus" aria-label={`${p.title}: ${p.rows.map((r) => `${r.label} ${r.value}`).join(", ")}`}
+                  onFocus={(e) => { const r = e.currentTarget.getBoundingClientRect(); show(p, r.left + 9, r.top + 9); }}
                   onBlur={() => { setActive(null); setTip(null); }} pointerEvents="none" />
         ))}
       </svg>
@@ -151,10 +146,10 @@ export function BarList({ bars, onSelect, selected, color = "var(--series-1)" }:
           const x1 = labelW + Math.max(scale(b.value), 2);
           const dim = selected && selected !== b.key;
           return (
-            <g key={b.key} role="listitem" tabIndex={0} style={{ cursor: onSelect ? "pointer" : "default", outline: "none" }}
-               aria-label={`${b.label}: ${b.value}`}
+            <g key={b.key} role="listitem" tabIndex={0} className="mark-focus" style={{ cursor: onSelect ? "pointer" : "default" }}
+               aria-label={`${b.label}: ${b.value}${onSelect ? (selected === b.key ? ", selected; press to clear" : "; press to filter") : ""}`}
                onClick={() => onSelect?.(b.key)}
-               onKeyDown={(e) => { if (e.key === "Enter") onSelect?.(b.key); }}
+               onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect?.(b.key); } }}
                onPointerMove={(e) => { setHover(b.key); setTip({ x: e.clientX, y: e.clientY, title: b.label, rows: [{ label: b.detail ?? "count", value: b.value.toLocaleString() }] }); }}
                onPointerLeave={() => { setHover(null); setTip(null); }}
                onFocus={(e) => { const r = e.currentTarget.getBoundingClientRect(); setHover(b.key); setTip({ x: r.right, y: r.top, title: b.label, rows: [{ label: b.detail ?? "count", value: b.value.toLocaleString() }] }); }}
@@ -175,7 +170,10 @@ export function BarList({ bars, onSelect, selected, color = "var(--series-1)" }:
 // ----------------------------------------------------------------------------- stacked columns
 
 export interface StackSeries { key: string; label: string; color: string }
-export interface ColumnDatum { label: string; values: Record<string, number> }
+/** One column. `key` must be unique (a label such as "09-17" repeats across years). `empty` is a slot with
+ *  nothing in it, drawn as an empty slot and not focusable; `gap` is a slot standing for several such in a row,
+ *  and holds the text that says so. */
+export interface ColumnDatum { label: string; values: Record<string, number>; key?: string; empty?: boolean; gap?: string }
 
 export function StackedColumns({ data, series, height = 220, format = (v: number) => v.toLocaleString(), legend = true }: {
   data: ColumnDatum[]; series: StackSeries[]; height?: number; format?: (v: number) => string; legend?: boolean;
@@ -194,7 +192,9 @@ export function StackedColumns({ data, series, height = 220, format = (v: number
   const slot = (w - m.left - m.right) / Math.max(data.length, 1);
   const colW = Math.min(24, slot * 0.6);
   const sy = (v: number) => m.top + plotH - (v / max) * plotH;
-  const everyLabel = Math.ceil(data.length / Math.max(1, Math.floor((w - m.left) / 56)));
+  // room per label from the longest one: "09-17" needs about 40 px, a full date about 70
+  const labelW = Math.max(40, ...data.map((d) => d.label.length * 6.2 + 12));
+  const everyLabel = Math.ceil(data.length / Math.max(1, Math.floor((w - m.left) / labelW)));
   if (!data.length) return <div className="empty">Nothing recorded yet.</div>;
   return (
     <div ref={ref} className="chart">
@@ -216,8 +216,27 @@ export function StackedColumns({ data, series, height = 220, format = (v: number
           const cx = m.left + slot * i + slot / 2;
           let acc = 0;
           const segs = series.map((s) => ({ s, v: d.values[s.key] || 0 })).filter((x) => x.v > 0);
+          if (d.gap != null) {
+            return (
+              <g key={d.key ?? d.label}
+                 onPointerMove={(e) => { setHover(i); setTip({ x: e.clientX, y: e.clientY, title: d.gap!, rows: [] }); }}
+                 onPointerLeave={() => { setHover(null); setTip(null); }}>
+                <title>{d.gap}</title>
+                <rect x={cx - slot / 2} y={m.top} width={slot} height={plotH + m.bottom} fill={hover === i ? "var(--hover)" : "transparent"} />
+                <line x1={cx} x2={cx} y1={m.top} y2={m.top + plotH} stroke="var(--axis)" strokeWidth="1" strokeDasharray="2 4" />
+                <text x={cx} y={height - 8} textAnchor="middle" fontSize="11" fill="var(--text-muted)">…</text>
+              </g>
+            );
+          }
+          if (d.empty) {
+            return (
+              <g key={d.key ?? d.label}>
+                {i % everyLabel === 0 && <text x={cx} y={height - 8} textAnchor="middle" fontSize="11" fill="var(--text-muted)">{d.label}</text>}
+              </g>
+            );
+          }
           return (
-            <g key={d.label} tabIndex={0} style={{ outline: "none" }}
+            <g key={d.key ?? d.label} tabIndex={0} className="mark-focus"
                aria-label={`${d.label}: ${series.map((s) => `${s.label} ${format(d.values[s.key] || 0)}`).join(", ")}`}
                onPointerMove={(e) => { setHover(i); setTip({ x: e.clientX, y: e.clientY, title: d.label, rows: series.map((s) => ({ label: s.label, value: format(d.values[s.key] || 0), color: s.color })) }); }}
                onPointerLeave={() => { setHover(null); setTip(null); }}
@@ -245,13 +264,6 @@ export function StackedColumns({ data, series, height = 220, format = (v: number
       <Tooltip tip={tip} />
     </div>
   );
-}
-
-function niceStep(max: number): number {
-  const rough = max / 4;
-  const mag = 10 ** Math.floor(Math.log10(rough));
-  const n = rough / mag;
-  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * mag;
 }
 
 export function LegendDot({ color, hollow, children }: { color: string; hollow?: boolean; children: ReactNode }) {

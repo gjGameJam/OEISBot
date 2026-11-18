@@ -226,7 +226,25 @@ def cmd_dashboard(args):
     import threading
 
     import uvicorn
+    from .dashboard import app as dashboard_app
     from .dashboard.app import STATIC, app, warm_live_pool
+
+    # The server answers only to the names it is known by (dashboard.app.ALLOWED_HOSTS). The address it is
+    # asked to bind to is one of them; a wildcard address is reachable under names nobody can list, so the
+    # check is off for it, and said so.
+    import ipaddress
+
+    host = args.host.strip().lower().strip("[]")    # a bind address, not a Host header: "::1" has no brackets
+    try:
+        wildcard = ipaddress.ip_address(host).is_unspecified       # 0.0.0.0 and :: however they are spelled
+    except ValueError:
+        wildcard = host in ("", "0")
+    if wildcard:
+        dashboard_app.ALLOWED_HOSTS = None
+        print(f"warning: --host {args.host} listens on every interface; the Host check is off and the dashboard "
+              "has no authentication")
+    elif dashboard_app.ALLOWED_HOSTS is not None:
+        dashboard_app.ALLOWED_HOSTS.add(host)
 
     def warm():
         try:
