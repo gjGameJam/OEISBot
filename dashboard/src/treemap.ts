@@ -162,3 +162,73 @@ export function pickmapPath(pool: string, alpha: number, rebuild = 0): string {
 export function labelFits(r: Rect, chars: number, lines = 1): boolean {
   return r.w >= chars * 6.4 + 8 && r.h >= lines * 14 + 6;
 }
+
+// ----------------------------------------------------------------------------- what cannot be drawn
+
+/** A band whose inner rect (the area its tiles get, inside the frame and padding) is narrower than this in either
+ *  direction cannot be seen or pointed at. Measured on the real PARI pool (data/item55/inner_sizes.ts): band 8 (two
+ *  sequences) gets 0 px at every width from 360 to 1600, band 7 gets 0 to 5 px at most widths and 8 to 11 px at a
+ *  few, so 6 px sorts them by what a reader can use. */
+export const MIN_DRAWN_SIDE = 6;
+
+/** The keys of the groups whose tiles end up too small to see (a group that got no area at all included), in
+ *  layout order. */
+export function undrawn(layout: readonly PlacedGroup[], minSide = MIN_DRAWN_SIDE): string[] {
+  return layout.filter((g) => Math.min(g.inner.w, g.inner.h) < minSide).map((g) => g.key);
+}
+
+// ----------------------------------------------------------------------------- keyboard
+
+/** The tiles a keyboard can land on, in layout order (group by group, each group's largest tile first): every leaf with
+ *  an area, except the leaves of a group too small to see (the map lists those groups under it instead) and, unless
+ *  `lumps`, the lumps (they only open their band when the map shows every band). */
+export function focusOrder(layout: readonly PlacedGroup[], lumps: boolean, minSide = MIN_DRAWN_SIDE): { id: string; rect: Rect }[] {
+  const small = new Set(undrawn(layout, minSide));
+  return layout.filter((g) => !small.has(g.key)).flatMap((g) =>
+    g.leaves.filter((l) => l.rect.w > 0 && l.rect.h > 0 && (lumps || !l.members)).map((l) => ({ id: l.id, rect: l.rect })));
+}
+
+export type Dir = "left" | "right" | "up" | "down";
+
+/** The tile an arrow key moves to from tile `from`: among the tiles whose centre lies beyond `from`'s in that
+ *  direction, the one with the smallest gap along the axis, counting the miss across it double (0 when the two
+ *  overlap there); then the one whose centre is closest across the axis, then the smaller id. Null at the edge, for
+ *  an unknown `from`, or when nothing lies that way. Tiles with no area are not candidates. */
+export function neighbour(items: readonly { id: string; rect: Rect }[], from: string, dir: Dir): string | null {
+  const src = items.find((i) => i.id === from)?.rect;
+  if (!src) return null;
+  const horizontal = dir === "left" || dir === "right";
+  const sign = dir === "right" || dir === "down" ? 1 : -1;
+  const lo = (r: Rect) => (horizontal ? r.x : r.y), len = (r: Rect) => (horizontal ? r.w : r.h);
+  const clo = (r: Rect) => (horizontal ? r.y : r.x), clen = (r: Rect) => (horizontal ? r.h : r.w);
+  const mid = (r: Rect) => lo(r) + len(r) / 2, cmid = (r: Rect) => clo(r) + clen(r) / 2;
+  let best: { id: string; cost: number; off: number } | null = null;
+  for (const it of items) {
+    const r = it.rect;
+    if (it.id === from || r.w <= 0 || r.h <= 0 || (mid(r) - mid(src)) * sign <= 0) continue;
+    const gap = Math.max(sign > 0 ? lo(r) - (lo(src) + len(src)) : lo(src) - (lo(r) + len(r)), 0);
+    const miss = Math.max(clo(r) - (clo(src) + clen(src)), clo(src) - (clo(r) + clen(r)), 0);
+    const cost = gap + 2 * miss, off = Math.abs(cmid(r) - cmid(src));
+    if (!best || cost < best.cost || (cost === best.cost && (off < best.off || (off === best.off && it.id < best.id)))) {
+      best = { id: it.id, cost, off };
+    }
+  }
+  return best ? best.id : null;
+}
+
+// ----------------------------------------------------------------------------- failure
+
+/** The reason the server gives when it cannot build a pool, out of the error text `useApi` keeps. That text is
+ *  `String(new Error("503: <body>"))`, so it starts with "Error: "; the body is the JSON of
+ *  `{"error": "pool_build_failed", "reason": ...}` (oeisbot/dashboard/app.py). Null for any other failure, which
+ *  includes the 503 the server sends when there is no database at all. */
+export function failureReason(message: string): string | null {
+  const m = /^(?:Error: )?503: ([\s\S]*)$/.exec(message.trim());
+  if (!m) return null;
+  try {
+    const body = JSON.parse(m[1]);
+    return body && body.error === "pool_build_failed" && typeof body.reason === "string" ? body.reason : null;
+  } catch {
+    return null;
+  }
+}

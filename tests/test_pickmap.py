@@ -4,6 +4,7 @@ session tests in `test_attempt.py`, which has the fixtures for them."""
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import sqlite3
@@ -958,15 +959,110 @@ def test_the_same_pool_under_other_budgets_is_built_again_and_replaces_the_cache
     assert len(state["calls"]) == 2                                                   # one entry per pool: the last wins
 
 
-def test_a_pool_that_cannot_be_built_is_an_error_not_a_stale_map(pm, monkeypatch):
+def broken(message="oeisdata unreadable"):
+    def build(conn, budgets, *, model, alpha=1.0):
+        raise RuntimeError(message)
+    return build
+
+
+def test_a_pool_that_cannot_be_built_is_a_503_naming_the_reason_not_a_stale_map(pm, monkeypatch, caplog):
+    client, conn, state = pm
+    state["pari"] = {"A000001": 1.0}
+    old = dashboard.live_pool("pari", config.DEFAULT_BUDGETS)                  # a build that worked, to be asked again
+    real = attempt.session_pool
+    monkeypatch.setattr(attempt, "session_pool", broken())
+    with caplog.at_level(logging.ERROR, logger="oeisbot.dashboard"):
+        r = client.get("/api/pickmap?refresh=true")
+    assert r.status_code == 503
+    assert r.json() == {"error": "pool_build_failed", "reason": "RuntimeError: oeisdata unreadable"}
+    (record,) = [x for x in caplog.records if x.name == "oeisbot.dashboard"]
+    assert record.exc_info and "oeisdata unreadable" in caplog.text and "Traceback" in caplog.text
+    assert "Traceback" not in r.text                                            # the log has the traceback, the page the reason
+    assert dashboard._live["pari"] is old                                       # neither replaced by the failure nor served for it
+    monkeypatch.setattr(attempt, "session_pool", real)
+    assert get(client, refresh="true")["n"] == 1                                # and the next request builds again
+
+
+def test_a_failed_build_is_not_cached_so_the_next_request_tries_again(pm, monkeypatch):
+    client, conn, state = pm
+    state["pari"] = {"A000001": 1.0}
+    real = attempt.session_pool
+    monkeypatch.setattr(attempt, "session_pool", broken())
+    for _ in range(2):                                                          # twice: nothing remembers the first failure
+        assert client.get("/api/pickmap").status_code == 503
+    assert dashboard._live == {}
+    monkeypatch.setattr(attempt, "session_pool", real)
+    assert get(client)["n"] == 1 and len(state["calls"]) == 1
+
+
+def test_the_reason_is_one_short_line_whatever_the_error_said(pm, monkeypatch):
+    client, conn, state = pm
+    monkeypatch.setattr(attempt, "session_pool", broken("line one\n\tline two  " + "x" * 500))
+    reason = client.get("/api/pickmap").json()["reason"]
+    assert reason.startswith("RuntimeError: line one line two xxx") and len(reason) == 200
+    assert "\n" not in reason and "\t" not in reason and "  " not in reason
+
+
+@pytest.mark.parametrize("error, text", [
+    (OSError("b-file cache unreadable"), "OSError: b-file cache unreadable"),
+    (sqlite3.OperationalError("database is locked"), "OperationalError: database is locked"),
+    (KeyError("A000001"), "KeyError: 'A000001'"),
+    (ValueError("bad %S line"), "ValueError: bad %S line"),
+])
+def test_whatever_the_pool_build_raises_is_a_503_naming_it(pm, monkeypatch, error, text):
+    """Not only a RuntimeError: an unreadable cache, a locked database and a malformed entry are the real causes."""
     client, conn, state = pm
 
-    def broken(conn, budgets, *, model, alpha=1.0):
-        raise RuntimeError("oeisdata unreadable")
+    def build(conn, budgets, *, model, alpha=1.0):
+        raise error
 
-    monkeypatch.setattr(attempt, "session_pool", broken)
-    with pytest.raises(RuntimeError, match="oeisdata unreadable"):
-        client.get("/api/pickmap")
+    monkeypatch.setattr(attempt, "session_pool", build)
+    r = client.get("/api/pickmap")
+    assert r.status_code == 503 and r.json() == {"error": "pool_build_failed", "reason": text}
+
+
+def test_a_model_pool_that_cannot_be_built_leaves_the_pari_map_alone(pm, monkeypatch):
+    client, conn, state = pm
+    state["pari"] = {"A000001": 1.0}
+    assert get(client)["n"] == 1
+    real = attempt.session_pool
+
+    def only_the_model_breaks(conn_, budgets, *, model, alpha=1.0):
+        if model:
+            raise RuntimeError("no model pool today")
+        return real(conn_, budgets, model=model, alpha=alpha)
+
+    monkeypatch.setattr(attempt, "session_pool", only_the_model_breaks)
+    assert client.get("/api/pickmap?pool=model").json() == {"error": "pool_build_failed",
+                                                            "reason": "RuntimeError: no model pool today"}
+    assert get(client)["n"] == 1
+
+
+def test_a_missing_database_is_still_fastapis_own_503_and_not_a_pool_failure(pm, tmp_path, monkeypatch):
+    client, conn, state = pm
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "nowhere.sqlite3")
+    r = client.get("/api/pickmap")
+    assert r.status_code == 503 and "no database at" in r.json()["detail"] and "error" not in r.json()
+    # ... also when it is the build that finds it gone, after the route's own first look
+    def vanished(*a, **k):
+        raise dashboard.HTTPException(503, "no database at gone")
+
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t.sqlite3")
+    monkeypatch.setattr(dashboard, "live_pool", vanished)
+    r = client.get("/api/pickmap")
+    assert r.status_code == 503 and r.json() == {"detail": "no database at gone"}
+
+
+def test_only_the_pool_build_is_turned_into_a_503_the_rest_of_the_route_still_fails_loudly(pm, monkeypatch):
+    client, conn, state = pm
+    state["pari"] = {"A000001": 1.0}
+
+    def compare_breaks(*a, **k):
+        raise ValueError("a bug in the comparison")
+
+    monkeypatch.setattr(pickmap, "compare", compare_breaks)
+    r = TestClient(dashboard.app, raise_server_exceptions=False).get("/api/pickmap")
+    assert r.status_code == 500 and "pool_build_failed" not in r.text
 
 
 def test_each_pool_keeps_its_own_cached_build(pm):

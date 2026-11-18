@@ -1,29 +1,42 @@
 # Project status and handoff
 
-Snapshot as of **2026-10-13**, written at the end of session 5 and updated after offer B, the
+Snapshot as of **2026-10-14**, written at the end of session 5 and updated after offer B, the
 extension dead end, offers A, C, G, H, F, D and E, the flaky-test fix, session 6, items 2, 3, the
 smaller-follow-ups bundle, session 7, the cost fit's statistics, the guards that keep them honest,
 session 8, session 9, the searched-bound check, the predicate scan's progress heartbeats, the decision
 not to build resume, the runtime versions, review #1's independent check, session 10's two conjectural
 false wins, bundle A's three defect fixes, the conjectural-program check and its model-pool half,
 the three reviews, session 11, the day every open decision was answered and the chosen items built,
-session 12 with the offer (a) backfill, the two refusals that followed, and the dashboard's Pick map
-(history items 21 to 54).
+session 12 with the offer (a) backfill, the two refusals that followed, the dashboard's Pick map and
+its loose ends (history items 21 to 55), and the commit that landed items 34 to 54 (item 55 is built and
+not committed).
 This page
 exists so work can resume in a new session without the history of the one that built the project. Update
 it at the end of each working session.
 
-**No task is in progress.** The latest (the user, 2026-10-13: "I like the idea of making the pick chance
-display a heat map like that one of the S&P such that the pick chance is correlated with the size of the
-square on the map and the delta of pick chance can also be displayed") is finished as **history item 54**:
+**No task is in progress.** The latest is **history item 55** (2026-10-14): the Pick map's loose ends, each
+one decided by the user as an option question ("Also after every sync", "Keep it fixed", "Add a footer chip",
+"Make tiles focusable", "PARI only", "The newest snapshot's budgets", "Friendly message + retry"). `oeisbot
+sync` now records a PARI snapshot after the sync (about 5.5 s on the real pool), the "All bands" view names
+the bands it cannot draw, the tiles are reachable and operable from the keyboard, and a pool that cannot be
+built shows its reason with a retry button instead of a bare 500. A critic on the plan (13 findings, all
+accepted), mutation checks (Python 22 + 4 + 19 mutants, TypeScript 71, no survivor), an independent
+audit (`data/item55/audits.txt`) and **no browser pass yet**, because the dashboard server was killed for
+memory pressure and is not restarted unprompted. **Built on top of `f0081d9` and not committed**; the user
+asked for the commit of items 34 to 54 only, so this waits for its own request. The one before it (the
+user, 2026-10-13: "I like the idea of making the pick chance display a heat map like that one of the S&P such
+that the pick chance is correlated with the size of the square on the map and the delta of pick chance can
+also be displayed") was finished as **history item 54**:
 a **Pick map** tab on the dashboard, a treemap in which a tile's area is a sequence's chance of being a
 session's first pick and its colour is the change in that chance since an earlier snapshot of the pool,
 grouped by difficulty band with a sub-tab per band. It needed the pool to be *recorded*, so two tables
 now sit in the live database (`pick_snapshots`, `pick_snapshot_rows`; backup
-`data/oeisbot-before-pickmap.sqlite3`), `run_session` and `oeisbot snapshot` write them, and **there is
-one snapshot so far, so the map is gray until the pool next changes.** A critic on the plan, five
+`data/oeisbot-before-pickmap.sqlite3`), `run_session` and `oeisbot snapshot` write them (and, from item 55,
+`oeisbot sync`), and **there was one snapshot when it landed, so the map is gray until the pool next
+changes.** A critic on the plan, five
 independent audits (33 findings), mutation checks, **567 tests**. No pipeline ran, nothing was
-submitted, review #1 is untouched, and it is **not committed**.
+submitted, review #1 is untouched, and it was committed and pushed on 2026-10-14 with the
+rest, as `f0081d9`.
 
 Before it, the last ones (the user, 2026-09-30: "what are the next steps?", then "Present
 all the decisions to me as questions with options") are finished as **history items 51, 52 and 53**.
@@ -40,7 +53,8 @@ against 0.076756**, fifteen of seventeen predictions held outright, five picks l
 misreads, all foreseen; then the **offer (a) backfill re-keyed 48 attempt rows** (backup
 `data/oeisbot-before-backfill.sqlite3`). **438 tests** (567 since item 54), checks clean, dashboard
 rebuilt. **Not
-committed — the user was asked and said "Not yet".** Left as decided rather than built: the kill rules
+committed when written** (the user was asked on 2026-09-30 and said "Not yet"; `f0081d9` landed it on
+2026-10-14). Left as decided rather than built: the kill rules
 stay, Wolfram is deferred, the `iferr` wrap is declined. **Still open: reading the 15 blocks that pair
 a predicate with a list printer (next step vi), and review #1's steps 8 and 9, which are the user's
 alone — the walkthrough was given, nothing has been submitted.**
@@ -201,15 +215,18 @@ whose headline the audit had to reverse. Before it, next step 2's nine sub-items
 and three corrected documents (item 34), item 3 rejected PARI blocks calling another entry's helper
 (item 33), and item 2 made a failed run record *why* it failed (item 32).
 
-**Two things wait on the user.** First, A385331's open `reviews` row — **steps 2-7 of the review
+**One thing waits on the user.** A385331's open `reviews` row — **steps 2-7 of the review
 checklist are done, step 6 included** (item 44) and **step 7 was re-run on 2026-09-28 and still passes**
 (item 49), so what is left is the two steps only a human can do: submitting by hand and recording the
 outcome, with the material assembled in `data/review1/SUBMISSION.md`. **The two conjectural false wins,
 reviews #2 and #3, are no longer waiting**: they were closed as `rejected` on 2026-09-28 (item 49) at
 the user's instruction, with both pools measured unchanged (3,438 and 26,747) — though **not free**: the
 close also released the `open_review` gate on a targeted `--model` attempt of those two, see item 49.
-Second, **nothing since `3dacfb8` is committed**, and the user
-commits: do not commit or push unless asked. **One offer is still open** — what to do about the 35
+**One thing waits on a commit: item 55.** Everything through item 54 is committed
+and pushed as `f0081d9` (2026-10-14, at the user's request), but that answer covered the work to item 54
+and not the Pick map follow-ups of item 55, which are built and uncommitted (`git status` lists the
+files; history item 55 says what each does). The user commits, so do not commit or push unless asked again.
+**One offer is still open** — what to do about the 35
 sequences item 41 un-retired (changing the driver changed every predicate `program_sha`); see
 [open offers](#open-offers-and-next-steps). **One new decision is waiting too** — next-step (v), created
 by item 49 and found by its own audit: a `rejected` review no longer guards its sequence from a targeted
@@ -219,84 +236,25 @@ false win already rejected. The recommended fix is a guard in `_insert_review`, 
 is recorded (item 43) and resume is decided against (item 42). No background jobs, no pending re-checks,
 `data/pending/` is empty.
 
-### What is uncommitted
+### What is committed
 
-`origin/main` is `3dacfb8`. On top of it the working tree holds **items 34, 36, 37, 38, 39, 40, 41, 42,
-43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53 and 54**, which have never been separated and would land together.
-**Re-checked 2026-10-13 after item 54: 13 untracked and 46 modified** (`git status --porcelain`, 59
-entries; 8 and 40 after item 52). **Item 54 added five untracked entries** — `oeisbot/pickmap.py`,
-`tests/test_pickmap.py`, `dashboard/src/pickmap.tsx`, `dashboard/src/treemap.ts` and the folder
-`dashboard/test/` (`treemap.test.ts`) — **and six modified files** — `dashboard/package.json` (the `test`
-script), `dashboard/src/charts.tsx`, `lib.tsx`, `main.tsx`, `styles.css` and `tests/test_dashboard.py` —
-and touched `db.py`, `attempt.py`, `cli.py`, `config.py`, `oeisbot/dashboard/app.py`,
-`tests/test_attempt.py`, six docs pages (`dashboard`, `data-and-schema`, `development`,
-`known-limitations`, `operations`, `status`), `CLAUDE.md` and `README.md`, all already listed. Item 51 added seven files to the modified list — `dashboard/src/views.tsx`,
-`oeisbot/dashboard/app.py`, `oeisbot/estimate.py`, `oeisbot/sandbox/posix.py`,
-`oeisbot/sandbox/types.py`, `oeisbot/sandbox/windows.py`, `tests/test_sandbox.py` — and touched
-`db.py`, `cli.py`, `attempt.py`, `verify.py`, `artifact.py`, `strategies/pari.py`,
-`strategies/codegen.py`, `tests/test_attempt.py`, `test_bounds.py`, `test_codegen.py`, `test_db.py`,
-`test_docs.py`, `test_estimate.py`, `test_pari.py`, `test_recheck.py`, `test_verify.py` and nine docs
-pages, all already listed. Item 52 is docs and local state (`data/`, the dashboard's built `static/`,
-the database). The user was asked on 2026-09-30 whether to commit and chose **"Not yet"**. The
-paragraph below is the 2026-09-28 state, kept for the item-by-item attribution: **Item 45 was
-missing from this list until item 49's audit found it**: session 10's write-up is docs-only (its history
-entry here, its share of `known-limitations.md` and of the `CLAUDE.md` block), which is exactly why it
-was easy to overlook. Sessions 8 and 9
-and **items 42 and 44** changed no code. Taken from `git status --porcelain`, not by hand. **Re-checked
-2026-09-28 after item 49: 8 untracked and 33 modified** -- items 47, 48 and 49 each created no new
-tracked file; item 47 added `oeisbot/strategies/codegen.py` as the 32nd modified file, item 48 added no
-new one (it touches `attempt.py`, `cli.py` and `pari.py`) and item 49 added **`oeisbot/terms.py` as the
-33rd** (a docstring saying the caller owns the b-file's trailing blank line, written after its audit),
-its other files -- `artifact.py`, `scripts/make_demo_db.py`, `tests/test_recheck.py`,
-`tests/test_attempt.py`, `tests/test_codegen.py` and docs -- being already listed. **Item 49 also wrote
-the live database** -- see "Changes git cannot see":
+`origin/main` and `HEAD` are `f0081d9` ("Sessions 7 to 12, history items 34 and 36 to 54, and the
+dashboard Pick map"), and `git status` was clean when it was pushed on 2026-10-14. The user asked for it
+(the answer "Commit and push" to a question about item 54's loose ends), and it was pushed after a fetch
+confirmed `origin/main` was still `3dacfb8`. It is **one commit on top of `3dacfb8`: 59 files, 46 modified
+and 13 new, 12,230 insertions and 486 deletions** (`git show --stat f0081d9`). It holds **items 34, 36,
+37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53 and 54** and everything from sessions 7
+to 12 that reached a tracked file. They are one commit because they were never separated and could not be:
+the items interleave in the same files (`db.py`, `attempt.py`, `cli.py`, `strategies/pari.py`, the docs
+pages), so a split would have meant a commit that does not build or a test count that matches no commit.
 
-- **New, untracked (8):** `oeisbot/bounds.py`, `tests/test_bounds.py` (item 40);
-  `scripts/replay_predictions.py`, `tests/test_replay.py`, `tests/test_docs.py` (items 36-37);
-  `scripts/verify_A385331.py` (session 7); `tests/test_heartbeat.py` (item 41);
-  `tests/test_runtimes.py` (item 43).
-- **Modified (33):** `CLAUDE.md`, `README.md`; `docs/` — `dashboard`, `data-and-schema`, `development`,
-  `known-limitations`, `operations`, `pipeline`, `sandbox`, `status`, `strategies`,
-  `verification-and-estimation`;
-  `oeisbot/` — `artifact.py`, `attempt.py`, `cli.py`, `config.py`, `db.py`, `setup_tools.py`,
-  `terms.py`, `verify.py`, `ingest/oeisdata.py`, `strategies/codegen.py`, `strategies/pari.py`;
-  `scripts/` —
-  `check_docs.py`, `make_demo_db.py`; `tests/` — `test_attempt.py`, `test_codegen.py`, `test_db.py`,
-  `test_estimate.py`, `test_ingest.py`, `test_pari.py`, `test_recheck.py`, `test_verify.py`.
-- **Item 43 alone** is `oeisbot/setup_tools.py`, `tests/test_runtimes.py`, part of `oeisbot/attempt.py`,
-  `oeisbot/db.py` (`set_meta_many`), `tests/test_attempt.py` and `tests/test_db.py`, plus its share of
-  `CLAUDE.md` and of six docs pages (`data-and-schema`, `development`, `known-limitations`,
-  `operations`, `sandbox`, `status`).
-- **Item 42 is docs only**: `status.md`, and its share of the `CLAUDE.md` block.
-- **Item 46 (2026-09-25)** adds no new files. It changes `oeisbot/verify.py`, `oeisbot/strategies/pari.py`,
-  `oeisbot/attempt.py` and `oeisbot/artifact.py` (the last two only to name the form in a log line and an
-  artifact header, now that one `%o` block can yield two candidates), `tests/test_verify.py`,
-  `tests/test_pari.py` and `tests/test_attempt.py`, plus the test counts in `CLAUDE.md`, `README.md`,
-  `docs/development.md`, `docs/operations.md` and `docs/status.md`, and prose in `docs/strategies.md`,
-  `docs/verification-and-estimation.md`, `docs/known-limitations.md` and `docs/data-and-schema.md`.
-  **It wrote no database row and ran no pipeline**, but it *did* change the live pool a `queue` scan
-  reports (3,455 → 3,441), because the pool is derived from the code, not stored.
-- **Item 44 is docs only too**: the step-6 note in `docs/operations.md`, the first-win bullet and history
-  entry in `docs/status.md`, the helper-script pointer in `docs/development.md`, and its share of the
-  `CLAUDE.md` block. Its evidence is in `data/review1/`, which `.gitignore` excludes.
-- **Item 47 (2026-09-26)** adds no new file either. It changes `oeisbot/strategies/pari.py` (the
-  `_CONJECTURAL` pattern, `conjectural()`, and the check in `build_candidates`) and
-  `oeisbot/strategies/codegen.py` (**the only newly-modified file**: the `_context` filter and one
-  import), plus `tests/test_pari.py` (9 new tests), `tests/test_codegen.py` (2) and
-  `tests/test_attempt.py` (one case added to an existing parametrize), and the test counts in
-  `CLAUDE.md`, `README.md`, `docs/development.md`, `docs/operations.md` and `docs/status.md` — **398 →
-  410, with `development.md`'s per-file table and collected-counts paragraph** — and prose in
-  `docs/strategies.md`, `docs/known-limitations.md`, `docs/status.md` and the `CLAUDE.md` block.
-  **It wrote no database row and ran no pipeline**, but it *did* change the live pool a `queue` scan
-  reports (3,441 → 3,438), because the pool is derived from the code, not stored. Its working files are
-  in `data/item47/`, which `.gitignore` excludes.
-- **Item 50 (2026-09-29, session 11) is docs only**, like items 42, 44 and 45: its history entry, the
-  counts, the resuming paragraph and three decisions rows in `docs/status.md`; its share of
-  `docs/known-limitations.md` (the observations row and four new instances of selection misreads),
-  `docs/strategies.md` (the print-loop index caveat), `docs/pipeline.md` (the pool line), `README.md`
-  and the `CLAUDE.md` block. **It changed no code and adds no tracked file**, so the counts stay at 8
-  untracked and 33 modified (re-checked 2026-09-29). Its evidence is in `data/session11/` and the
-  updated expectations in `data/item49/recheck_numbers.py`, both under the gitignored `data/`.
+The item-by-item file lists this section kept while the work was uncommitted are gone, because `git show
+--stat f0081d9` is the authority on what is in the commit and a hand-kept list had drifted from it before
+(item 45 was missing from it until item 49's audit found it). Items 42, 44, 45 and 50 are docs only and
+item 52 is docs and local state; their evidence is in the gitignored `data/` and in the local database,
+which git does not see (next paragraph). `data/item49/recheck_numbers.py` now checks that `f0081d9` is on
+`origin/main` and in `HEAD`'s history and holds 59 files; it prints the working tree's counts but does not
+check them, since they move with every edit.
 
 **Changes git cannot see.** Item 36 altered the live database in place — five columns on
 `predictions`, `schema_version` 1 → 2, and 18 rows backfilled — with a `VACUUM INTO` backup at
@@ -319,7 +277,17 @@ added two tables to the live database and wrote one snapshot into them** (`pick_
 tables there by accident, so the backup contains them (the history entry has the account). Nothing else
 in the database changed.
 
-567 tests pass and `scripts/check_docs.py` reports no link problems. Every decision made so far is in the
+**Item 55 is not in the commit.** It was built on top of `f0081d9` on 2026-10-14 and sits in the working tree;
+`git status` is the authority on which files (a hand-kept list drifted before), and its plan, critic, timing
+scripts, mutation runs and audits are in the gitignored `data/item55/`. **It wrote nothing to the live
+database:** at the time of writing `data/oeisbot.sqlite3` still has the modification time of item 54's
+snapshot (2026-10-13 21:30) and the one snapshot in it, and the sync snapshot was timed on a `VACUUM INTO`
+copy. The rules fingerprint is unchanged by it as well (`attempt.rules_fingerprint()` is `af16ba7ce8d3`,
+equal to snapshot #1's), because `budgets_of` and `snapshot_after_sync` sit outside what the fingerprint
+hashes; so the first snapshot a sync records will not carry a "the selection rules changed" note on that
+account.
+
+587 tests pass and `scripts/check_docs.py` reports no link problems. Every decision made so far is in the
 table below; what could come next is in [next steps](#open-offers-and-next-steps).
 
 ## Offers G, H and F, one at a time (done)
@@ -507,7 +475,8 @@ critic's findings, summarised in history item 41.
 3. **Confirm the machine is still set up** (every command should succeed without reinstalling):
 
    ```
-   .venv\Scripts\python -m pytest            # expect 567 passed (on an otherwise idle machine: history item 30)
+   .venv\Scripts\python -m pytest            # expect 587 passed (on an otherwise idle machine: history item 30)
+   cd dashboard && npm test                  # 33 node tests (the Pick map's pure logic); npm run build must be clean too
    .venv\Scripts\oeisbot model-check         # expect 'ready' (first call loads the model, about a minute)
    .venv\Scripts\oeisbot stats               # expect 26,814 candidates (14,436 with no program)
    .venv\Scripts\oeisbot attempts --limit 300 # expect 280 rows, ids 1-280; failure modes include
@@ -738,7 +707,7 @@ critic's findings, summarised in history item 41.
 
 ## Where things stand
 
-- **Build:** all eight steps of the [design spec](design-spec.md) are implemented, with 567 passing tests.
+- **Build:** all eight steps of the [design spec](design-spec.md) are implemented, with 587 passing tests.
 - **Session 11 ran** (item 50, 2026-09-29): 25 PARI picks at the 60 s gate, 5 verified, **0 new terms**,
   2.78 h, 8.98 picks/h. Its lasting output is a **method and a defect class**, not a term. The method:
   read every pick's program before the run (`data/session11/progs.py`), pre-register a per-pick
@@ -938,13 +907,12 @@ critic's findings, summarised in history item 41.
   offer B, the extension dead end and offers A, C, G, H, F, D and E were committed and pushed as
   `5e4665a` (after 256 tests passed and `origin/main` was checked unchanged). Three more commits follow
   it, each at the user's request: `63cc9ae` (the flaky-test fix, history item 30, tests and docs only),
-  `f325786` (items 32 and 33) and `3dacfb8` (the git TLS flag in CLAUDE.md), which is `HEAD` and
-  `origin/main`. **Items 34 and 36 to 54, and everything from sessions 7, 8, 9, 10, 11 and 12, are
-  uncommitted** —
-  the enumerated file lists are in [what is uncommitted](#what-is-uncommitted), which is the
-  one place to update when this changes; this bullet and the two in the header have drifted from it
-  before, and had again by item 49 (this bullet stopped at 44 and the canonical list omitted 45). Do
-  not commit or push unless the user asks. `.gitignore` excludes the local state below.
+  `f325786` (items 32 and 33) and `3dacfb8` (the git TLS flag in CLAUDE.md). On 2026-10-14, again at the
+  user's request ("Commit and push"), **`f0081d9` landed items 34 and 36 to 54 and everything from
+  sessions 7 to 12 in one commit**, and it is `HEAD` and `origin/main`; nothing is uncommitted. What it
+  holds is in [what is committed](#what-is-committed), the one place to update when this changes (the
+  bullet and the two paragraphs in the header have drifted from it before). Do not commit or push
+  unless the user asks. `.gitignore` excludes the local state below.
 - **Background processes:** none. The Ollama tray app keeps its server running on port 11434.
 
 ### Local state on this machine (not in git)
@@ -1090,6 +1058,9 @@ critic's findings, summarised in history item 41.
 | Refuse a def whose only parameter has a default (a bulk printer) | user, on the measurement (4 of 4) | history item 53 |
 | Leave the over-prediction kill rules as they are (no kill on untrusted risky fits, no withdrawal of trust when risky) | user, on the replay (4,423 s saved on record against a six-term sample of finished terms) | history item 53 |
 | Defer Wolfram Engine, scoping note attached; value dependence: leave it (nothing on the record gains) | user | history item 53; `data/measure0930/wolfram_scoping.md`, `valuedep.txt` |
+| Pick map: a tile's colour is the change since the last snapshot, and the tiles are grouped by difficulty band, with an "All bands" tab and a tab per band, so 5,000 tiles are never in one display | user ("Change since the last snapshot"; "Group them by difficulty band but also make tabs...", 2026-10-13) | history item 54 |
+| Pick map follow-ups: **also snapshot after every `oeisbot sync`** (PARI pool only, under the newest snapshot's budgets); the colour horizon stays **fixed** at the newest *different* snapshot, no picker; a **footer chip** for the bands too small to draw in "All bands"; tiles **keyboard-focusable**; a failed pool build shows a **friendly message with a retry** | user, asked 2026-10-14 ("Also after every sync", "Keep it fixed", "Add a footer chip", "Make tiles focusable", "PARI only", "The newest snapshot's budgets", "Friendly message + retry") | history item 55: built 2026-10-14, not yet committed |
+| Commit and push everything through item 54 | user ("Commit and push", 2026-10-14) | `f0081d9`; [what is committed](#what-is-committed) |
 
 ## History (condensed)
 
@@ -3627,7 +3598,7 @@ critic's findings, summarised in history item 41.
     one request, `pollPath`); an error survived the next request; the stale guard ignored alpha; an
     invalid alpha was ignored without a word (now `aria-invalid` and a message); area was proportional
     only within a band (the `fairRects` fix above); tiles are not keyboard-reachable (left: the table twin
-    carries the same data, and its rows are links); an empty pool drew a blank canvas (now a sentence); the
+    carries the same data, and its rows are links; **closed by item 55**); an empty pool drew a blank canvas (now a sentence); the
     test gaps (the frontend suite went from 11 tests to 20). *`record_pick_snapshot`* (5): inside a caller's transaction it silently
     committed the caller's writes (now refused with a `RuntimeError`); a deduped run left the snapshot
     stamped with the old budgets and rules (the newest snapshot's stamp is now refreshed by `COALESCE`);
@@ -3637,7 +3608,7 @@ critic's findings, summarised in history item 41.
     cache hit waited behind the other pool's build (the lookup is now lock-free), `running_session` could
     name a crashed older session (only the newest session counts), and the rules fingerprint was read from
     disk where the server's pool came from loaded code (`rules_loaded()`, once per process); a NaN
-    difficulty is a 500 (unreachable) and a failed build a bare 500 (left). *The snapshot code and the
+    difficulty is a 500 (unreachable) and a failed build a bare 500 (left; **closed by item 55**). *The snapshot code and the
     fingerprint* (6): **the fingerprint missed code that decides who is in the pool** (`pari_plan`,
     `db.is_dead_end`, two constants, `seqfile.py`, `oeisdata.load_entry`, the b-file readers: all hashed
     now) and **depended on line endings** (a CRLF checkout read as "the rules changed"; sources are
@@ -3689,10 +3660,159 @@ critic's findings, summarised in history item 41.
     `tests/test_docs.py` moved from "70 s" to "100 s". Two pre-existing errors found
     on the way and corrected: this page said "438 tests" for item 49, which recorded 423, and `CLAUDE.md`
     still carried the pool counts from before item 53 (3,375 / 1,940 for 3,357 / 1,958).
-    Not committed. Files: new `oeisbot/pickmap.py`, `tests/test_pickmap.py`, `dashboard/src/pickmap.tsx`,
+    Not committed when written; committed and pushed with items 34 to 53 as `f0081d9` on 2026-10-14.
+    Files: new `oeisbot/pickmap.py`, `tests/test_pickmap.py`, `dashboard/src/pickmap.tsx`,
     `dashboard/src/treemap.ts`, `dashboard/test/treemap.test.ts`; changed `oeisbot/db.py`, `attempt.py`,
     `cli.py`, `config.py`, `dashboard/app.py`, `dashboard/src/{charts,lib,main}.tsx`, `styles.css`,
     `dashboard/package.json`, `tests/test_attempt.py`, `tests/test_dashboard.py`, and the docs.
+
+55. **The Pick map's loose ends: a snapshot after every sync, the bands too small to draw, the keyboard, and
+    a pool that cannot be built (2026-10-14).** Asked what item 54 had left unfinished (the user: "Grill me
+    on anything that is missing/not fully fleshed out"), the user answered seven option questions: **"Also
+    after every sync (Recommended)"** for when to snapshot, **"Keep it fixed"** for the colour horizon,
+    **"Add a footer chip (Recommended)"** for the bands "All bands" cannot draw, **"Make tiles focusable"**,
+    **"PARI only (Recommended)"** for which pool a sync records, **"The newest snapshot's budgets
+    (Recommended)"** for the budgets it records under, and **"Friendly message + retry (Recommended)"** for a
+    pool that cannot be built. The same answer-set ended with "Commit and push", which landed items 34 to 54
+    as `f0081d9` and **did not cover this item**: it is built on top of that commit and not committed. The
+    plan is `data/item55/plan.md`, its critic `data/item55/critic.txt`. Nothing in the item touches the pool
+    (what a session draws from), the pick maths, the schema or a review; the one new write is a snapshot
+    after `oeisbot sync`, and no pipeline ran.
+
+    **A snapshot after every sync.** `attempt.snapshot_after_sync(conn, log)`, which `cmd_sync` calls after
+    `oeisdata.sync` on the same connection (`oeisbot sync --no-pull` too: it rebuilds the candidate table
+    all the same), records the **PARI** pool through the same `record_snapshot` a session uses, with
+    `session_id` NULL, so the map has something to compare with when entries change between sessions and not
+    only after one. It reads the budgets of the newest PARI snapshot with `attempt.budgets_of` (the defaults
+    when there is none or they do not parse; **moved from `dashboard/app.py`'s `_budgets_of`**, so the CLI and
+    the dashboard cannot disagree about what "the pool as the newest snapshot saw it" means), builds the pool
+    under them and stores it unless the newest snapshot already holds exactly that pool, so a sync that
+    changed nothing stores nothing. **It never raises**: a sync that has pulled and parsed everything must
+    not fail for the map's record, so any exception is logged as `pick snapshot not recorded: <Type>:
+    <message>` and the sync's own rows stay committed (`tests/test_attempt.py` drives the real
+    `oeisdata.sync` through `cmd_sync` to show it, and that a sync which raises takes no snapshot). **A pool
+    whose per-sequence check failed (`keep.errors`) is refused**, with the count and the first error in the
+    log: those sequences would be missing for a reason that has nothing to do with them, and the next
+    snapshot would show them as arrivals. A session still records such a pool, since it drew from it.
+    **What it costs:** 5.4 to 5.8 s per call, timed on a `VACUUM INTO` copy of the live database with the
+    real 3,357-candidate pool (`data/item55/time_snapshot.py`: 5.79 s and 5.45 s in its last run); both
+    calls found the pool unchanged, so the figure is the pool build and the digest, and a store adds one
+    transaction of about 3,400 rows that was not timed on its own. Two things the dedupe does not do, both
+    found by the critic and left as notes: it compares only the **newest** snapshot, so a pool that flips
+    A, B, A stores each time (acceptable: the map colours by the newest *different* snapshot, so only the
+    newest two ever matter), and with 30 kept, many such syncs would push an older baseline out. The rules
+    fingerprint recorded is that of the code on disk, which is what just built the pool, and may differ from
+    the code a running dashboard loaded. A snapshot with a NULL `session_id` is a CLI or sync snapshot: the
+    tile's sub-label omits the session (`pickmap.tsx`), `_departures` compares on `taken_at` alone, and
+    `tests/test_pickmap.py` drives a NULL-session baseline through the endpoint. **Not done, by decision:**
+    the model pool is not recorded by a sync (about 30 s to build; its map stays gray until a `--model`
+    session), and there is no `--no-snapshot` flag. The live database was **not** written by any of this.
+
+    **Bands too small to draw.** In "All bands", band 8 (2 sequences, 0.002% of the picks) is allotted less
+    than a pixel and band 7 is a sliver at most widths, so a tile there can be neither seen nor pointed at.
+    The critic showed the first definition (the band's rect, under 8 px) would flicker on resize and miss a
+    band whose inner area was 4 px, so `treemap.undrawn(layout, minSide)` is defined on the **inner** rect,
+    what the leaves actually get, with `MIN_DRAWN_SIDE` = 6 px; a band with no area counts. A line under
+    the map ("Too small to draw here:") lists them as buttons that open the band's tab and put the keyboard
+    focus on it. The area maths is not touched. **Measured** with the page's own `layoutGroups` call on the
+    real PARI pool at 32 widths from 360 to 1,600 px (`data/item55/inner_sizes.ts`): band 8 has no inner
+    width at any of them and band 7 has 0 to 5.1 px at 30 of the 32 (8.2 px at 1,240 and 11.4 at 1,440), so
+    the line is normally there. A band's own tab never has it.
+
+    **Keyboard.** Every tile can be reached and used without the mouse: one tab stop, the arrow keys move to
+    the nearest tile in that direction (`treemap.neighbour`: the gap along the axis plus **twice** the miss
+    across it, then the closer centre, then the smaller A-number), Home and End go to the ends of the layout,
+    Enter or Space opens the entry (a lump opens its band), Escape closes the tooltip, and a tile focused by
+    the keyboard shows the same tooltip as a hovered one. The SVG changes from `role="img"` to `"group"`
+    (an `img` cannot have focusable children); a sequence tile is a `link`, a lump a `button`, each with an
+    `aria-label`. `treemap.focusOrder` lists what the keys can reach: not the leaves of a band in the
+    "too small" line, not a tile with no area, and not a lump on a band's own tab. **Three design points from
+    the critic:** (1) a tab stop held in React state would re-render all ~2,300 tiles on every key press, so
+    each leaf is one memoised `LeafTile` and a change of stop renders two; (2) the tooltip now has one owner
+    (`Shown {tip, by}`): the mouse leaving does not close a tooltip the keyboard opened, blur does not close
+    one the mouse opened, and a new layout shows the tooltip of the tile that has keyboard focus
+    (`showFor`, which requires `:focus-visible`) and closes it otherwise; (3) Space calls `preventDefault`,
+    or the page scrolls, and a key held down acts once (`e.repeat`).
+    **Not checked in a browser** (see below): `:focus-visible` on SVG elements, the tab order on a real
+    page, and what a screen reader makes of 2,300 labelled links are exactly what the node tests cannot
+    reach, because node cannot run `.tsx`, and `pickmap.tsx` has no automated test of its own.
+
+    **A pool that cannot be built.** `pickmap_data` guards only the call to `live_pool`: a missing database
+    keeps FastAPI's own 503 (`except HTTPException: raise`, the critic's second finding), and **any other
+    exception** is logged with its traceback to the `oeisbot.dashboard` logger and answered as a **503 with
+    `{"error": "pool_build_failed", "reason": "<Type>: <message>"}`**, the message on one line and cut at
+    200 characters. Nothing is cached for it, so the next request builds again
+    (`test_a_failed_build_is_not_cached_so_the_next_request_tries_again`). The page reads the reason out of
+    the error text `useApi` keeps, which is **`Error: 503: {...}`** and not `503: {...}` (the critic's first
+    finding: the plan's test input had the wrong shape and would have passed while the UI always fell
+    through), with `treemap.failureReason`, and shows "The PARI pool could not be built: <reason>" above the
+    last map that loaded, with a **Try again** button that asks for a rebuild. Any other failure reads
+    "Could not load: ..." with the same button. The map is dimmed only while a request is out (`stale` used
+    to survive a failed request, leaving the message over a permanently 60% map), and `aria-busy` follows
+    `loading`. The traceback reaches the terminal of `oeisbot dashboard`: uvicorn's logging configuration
+    touches only its own three loggers, so Python's last-resort handler prints this one (checked).
+
+    **The colour horizon is unchanged**, by the user's choice: the change since the newest *different*
+    snapshot, no picker. [known limitations](known-limitations.md#the-pick-map) has the note.
+
+    **The plan was criticised first, then every claim was checked.** 13 findings, all accepted (the
+    response is at the foot of `critic.txt`): two bugs in the plan (the `Error: ` prefix, the
+    `HTTPException`), the failed-check snapshot, the resize flicker of the first `undrawn`, the re-render
+    cost of the tab stop, the tooltip contest, the sticky `stale`, a sync test that would have run on an
+    empty pool and so proved nothing, and the text-matching mutation specs of item 54 that the move of
+    `_budgets_of` made stale (they are rewritten in `data/item55/mutation/pymut_specs.py`).
+
+    **Mutation checks** (`data/item55/mutation/`, each worker in its own `OEISBOT_HOME`, the lesson of item
+    54's disclosure): **Python 45 mutants, none survived** (`attempt.py` 22, `cli.py` 4, `dashboard/app.py`
+    19), **TypeScript 71 killed of 71**. They found real gaps, closed by tests before the final runs: the
+    sync took the newest snapshot's budgets and nothing proved it was not the oldest's; the
+    failed-checks count was indistinguishable from the pool size; only a `RuntimeError` was tested as a
+    build failure (now OSError, `sqlite3.OperationalError`, KeyError and ValueError too); and the TypeScript
+    suite grew until every one of its 71 was caught. Three TypeScript mutants and one in `cmd_sync` are
+    **equivalent** and left out, each with its reason as a comment in the spec files (the source's own
+    centre is never beyond itself; ids are unique; `JSON.parse("null")` throws into the same `catch`; and
+    moving the snapshot out of `cmd_sync`'s `with` changes nothing because `with` on a sqlite3 connection
+    commits and does not close). A worker copy needs stub runtime files (`tools/python/python.exe`,
+    `tools/pari/gp.exe`, `data/scratch/`) or `tests/test_attempt.py` is skipped and every mutant survives
+    for the wrong reason, which is how the first run of the `attempt` suite looked; in the `cli` suite 35
+    sandbox tests fail identically on the baseline copy and on every mutant, and are diffed out.
+
+    **Tests and checks.** **20 new Python tests** (587 collected, from 567: 11 in `tests/test_attempt.py`,
+    9 in `tests/test_pickmap.py`, four of them one parametrized test) and **13 new node tests** (33, from
+    20). `npm run build` (strict `tsc` and `vite build`) is clean. Counts were taken from `pytest
+    --collect-only` and the docs edited to match; `tests/test_docs.py` and `data/item49/recheck_numbers.py`
+    (a read-only checker, re-baselined to 587) then confirm them.
+
+    **Audit.** An independent audit of the finished item (`data/item55/audits.txt`, 8 findings, the
+    disposition of each written beneath the report) led to changes in `pickmap.tsx`, `styles.css` and the
+    `snapshot` help text. **Fixed:** (1) **Try again** lost the keyboard focus, because the failure block
+    unmounts while its button has it, so it now hands the focus to **Rebuild now**, and both buttons are
+    `aria-disabled` and not `disabled` while a request is out (a focused button is never disabled under the
+    keyboard); (2) a resize or the hourly refresh wiped the tooltip of the tile the keyboard was on, and the
+    pointer crossing a band header wiped it too, so the layout effect now shows it again (`showFor`) and
+    `onMove` ends only a tooltip the pointer owns; (5) a held Enter opened a tab per key repeat
+    (`e.repeat`). **Documented and not changed:** the dropped-focus case in (2), the React code having no
+    automated test (4), Shift with an arrow or Enter and Space on a link tile (5), the budgets of `oeisbot
+    snapshot` following whoever wrote last (6), a sync-made snapshot keeping `session_id` NULL when a
+    session later draws the same pool (7); finding 8 (a corrupt budgets row) was ignored; the stale docs of
+    (3) were rewritten. **A second reader then checked those fixes** and found one regression of mine:
+    Escape stopped sticking, since a re-layout showed again the tooltip Escape had closed. Fixed with a
+    `dismissed` ref, cleared when the focus next lands on a tile. Three of its smaller points need a browser
+    and stay in [known limitations](known-limitations.md#the-pick-map). **Neither the audit's fixes nor this
+    one has a mutation check or a test of its own**, because they live in the React component: they were
+    verified by `tsc`, `vite build`, the 33 node tests (which cover only the pure functions) and by reading
+    the code twice.
+
+    **Not done, and why.** **No browser pass.** The dashboard server was killed under memory pressure and
+    was not restarted without being asked, so the keyboard focus ring and tooltip, the "Too small to draw
+    here" chips, the failure message and the retry button have been read and tested in pieces but **never
+    seen**; the user is to be asked before the server is started. The model pool is not recorded by a sync.
+    `oeisbot snapshot` still stores `DEFAULT_BUDGETS` pools only and lets an exception through (item 54's
+    note, unchanged). A running dashboard needs a restart to pick up the new endpoint behaviour, and
+    `npm run build` rebuilds `oeisbot/dashboard/static`, which is not committed.
+    Files: changed `oeisbot/attempt.py`, `cli.py`, `dashboard/app.py`, `dashboard/src/{pickmap.tsx,
+    treemap.ts,styles.css}`, `dashboard/test/treemap.test.ts`, `tests/test_attempt.py`,
+    `tests/test_pickmap.py`, and the docs; no new tracked file. Not committed.
 
 ## Open offers and next steps
 
@@ -3702,6 +3822,18 @@ number was **45 un-retired sequences at the run's budgets, 34 at `queue`'s, none
 the user chose the **backfill** of `program_sha` (46 of 47 rows map to exactly one current candidate),
 scheduled after session 12 because it changes the pool and so the draw; see item 52 for whether it has
 run. The paragraph below is the offer as it stood.
+
+**Built 2026-10-14, uncommitted: history item 55, the Pick map's loose ends.** What it left is two things,
+neither a decision: **a browser pass** and **its own request to commit**. **The browser pass was done on
+2026-11-17** (the user: "start the server and do the browser pass"), in Chrome against
+`oeisbot dashboard` on 127.0.0.1:8765, PARI pool, 3,357 candidates, no console errors: Tab enters the map
+with a visible focus ring and the tooltip, the arrow keys move the ring, Enter on a tile opens its oeis.org
+entry and Enter on a lump opens its band with focus on the first tile; the "Too small to draw here" row
+lists `8 to 16` and `16 and up` and a chip opens its band; the failure message, with the last map kept
+below it, and **Try again** were seen with the 503 **simulated in the page** (`fetch` replaced for
+`/api/pickmap`), so the server's own 503 path has still only its automated test. Seen and left alone: a
+long name is cut mid-word in the tooltip and the `aria-label` ("... the repunit (A00227"). The first `oeisbot sync` after this lands will store
+the second PARI snapshot if the pool changed, and from then on the map is coloured; until then it is gray.
 
 **(a) The 35 sequences item 41 un-retired.** Changing the predicate driver changed every predicate
 program's `program_sha`, which is what `db.is_dead_end` keys on, so all 49 past predicate records are

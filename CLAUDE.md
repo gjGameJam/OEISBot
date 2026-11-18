@@ -12,9 +12,11 @@ commits the work themselves; do not commit or push unless asked.
 so do not redo them; **step 7 was re-run 2026-09-28 and still passes** (item 49). What is left is only
 what a human may do: **step 8, submitting by hand, and step 9, recording the outcome**, with the material
 assembled in `data/review1/SUBMISSION.md`. Nothing has been submitted. Do not close the review, change
-its status, submit anything, or re-run A385331 on your own initiative. And **history items 34, 36, 37,
-38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53 and 54 are uncommitted** on top of `3dacfb8`,
-listed in `docs/status.md`; the user was asked on 2026-09-30 and said "Not yet".
+its status, submit anything, or re-run A385331 on your own initiative. **History items 34 and 36 to 54 are
+committed and pushed as `f0081d9`** (2026-10-14, on the user's "Commit and push"; `HEAD` and `origin/main`,
+what it holds is in `docs/status.md#what-is-committed`). That answer covered the work to item 54 only:
+anything built after it still waits for its own request to commit. **Item 55 (the Pick map's loose ends,
+2026-10-14) is built, audited and uncommitted** (`git status` lists it; the evidence is in `data/item55/`).
 
 **Session 12 ran on 2026-09-30 (item 52): 25 PARI picks, seed 212, 27 program runs, 0.85 h, 2 verified,
 0 new terms, Brier 0.000185 for the per-pick reading against 0.076756 pooled.** Fifteen of seventeen
@@ -23,7 +25,7 @@ misreads** retiring their sequences untested (16% in session 11, 20% here). The 
 `data/session12/`: `planS12.md` with a critic, a Monte Carlo that *pins* what the page proves, then
 `resultsS12.md` audited (16 findings, all held). The offer (a) backfill then re-keyed 48 attempt rows
 (`data/offerA/`, backup `data/oeisbot-before-backfill.sqlite3`): `queue` is **3,357 / 1,958
-(1432 / 383 / 143)**, `queue --all` **26,745 / 18**, attempts **280**, **567 tests**.
+(1432 / 383 / 143)**, `queue --all` **26,745 / 18**, attempts **280**, **587 tests**.
 
 **The dashboard has a Pick map tab (item 54, 2026-10-13):** a treemap whose tile area is a sequence's
 chance of being the first pick (`pickmap.chances`) and whose colour is its change since the newest
@@ -32,11 +34,19 @@ both pools** (`pickmap.compare`); a plain `p / p_then` paints every surviving ti
 anything leaves the pool (55 left between the pool before session 12 and now, and 3,355 tiles read "up 2%").
 **`pick_snapshots` / `pick_snapshot_rows` are in the live database**, created by `connect()`, so a bare
 `db.connect()` aimed at the real file (a test, a mutation run) creates them there: give tests and workers
-their own `OEISBOT_HOME` (`pymut.py` does). **Snapshots are written by `run_session` and `oeisbot snapshot`
-only**, never by the dashboard, which stays read-only; `data/oeisbot.sqlite3` holds snapshot #1 (3,357 rows,
+their own `OEISBOT_HOME` (`pymut.py` does). **Snapshots are written by `run_session`, `oeisbot snapshot` and
+(item 55) `oeisbot sync`**, never by the dashboard, which stays read-only; `data/oeisbot.sqlite3` holds snapshot #1 (3,357 rows,
 2026-10-13) and `data/oeisbot-before-pickmap.sqlite3` is the backup taken before it. The map says area is
 about 0.9 of the chance and that bands share a scale to within about 2.5x; do not tighten that without
-re-running `data/item54/area_spread.ts`.
+re-running `data/item54/area_spread.ts`. **Item 55 built those loose ends (2026-10-14, uncommitted):**
+`attempt.snapshot_after_sync` makes `oeisbot sync` record a PARI-only snapshot (never fails the sync;
+budgets from the newest PARI snapshot, `attempt.budgets_of`), the colour horizon stays fixed (no
+picker), a footer line names the bands "All bands" cannot draw (`treemap.undrawn`), tiles are
+keyboard-focusable (roving tabindex, `treemap.focusOrder` / `neighbour`), and a pool that cannot be built
+is a 503 `pool_build_failed` with a reason and a **Try again** button. **Only the pure logic has automated
+tests; `pickmap.tsx` had its browser pass on 2026-11-17** (all four pieces seen working, the 503 simulated
+in the page; `docs/status.md`, "Open offers and next steps"). The dashboard server is not started
+unprompted.
 
 **Session 11 ran on 2026-09-29 (item 50): 25 PARI picks, 5 verified, 0 new terms, no code changed.** Two
 things from it bind later work. **Four picks were program-selection misreads**, each now a dead end
@@ -205,7 +215,7 @@ Windows-only in practice: the sandbox is a Job Object + AppContainer (`oeisbot/s
 ## Commands
 
 ```
-.venv\Scripts\python -m pytest                 # 567 tests, ~100 s; sandbox tests skip if `oeisbot setup` has not run
+.venv\Scripts\python -m pytest                 # 587 tests, ~100 s; sandbox tests skip if `oeisbot setup` has not run
 .venv\Scripts\python -m pytest tests/test_sandbox.py
 .venv\Scripts\oeisbot setup                    # sandbox runtimes + AppContainer grants + database (idempotent)
 .venv\Scripts\oeisbot sync --no-pull           # rebuild the candidate table from the local oeisdata clone
@@ -257,6 +267,8 @@ The full list with rationale is in `docs/development.md#invariants`.
 
 - Editing files that contain backslashes (GP `\\` comments, Windows paths, regex) through shell heredocs
   or `sed` corrupts escapes. Use a file-editing tool and `python -m py_compile` afterwards.
+- Git Bash `sed -i` strips the CR from CRLF files (most docs and many `oeisbot/*.py` are CRLF in the working
+  tree, a few files LF): use the Edit tool, or a Python script in bytes mode, and check with `git ls-files --eol`.
 - AppContainer grants are path-based: after moving the project, run `oeisbot setup`.
 - Packages in `tools/python` must be copies, not hard links (`--link-mode copy`), or the sandbox cannot
   read them.

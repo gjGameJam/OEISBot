@@ -37,9 +37,11 @@ def cmd_setup(args):
 
 
 def cmd_sync(args):
+    from .attempt import snapshot_after_sync
     from .ingest import oeisdata
     with db.connect() as conn:
         oeisdata.sync(conn, pull=not args.no_pull)
+        snapshot_after_sync(conn)
 
 
 def form_bucket(cands, rejected) -> str:
@@ -289,7 +291,7 @@ def main(argv: list[str] | None = None) -> int:
             s.add_argument("--seed", type=int)
         s.set_defaults(fn=fn)
 
-    s = sub.add_parser("snapshot", help="record the pick pool for the dashboard's Pick map (a session does this too)")
+    s = sub.add_parser("snapshot", help="record the pick pool for the dashboard's Pick map (a session and a sync do this too)")
     s.add_argument("--all", action="store_true", help="also the `run --model` pool")
     s.set_defaults(fn=cmd_snapshot)
 

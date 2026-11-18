@@ -1,9 +1,9 @@
-import { memo, useEffect, useMemo, useState, type MouseEvent } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { Tooltip, type TipRow, type TipState } from "./charts";
 import { DataTable, OeisLink, Tile, fmtInt, fmtTime, useApi, useWidth, type Column } from "./lib";
 import {
-  BIN_LABELS, CHANGE_BINS, LUMP, MAX_ALPHA, NEUTRAL_BIN, changeBin, fmtChange, labelFits, layoutGroups, parseAlpha,
-  pickmapPath, type Leaf, type PlacedGroup, type Rect,
+  BIN_LABELS, CHANGE_BINS, LUMP, MAX_ALPHA, NEUTRAL_BIN, changeBin, failureReason, fmtChange, focusOrder, labelFits, layoutGroups,
+  neighbour, parseAlpha, pickmapPath, undrawn, type Dir, type Leaf, type PlacedGroup, type PlacedLeaf, type Rect,
 } from "./treemap";
 
 // ============================================================================ pick map
@@ -74,10 +74,59 @@ function clip(text: string, width: number): string {
   return text.length <= max ? text : max > 1 ? text.slice(0, max - 1) + "…" : "";
 }
 
-interface TilesProps { layout: PlacedGroup[]; byId: Map<string, PmRow>; labels: Map<string, string>; compared: boolean; headers: boolean }
+/** What a tile says about itself in words, for the tooltip's first row and for a screen reader. */
+function describeLook(look: Look, compared: boolean, baselineId: number | null): string {
+  const parts = [`${fmtShare(look.p)} chance of being picked first`];
+  if (compared) {
+    if (look.bin === NEW) parts.push("new in the pool");
+    else if (look.ratio != null) parts.push(`${fmtChange(look.ratio)} since snapshot #${baselineId}`);
+  }
+  return parts.join(", ");
+}
+
+interface LeafTileProps {
+  l: PlacedLeaf; byId: Map<string, PmRow>; names: Map<string, string>; compared: boolean; headers: boolean;
+  baselineId: number | null;
+  /** The tab index of a tile a keyboard can land on (0: the one Tab reaches, -1: reached by the arrow keys), null for one it cannot. */
+  tab: 0 | -1 | null;
+}
+
+/** One tile. Memoised on plain values, so moving the keyboard focus redraws the two tiles that change and not the other two thousand. */
+const LeafTile = memo(function LeafTile({ l, byId, names, compared, headers, baselineId, tab }: LeafTileProps) {
+  const look = lookOf(l.id, l.members, byId, compared);
+  const r = l.rect;
+  const inset = Math.min(1, Math.min(r.w, r.h) / 4);
+  const hatched = look.bin === NEW;
+  const text = look.bin === NEW ? "new" : compared ? fmtChange(look.ratio ?? 1) : fmtShare(look.p);
+  const first = l.members ? `${fmtInt(l.members.length)} small` : l.id;
+  const lines = labelFits(r, Math.max(first.length, text.length), 2) ? 2 : labelFits(r, first.length) ? 1 : 0;
+  const about = tab == null ? undefined : l.members
+    ? `${fmtInt(l.members.length)} small tiles in band ${names.get(l.id.slice(LUMP.length)) ?? ""}, ${describeLook(look, compared, baselineId)}; opens the band`
+    : `${l.id}, ${byId.get(l.id)!.name}, ${describeLook(look, compared, baselineId)}`;
+  return (
+    <g>
+      <rect className={l.members ? (headers ? "pm-tile lump" : "pm-tile lump flat") : "pm-tile"} data-id={l.id} x={r.x + inset} y={r.y + inset} width={Math.max(r.w - 2 * inset, 0)}
+            height={Math.max(r.h - 2 * inset, 0)} rx={1.5}
+            fill={hatched ? "url(#pm-new)" : `var(--chg-${look.bin})`}
+            tabIndex={tab ?? undefined} role={tab == null ? undefined : l.members ? "button" : "link"} aria-label={about} />
+      {lines > 0 && (
+        <text className={`pm-label ${hatched ? "hatched" : ""}`} x={r.x + 5} y={r.y + 14}
+              style={hatched ? undefined : { fill: `var(--chg-ink-${look.bin})` }}>
+          <tspan className={l.members ? undefined : "mono"} style={{ fontSize: 11 }}>{first}</tspan>
+          {lines === 2 && <tspan x={r.x + 5} dy={14} fillOpacity={0.85}>{text}</tspan>}
+        </text>
+      )}
+    </g>
+  );
+});
+
+interface TilesProps {
+  layout: PlacedGroup[]; byId: Map<string, PmRow>; labels: Map<string, string>; names: Map<string, string>; compared: boolean;
+  headers: boolean; baselineId: number | null; focusIds: Set<string>; stopId: string | null;
+}
 
 /** The drawing itself. Memoised: a mouse move updates only the tooltip, never these thousands of rects. */
-const Tiles = memo(function Tiles({ layout, byId, labels, compared, headers }: TilesProps) {
+const Tiles = memo(function Tiles({ layout, byId, labels, names, compared, headers, baselineId, focusIds, stopId }: TilesProps) {
   return (
     <g>
       {layout.map((g) => (
@@ -86,47 +135,43 @@ const Tiles = memo(function Tiles({ layout, byId, labels, compared, headers }: T
           {headers && g.header && (
             <text className="pm-head" data-band={g.key} x={g.rect.x + 6} y={g.rect.y + 13}>{clip(labels.get(g.key) ?? g.key, g.rect.w - 4)}</text>
           )}
-          {g.leaves.map((l) => {
-            const look = lookOf(l.id, l.members, byId, compared);
-            const r = l.rect;
-            const inset = Math.min(1, Math.min(r.w, r.h) / 4);
-            const hatched = look.bin === NEW;
-            const text = look.bin === NEW ? "new" : compared ? fmtChange(look.ratio ?? 1) : fmtShare(look.p);
-            const first = l.members ? `${fmtInt(l.members.length)} small` : l.id;
-            const lines = labelFits(r, Math.max(first.length, text.length), 2) ? 2 : labelFits(r, first.length) ? 1 : 0;
-            return (
-              <g key={l.id}>
-                <rect className={l.members ? (headers ? "pm-tile lump" : "pm-tile lump flat") : "pm-tile"} data-id={l.id} x={r.x + inset} y={r.y + inset} width={Math.max(r.w - 2 * inset, 0)}
-                      height={Math.max(r.h - 2 * inset, 0)} rx={1.5}
-                      fill={hatched ? "url(#pm-new)" : `var(--chg-${look.bin})`} />
-                {lines > 0 && (
-                  <text className={`pm-label ${hatched ? "hatched" : ""}`} x={r.x + 5} y={r.y + 14}
-                        style={hatched ? undefined : { fill: `var(--chg-ink-${look.bin})` }}>
-                    <tspan className={l.members ? undefined : "mono"} style={{ fontSize: 11 }}>{first}</tspan>
-                    {lines === 2 && <tspan x={r.x + 5} dy={14} fillOpacity={0.85}>{text}</tspan>}
-                  </text>
-                )}
-              </g>
-            );
-          })}
+          {g.leaves.map((l) => (
+            <LeafTile key={l.id} l={l} byId={byId} names={names} compared={compared} headers={headers} baselineId={baselineId}
+                      tab={focusIds.has(l.id) ? (l.id === stopId ? 0 : -1) : null} />
+          ))}
         </g>
       ))}
     </g>
   );
 });
 
+/** What shows the tooltip: the mouse over a tile, or the keyboard focus on one. Whichever moved last owns it. */
+interface Shown { tip: TipState; by: "mouse" | "focus" }
+
+const ARROWS: Record<string, Dir> = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" };
+
 function Canvas({ layout, rows, byId, bands, compared, headers, width, height, baselineId, onBand }: {
   layout: PlacedGroup[]; rows: PmRow[]; byId: Map<string, PmRow>; bands: PmBand[]; compared: boolean; headers: boolean;
   width: number; height: number; baselineId: number | null; onBand: (band: number) => void;
 }) {
-  const [tip, setTip] = useState<TipState | null>(null);
+  const [shown, setShown] = useState<Shown | null>(null);
+  const [stop, setStop] = useState<string | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const refocus = useRef(false);
+  const dismissed = useRef<string | null>(null);   // the tile whose tooltip Escape closed, until the focus moves to a tile again
   const members = useMemo(() => {
     const m = new Map<string, string[]>();
     for (const g of layout) for (const l of g.leaves) if (l.members) m.set(l.id, l.members);
     return m;
   }, [layout]);
   const labels = useMemo(() => new Map(bands.map((b) => [bandKey(b.band), `${b.label} · ${fmtInt(b.n)} · ${fmtShare(b.share)}`])), [bands]);
+  const names = useMemo(() => new Map(bands.map((b) => [bandKey(b.band), b.label])), [bands]);
   const bandLabel = (band: number) => bands.find((b) => b.band === band)?.label ?? String(band);
+
+  // The tiles a keyboard can land on. One of them is the tab stop: the one last focused, else the first.
+  const order = useMemo(() => focusOrder(layout, headers), [layout, headers]);
+  const focusIds = useMemo(() => new Set(order.map((i) => i.id)), [order]);
+  const stopId = stop != null && focusIds.has(stop) ? stop : order[0]?.id ?? null;
 
   const tipFor = (id: string, x: number, y: number): TipState => {
     const lump = members.get(id) ?? null;
@@ -142,7 +187,7 @@ function Canvas({ layout, rows, byId, bands, compared, headers, width, height, b
     if (lump) {
       const band = bandOfKey(id.slice(LUMP.length));
       rowsOut.push({ label: "Difficulty band", value: bandLabel(band) });
-      if (headers) rowsOut.push({ label: "Click", value: "to open this band" });
+      if (headers) rowsOut.push({ label: "Click or Enter", value: "to open this band" });
       return { x, y, title: `${fmtInt(lump.length)} small tiles`, rows: rowsOut };
     }
     const r = byId.get(id)!;
@@ -151,9 +196,41 @@ function Canvas({ layout, rows, byId, bands, compared, headers, width, height, b
     return { x, y, title: `${r.a} ${r.name}`, rows: rowsOut };
   };
 
+  const activate = (id: string) => {
+    if (id.startsWith(LUMP)) { if (headers) onBand(bandOfKey(id.slice(LUMP.length))); }
+    else window.open(`https://oeis.org/${id}`, "_blank", "noopener,noreferrer");
+  };
+  const focusTile = (id: string) => {
+    svgRef.current?.querySelector<SVGElement>(`[data-id="${CSS.escape(id)}"]`)?.focus();
+  };
+  // The tooltip for the tile that has the keyboard focus, placed from where the tile is now. False when no tile has it
+  // or the focus came from a mouse click (which gets no tooltip).
+  const showFor = (el: Element): boolean => {
+    const id = el.getAttribute("data-id");
+    if (id == null || !focusIds.has(id) || dismissed.current === id || !el.matches(":focus-visible")) return false;
+    const box = el.getBoundingClientRect();
+    setShown({ tip: tipFor(id, box.left + box.width / 2, box.top + box.height / 2), by: "focus" });
+    return true;
+  };
+  // A tooltip belongs to a tile of the layout it was made from; a new layout (another band, a resize, a refresh) ends it,
+  // except that a tile the keyboard is still on gets its tooltip again (it has not moved the focus, so nothing else would).
+  useEffect(() => {
+    const el = document.activeElement;
+    if (!(el && svgRef.current?.contains(el) && showFor(el))) setShown(null);
+  }, [layout]);
+  // Opening a band from the keyboard removes the tile that had the focus: put it on the new map's first tile.
+  useEffect(() => {
+    if (!refocus.current) return;
+    refocus.current = false;
+    if (order.length) focusTile(order[0].id);
+  }, [order]);
+
+  const idOf = (e: { target: EventTarget }) => (e.target as Element).getAttribute?.("data-id") ?? null;
+
   const onMove = (e: MouseEvent<SVGSVGElement>) => {
     const id = (e.target as Element).closest?.("[data-id]")?.getAttribute("data-id");
-    setTip(id ? tipFor(id, e.clientX, e.clientY) : null);
+    const tip = id ? tipFor(id, e.clientX, e.clientY) : null;
+    setShown((s) => (tip ? { tip, by: "mouse" } : s?.by === "mouse" ? null : s));   // over a header or a frame: only a mouse tooltip ends
   };
   const onClick = (e: MouseEvent<SVGSVGElement>) => {
     const target = (e.target as Element).closest?.("[data-id],[data-band]");
@@ -161,24 +238,67 @@ function Canvas({ layout, rows, byId, bands, compared, headers, width, height, b
     const id = target.getAttribute("data-id");
     const key = target.getAttribute("data-band");
     if (key) onBand(bandOfKey(key));
-    else if (id?.startsWith(LUMP)) { if (headers) onBand(bandOfKey(id.slice(LUMP.length))); }
-    else if (id) window.open(`https://oeis.org/${id}`, "_blank", "noopener,noreferrer");
+    else if (id) activate(id);
+  };
+  const onFocus = (e: FocusEvent<SVGSVGElement>) => {
+    const id = idOf(e);
+    if (id == null || !focusIds.has(id)) return;
+    setStop(id);
+    dismissed.current = null;
+    showFor(e.target as Element);
+  };
+  const onBlur = () => setShown((s) => (s?.by === "focus" ? null : s));
+  const onKeyDown = (e: KeyboardEvent<SVGSVGElement>) => {
+    const id = idOf(e);
+    if (id == null || !focusIds.has(id) || e.altKey || e.ctrlKey || e.metaKey) return;
+    if (e.key === "Escape") { dismissed.current = id; setShown(null); return; }
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();                                               // Space must not scroll the page
+      if (e.repeat) return;                                             // a held key must not open a tab per repeat
+      if (id.startsWith(LUMP)) refocus.current = true;
+      activate(id);
+      return;
+    }
+    const dir = ARROWS[e.key];
+    const next = dir ? neighbour(order, id, dir) : e.key === "Home" ? order[0].id : e.key === "End" ? order[order.length - 1].id : undefined;
+    if (next === undefined) return;
+    e.preventDefault();
+    if (next !== null && next !== id) focusTile(next);
   };
 
   return (
     <>
-      <svg width={width} height={height} role="img" onMouseMove={onMove} onMouseLeave={() => setTip(null)} onClick={onClick}
-           aria-label={`Treemap of ${fmtInt(rows.length)} sequences; area is pick chance, colour is the change since the earlier snapshot. The table view below has the same data.`}>
+      <svg ref={svgRef} width={width} height={height} role="group" onMouseMove={onMove} onClick={onClick}
+           onMouseLeave={() => setShown((s) => (s?.by === "mouse" ? null : s))} onFocus={onFocus} onBlur={onBlur} onKeyDown={onKeyDown}
+           aria-label={`Treemap of ${fmtInt(rows.length)} sequences; area is pick chance, colour is the change since the earlier snapshot. Arrow keys move between tiles, Enter opens one, Escape closes the tooltip. The table view below has the same data.`}>
         <defs>
           <pattern id="pm-new" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
             <rect width="7" height="7" style={{ fill: "var(--chg-3)" }} />
             <line x1="0" y1="0" x2="0" y2="7" style={{ stroke: "var(--text-muted)", strokeWidth: 2 }} />
           </pattern>
         </defs>
-        <Tiles layout={layout} byId={byId} labels={labels} compared={compared} headers={headers} />
+        <Tiles layout={layout} byId={byId} labels={labels} names={names} compared={compared} headers={headers}
+               baselineId={baselineId} focusIds={focusIds} stopId={stopId} />
       </svg>
-      <Tooltip tip={tip} />
+      <Tooltip tip={shown?.tip ?? null} />
     </>
+  );
+}
+
+/** The bands "All bands" has no room to draw, each a button that opens the band. */
+function Undrawn({ keys, bands, onBand }: { keys: string[]; bands: PmBand[]; onBand: (band: number) => void }) {
+  const hidden = keys.map((k) => bands.find((b) => b.band === bandOfKey(k))).filter((b): b is PmBand => b != null);
+  if (hidden.length === 0) return null;
+  return (
+    <div className="pm-undrawn" role="group" aria-label="Bands too small to draw">
+      <span className="secondary">Too small to draw here:</span>
+      {hidden.map((b) => (
+        <button key={b.band} className="chip" onClick={() => onBand(b.band)}
+                title={`${fmtInt(b.n)} sequences holding ${fmtShare(b.share)} of the picks; open this band to see them`}>
+          {b.label}{" "}<span className="muted">{fmtInt(b.n)} · {fmtShare(b.share)}</span>
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -241,7 +361,17 @@ export function PickMapView() {
   const pickPool = (p: Pool) => { setPool(p); setBand(null); setRebuilds(0); };
   const { data, error, loading } = useApi<PmData>(pickmapPath(pool, alpha, rebuilds), 3600000, false, pickmapPath(pool, alpha));
   const shown = data && data.pool === pool ? data : null;
-  const stale = loading || (shown != null && shown.alpha !== alpha);
+  // Dimmed while a request is out, or while the map is for another alpha than the box says; not once a request failed,
+  // or the failure message would sit over a map that stays dim for good.
+  const stale = loading || (shown != null && shown.alpha !== alpha && !error);
+  // The buttons that rebuild are aria-disabled, not disabled, while a build runs: a focused button that becomes disabled
+  // loses the focus. Trying again also moves the focus to "Rebuild now", because the failure block it was in goes away
+  // when the new request starts.
+  const rebuildRef = useRef<HTMLButtonElement>(null);
+  const rebuild = () => { if (!loading) setRebuilds((n) => n + 1); };
+  const tryAgain = () => { if (loading) return; rebuild(); rebuildRef.current?.focus(); };
+  const reason = error == null ? null : failureReason(error);
+  const poolName = pool === "model" ? "model" : "PARI";
 
   const derived = useMemo(() => {
     if (!shown) return null;
@@ -258,6 +388,13 @@ export function PickMapView() {
   }, [shown]);
 
   const activeBand = shown && band != null && shown.bands.some((b) => b.band === band) ? band : null;
+  // A band opened from the "too small to draw" chips takes the keyboard focus to its tab: the chip it came from is gone.
+  const focusTab = useRef<number | null>(null);
+  useEffect(() => {
+    if (focusTab.current == null || activeBand !== focusTab.current) return;
+    focusTab.current = null;
+    document.getElementById(`pm-tab-${activeBand}`)?.focus();
+  }, [activeBand]);
   const rows = shown && derived ? (activeBand == null ? shown.rows : derived.byBand.get(activeBand) ?? []) : [];
   const height = Math.round(Math.min(680, Math.max(380, width * 0.55)));
 
@@ -271,6 +408,7 @@ export function PickMapView() {
     const box: Rect = { x: 0, y: 0, w: Math.max(width, 200), h: height };
     return layoutGroups(groups, box, { headerH: activeBand == null ? 18 : 0, minLeafArea: Math.max(36, (box.w * box.h) / 9000), pad: 2 });
   }, [shown, derived, activeBand, width, height]);
+  const hidden = useMemo(() => (activeBand == null ? undrawn(layout) : []), [layout, activeBand]);
 
   const notes: string[] = [];
   if (shown) {
@@ -294,7 +432,7 @@ export function PickMapView() {
           <input type="number" min={0} max={MAX_ALPHA} step={0.25} value={alphaText} onChange={(e) => setAlphaText(e.target.value)}
                  aria-invalid={typed == null} aria-describedby={typed == null ? "pm-alpha-error" : undefined} />
         </label>
-        <button className="chip" disabled={loading} onClick={() => setRebuilds((n) => n + 1)}>{loading ? "Building…" : "Rebuild now"}</button>
+        <button ref={rebuildRef} className="chip" aria-disabled={loading} onClick={rebuild}>{loading ? "Building…" : "Rebuild now"}</button>
         <span className="muted">{shown ? `pool built ${ago(shown.age_s)}${shown.note ? ` · ${shown.note}` : ""}` : ""}</span>
       </div>
       {typed == null && (
@@ -302,8 +440,16 @@ export function PickMapView() {
           α must be a number from 0 to {MAX_ALPHA}; the map still shows α {alpha}.
         </p>
       )}
-      {error && <p className="error">Could not load: {error}</p>}
-      {!shown && loading && !error && <p className="muted">Building the {pool === "model" ? "model" : "PARI"} pool{pool === "model" ? " (about 27,000 sequences, this can take half a minute)" : ""}…</p>}
+      {error && (
+        <div className="error pm-failure" role="alert">
+          <p>
+            {reason != null ? `The ${poolName} pool could not be built: ${reason}` : `Could not load: ${error}`}
+            {shown ? (shown.alpha !== alpha ? `. The map below still shows α ${shown.alpha}.` : ". The map below is the last one that loaded.") : null}
+          </p>
+          <button className="chip" aria-disabled={loading} onClick={tryAgain}>{loading ? "Building…" : "Try again"}</button>
+        </div>
+      )}
+      {!shown && loading && !error && <p className="muted">Building the {poolName} pool{pool === "model" ? " (about 27,000 sequences, this can take half a minute)" : ""}…</p>}
       {shown && derived && (
         <>
           <div className="kpis">
@@ -315,14 +461,15 @@ export function PickMapView() {
                   sub={base ? `in: ${fmtShare(shown.entered.share)} of the picks now; out: ${fmtShare(shown.gone.share)} of the picks then` : undefined} />
           </div>
           {notes.length > 0 && <ul className="notes">{notes.map((n) => <li key={n}>{n}</li>)}</ul>}
-          <div className={`card ${stale ? "stale" : ""}`} aria-busy={stale}>
+          <div className={`card ${stale ? "stale" : ""}`} aria-busy={loading}>
             <h2>Pick map</h2>
             <p className="caption">
               Each tile is one sequence and its area is its chance of being the first pick of the next session, so a large tile is
               a likely one. Colour is how that chance has moved since the earlier snapshot, measured against the sequences that were in both
               pools: when a few sequences leave or fail, the rest do not all drift together. The &ldquo;before&rdquo; chance in a tooltip or
               the table is scaled the same way (the sequences in both pools hold the same total of it as they do now), so before and now
-              divide into the change shown. Click a tile to open the entry on oeis.org.
+              divide into the change shown. Click a tile to open the entry on oeis.org. From the keyboard, Tab enters the map, the arrow
+              keys move between tiles, and Enter opens the entry (or, on a lump of small tiles, its band).
             </p>
             {shown.n === 0 ? (
               <p className="muted">The {pool === "model" ? "model" : "PARI"} pool is empty: no sequence is a candidate for it right now.</p>
@@ -331,7 +478,7 @@ export function PickMapView() {
                 <div className="subtabs" role="tablist" aria-label="Difficulty band">
                   <button className="chip" role="tab" aria-selected={activeBand == null} onClick={() => setBand(null)}>All bands</button>
                   {shown.bands.map((b) => (
-                    <button key={b.band} className="chip" role="tab" aria-selected={activeBand === b.band} onClick={() => setBand(b.band)}
+                    <button key={b.band} id={`pm-tab-${b.band}`} className="chip" role="tab" aria-selected={activeBand === b.band} onClick={() => setBand(b.band)}
                             title={`${fmtInt(b.n)} sequences holding ${fmtShare(b.share)} of the picks`}>
                       {b.label}{" "}<span className="muted">{fmtInt(b.n)} · {fmtShare(b.share)}</span>
                     </button>
@@ -342,6 +489,7 @@ export function PickMapView() {
                           headers={activeBand == null} width={Math.max(width, 200)} height={height}
                           baselineId={base?.id ?? null} onBand={setBand} />
                 </div>
+                <Undrawn keys={hidden} bands={shown.bands} onBand={(b) => { focusTab.current = b; setBand(b); }} />
                 <Legend compared={derived.compared} baselineId={base?.id ?? null} />
                 <TableTwin key={activeBand ?? "all"} rows={rows} compared={derived.compared} bands={shown.bands} />
               </>

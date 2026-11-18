@@ -25,7 +25,7 @@ uv venv .venv --python 3.11
 uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
 .venv\Scripts\oeisbot setup
 .venv\Scripts\oeisbot sync
-.venv\Scripts\python -m pytest            # 567 tests, about 100 s; confirms the sandbox works on this machine
+.venv\Scripts\python -m pytest            # 587 tests, about 100 s; confirms the sandbox works on this machine
 ```
 
 Optional dashboard: see [dashboard](dashboard.md#running-it).
@@ -42,13 +42,13 @@ ollama ps                                # PROCESSOR should read 100% GPU
 ## Everyday use
 
 ```
-.venv\Scripts\oeisbot sync                         # refresh the oeisdata mirror (about 70 s)
+.venv\Scripts\oeisbot sync                         # refresh the oeisdata mirror (about 70 s), then record the PARI pool (about 6 s more)
 .venv\Scripts\oeisbot run -n 10                    # pick and attempt 10 PARI-bearing sequences
 .venv\Scripts\oeisbot run -n 10 --model            # any candidate; model fallback after PARI
 .venv\Scripts\oeisbot run -n 10 --verify-s 600     # a slower second pass: revisits programs that timed out at 60 s
 .venv\Scripts\oeisbot attempts --limit 30          # what happened
 .venv\Scripts\oeisbot review list                  # wins waiting for review
-.venv\Scripts\oeisbot snapshot                     # record the pick pool for the dashboard's Pick map (a session does too)
+.venv\Scripts\oeisbot snapshot                     # record the pick pool for the dashboard's Pick map (a session and a sync do too)
 ```
 
 A session runs sequentially in the foreground and prints one line per step:
@@ -83,7 +83,7 @@ attempt row, but every term it produced is already in `data/runs/`.
 | Command | Purpose | Options |
 |---|---|---|
 | `setup` | install sandbox runtimes, grant access, create the database | |
-| `sync` | update oeisdata and rebuild `sequences` | `--no-pull` (use the current checkout) |
+| `sync` | update oeisdata, rebuild `sequences`, then record the PARI pool as a Pick-map snapshot | `--no-pull` (use the current checkout) |
 | `stats` | languages present among candidates | `--forms` (classify PARI program shapes) |
 | `queue` | the pool `run` would pick from (default budgets), with difficulty and pick probability, and how many were left out as unrunnable | `--alpha A` (1), `--all` (the `run --model` pool: include non-PARI), `--limit N` (40), `--sort difficulty\|weight\|a` |
 | `pick` | a weighted random draw from that pool, without attempting | `--alpha`, `--all`, `-k N` (10), `--seed S` |
@@ -142,6 +142,21 @@ Skip reasons are listed in [pipeline](pipeline.md#3-per-sequence-gates-attemptat
   sequence that failed turns red, one that was retired or whose program was refused drops out and is listed
   under "Left the pool" with the reason. Every `oeisbot run` that draws from a pool stores a snapshot of it
   first, so the next visit has something to compare with; `oeisbot snapshot` stores one without running.
+  **`oeisbot sync` stores one too, after it has refreshed the data** (history item 55): the PARI pool only,
+  under the budgets of the newest PARI snapshot, and a new snapshot only if the pool differs from the newest
+  one's (if it does not, the newest is re-stamped with the rules fingerprint of the code on disk, as for any
+  snapshot call). `oeisbot snapshot` takes no budget flags and stamps the defaults, so run after a session
+  with other budgets it puts the defaults back for the syncs and the dashboard that follow. It
+  costs about 6 s (5.4 to 5.8 s measured on the real pool) and prints one line, `pick snapshot #N stored (M
+  candidates)` or `pick snapshot unchanged (M candidates)`. It cannot fail the sync: if the pool cannot be
+  built or stored the line reads `pick snapshot not recorded: ...` and the sync's own work stays committed,
+  and a pool for which the per-sequence check failed (a missing or unreadable b-file, say) is not stored at
+  all, since the sequences it lacks would show up as arrivals in the next snapshot (the line then says `the
+  check failed for N (first: ...)`). The snapshot records the selection rules of the code **on disk**, which
+  may differ from the code a running dashboard loaded. The model pool is not recorded by a sync (it takes
+  about half a minute to build): `oeisbot snapshot --all` or a `run --model` does that. Up to 30 PARI
+  snapshots are kept, and a pool that flips back and forth (A, B, A) is stored each time, because only the
+  newest snapshot is compared for equality.
 
 ### A win whose re-check failed (`recheck_pending`)
 
@@ -336,6 +351,13 @@ their own certificate bundles then fail, while tools using the Windows certifica
 
 - **"dashboard not built"**: run `npm install` and `npm run build` in `dashboard/`.
 - **503 from the API**: the database does not exist yet; run `oeisbot setup` and `oeisbot sync`.
+- **The Pick map says "The PARI pool could not be built: ..."** The reason after the colon is the
+  exception's type and message. The full traceback is in the terminal that runs `oeisbot dashboard`
+  (logger `oeisbot.dashboard`). Nothing is cached for a failure, so **Try again** asks for a fresh build.
+  The last map that loaded stays on screen, labelled as such. This path has been exercised by tests that
+  make the pool build raise, not by a failure met in use, so the reason on screen and the traceback are the
+  only evidence of what went wrong; a failure that repeats is worth running `oeisbot queue` against, which
+  builds the same pool from the command line.
 - **The Pick map is slow to open.** It draws from the pool a session would, which is built when asked for
   (6 to 12 s for either pool, 25 s for a first build on a cold disk) and kept until the database file changes. Anything
   that commits invalidates it, so **while a session is running every visit rebuilds the pool**; the tab

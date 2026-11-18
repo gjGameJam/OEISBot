@@ -5,6 +5,7 @@ mode=ro connection, and nothing here writes. Review status changes go through th
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import statistics
@@ -16,11 +17,12 @@ from pathlib import Path
 from typing import NamedTuple
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from .. import config, db, pickmap, select
 
+_log = logging.getLogger("oeisbot.dashboard")
 STATIC = Path(__file__).parent / "static"
 TEXT_SUFFIXES = {".md", ".txt", ".csv", ".json", ".gp", ".py"}
 
@@ -189,14 +191,6 @@ def live_pool(pool: str, budgets, refresh: bool = False) -> _Live:
         return hit
 
 
-def _budgets_of(header) -> config.Budgets:
-    """The budgets a snapshot was built under, or the defaults when it has none or they do not parse."""
-    try:
-        return config.Budgets(**json.loads(header["budgets"]))
-    except (TypeError, ValueError):
-        return config.DEFAULT_BUDGETS
-
-
 _rules: str | None = None
 
 
@@ -213,13 +207,14 @@ def rules_loaded() -> str:
 
 def warm_live_pool(pool: str = "pari") -> _Live:
     """Build `pool`'s live pool under the budgets the Pick map will ask for, so that the first visit finds it."""
+    from ..attempt import budgets_of
     rules_loaded()
     conn = ro()
     try:
         headers = db.pick_snapshot_headers(conn, pool) if db.has_pick_snapshots(conn) else []
     finally:
         conn.close()
-    return live_pool(pool, _budgets_of(headers[0]) if headers else config.DEFAULT_BUDGETS)
+    return live_pool(pool, budgets_of(headers[0] if headers else None))
 
 
 def _chunks(items: list, n: int = 500):
@@ -259,8 +254,10 @@ def pickmap_data(pool: str = Query("pari", pattern="^(pari|model)$"),
     that differs from the live pool (pickmap.baseline). The live pool is built under the budgets of the
     pool's newest snapshot (the defaults when there is none), so what differs from the baseline is what
     happened and not a change of budget. `refresh` rebuilds it now. Read-only, and costs a pool build
-    (several seconds) when the database has changed since the last one."""
-    from ..attempt import budgets_json
+    (several seconds) when the database has changed since the last one. A pool that cannot be built is a 503
+    with a JSON body naming the reason (`pool_build_failed`), the traceback going to the log; nothing is cached
+    for it, so the next request tries again."""
+    from ..attempt import budgets_json, budgets_of
     conn = ro()
     try:
         have = db.has_pick_snapshots(conn)
@@ -271,8 +268,15 @@ def pickmap_data(pool: str = Query("pari", pattern="^(pari|model)$"),
     # only the newest session can be running: an unfinished older one was killed before it could finish
     cutoff = (datetime.now(timezone.utc) - RUNNING_SESSION_MAX_AGE).isoformat(timespec="seconds")
     running = newest if newest and newest["finished_at"] is None and newest["started_at"] >= cutoff else None
-    budgets = _budgets_of(headers[0]) if headers else config.DEFAULT_BUDGETS
-    built = live_pool(pool, budgets, refresh)
+    budgets = budgets_of(headers[0] if headers else None)
+    try:
+        built = live_pool(pool, budgets, refresh)
+    except HTTPException:       # no database: FastAPI's own 503, whose body names the file
+        raise
+    except Exception as e:      # noqa: BLE001 -- anything the pool build raised; the rest of this function is not guarded
+        _log.exception("the %s pool could not be built for the Pick map", pool)
+        reason = " ".join(f"{type(e).__name__}: {e}".split())[:200]
+        return JSONResponse({"error": "pool_build_failed", "reason": reason}, status_code=503)
     live = {a: d for a, _, d in built.rows}
     names = {a: n for a, n, _ in built.rows}
     base_header = pickmap.baseline(headers, db.pick_digest(live.items()))

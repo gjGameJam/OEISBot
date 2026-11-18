@@ -832,9 +832,69 @@ these is a way it can be read too strongly.
   the map shows the attempts the session has recorded so far. The page says when a session is unfinished;
   a session that crashed shows as running for 24 hours (`app.RUNNING_SESSION_MAX_AGE`).
 - **The snapshot is a record for the map and nothing else.** A failure to write one is logged
-  (`pick snapshot not recorded: ...`) and the session carries on; nothing reads the tables except the
-  dashboard and `oeisbot snapshot`. Retention is 30 PARI snapshots and 10 model ones, so the history
-  that can be compared with is bounded and the oldest are gone.
+  (`pick snapshot not recorded: ...`) and the session (or the sync) carries on; nothing reads the tables
+  except the dashboard and `oeisbot snapshot`. Retention is 30 PARI snapshots and 10 model ones, so the
+  history that can be compared with is bounded and the oldest are gone.
+- **`oeisbot sync` also stores a snapshot, and that has four edges** (history item 55; the code is
+  `attempt.snapshot_after_sync`). (1) **PARI only**: the model pool takes about half a minute to build, so a
+  sync leaves it to `oeisbot snapshot --all` or a `run --model`, and a model map's baseline can be older than
+  the PARI one. (2) **Its budgets are the newest PARI snapshot's** (`attempt.budgets_of`), not the defaults,
+  so a sync after a session run with other `--verify-s` / `--extend-s` records under those; with no PARI
+  snapshot at all it uses the defaults. That makes the budgets *follow whoever wrote last*: `oeisbot
+  snapshot` takes no budget flags and stamps `config.DEFAULT_BUDGETS`, so running it after such a session
+  puts the defaults back for the syncs and the dashboard that come after, and a short test session
+  (`--verify-s 5`) pins them to 5 s until the next writer says otherwise. Nothing breaks, because the
+  dashboard and the sync read the same stamp and so build the same pool, but it is that session's idea of
+  who is out of reach, not necessarily the one the next default session draws from. (3) **`session_id` is
+  NULL**, as it is for `oeisbot snapshot`, so nothing ties a sync's snapshot to a session, and it stays
+  NULL if a session later draws the very same pool (that session stores nothing, so the "Compared with"
+  tile then omits "session N"). (4) **A pool is compared with the newest snapshot only**
+  (`db.record_pick_snapshot` dedupes on the newest digest), so a pool that goes A, B, A is stored each time:
+  retention keeps 30, and a database that is synced often between two states of the pool fills them with
+  alternating copies. That is the same behaviour a session's snapshot has always had; the sync makes it
+  easier to reach. **The snapshot is not stored at all if the per-sequence check failed for any candidate**
+  (`keep.errors`; a missing or unreadable b-file, say), because the sequences it lacks would then show as
+  arrivals in the next comparison; the sync says so and moves on, and the next successful sync or session
+  stores it. And **its rules fingerprint is the on-disk code's**, built by the sync process, while a dashboard
+  server that has been running since before an edit to those files compares with the code it loaded (see "Left
+  the pool" above). A sync that finds the pool unchanged stores nothing but, like any snapshot call, re-stamps
+  the newest snapshot with its fingerprint (`db.record_pick_snapshot`), so syncing after an edit to the rule
+  files makes a long-running server say "the rules changed" until it is restarted.
+- **A pool that cannot be built is a retry, not a stack trace** (history item 55). `/api/pickmap` answers a
+  failed `live_pool` with a 503 and `{"error": "pool_build_failed", "reason": ...}` (the reason is the
+  exception's type and message, whitespace collapsed and cut to 200 characters), and the tab shows the
+  reason with **Try again**. Two limits. The guard covers the call to `live_pool` only: a failure in the
+  rest of the handler (the read of the snapshot headers before it, the comparison after it) is still an
+  unguarded 500. The tab then reads "Could not load: Error: 500: ..." with the same **Try again** button,
+  because only a 503 carrying `pool_build_failed` is recognised as a pool failure
+  (`treemap.failureReason`). And nothing is cached for a failure (`live_pool` assigns its cache entry after
+  the build returns), so a build that fails for a lasting reason fails again at every retry, taking as long
+  as the pool takes to get as far as failing.
+- **Keyboard use is checked in the geometry and by reading, not in a browser** (history item 55). The tiles
+  are focusable (`role="link"` for a sequence, `"button"` for a lump of small ones; the map is one
+  roving-tabindex stop, Tab reaching the tile last focused or else the first; arrows go to the nearest tile
+  that is drawn, `treemap.neighbour`, in the order of `treemap.focusOrder`), and those two functions are
+  covered by `dashboard/test/treemap.test.ts`. The component that wires them (`pickmap.tsx`: the focus,
+  the tooltip's owner, Enter, Space, Escape) has no automated test: node cannot run `.tsx`, and no browser
+  was driven. **A tile that is not drawn cannot be reached by keyboard**: a tile with no area, and every tile
+  of a band too small to draw in *All bands*. For the bands, a footer line ("Too small to draw here")
+  lists each as a button that opens its tab, which draws it. A band is too small when its inner box is under
+  `treemap.MIN_DRAWN_SIDE` = 6 px in either direction, a threshold chosen from the live pool's inner sizes at
+  widths 360 to 1600 (`data/item55/inner_sizes.ts`), not a measurement of what a pointer can hit; at another
+  width or for another pool a different set of bands falls under it. The line is computed from the layout
+  the map draws, so it cannot disagree with the map. In a band's own tab the lumps of small tiles are not
+  focusable (they only open the band, which is already open). Three smaller edges, all from reading the
+  code and none seen in a browser: a refresh or resize whose new layout no longer has the focused tile
+  (it became part of a lump, say) drops the focus to the page, because only opening a lump from the
+  keyboard moves it on; **Space** opens a sequence's entry as Enter does, which a real link would not
+  (it would scroll the page), kept so that both keys work on both kinds of tile; and Shift with an arrow or
+  Enter acts as the key alone (only Alt, Ctrl and Meta are left to the browser). The re-check of the audit's
+  fixes added three more, none seen in a browser: a resize or refresh while the pointer is over one tile and
+  the keyboard is on another puts the keyboard's tooltip in place of the pointer's (the next mouse move
+  corrects it); a tooltip is placed from where the focused tile is when its `focus` event fires, which may
+  be before the browser scrolls a half-hidden tile into view; and `:focus-visible` is the browser's own
+  heuristic for a focus set by script (after an arrow key), so a browser that says no would show neither the
+  ring nor the tooltip.
 - **Area is equal across bands, but only about 0.9 of the chance, and a very small band is not drawn.**
   `treemap.fairRects` makes the area a band's tiles get proportional to the band's pick chance, whatever the
   size of its frame. Measured on the live PARI pool at α 1 (3,357 tiles, `data/item54/area_spread.ts` on a

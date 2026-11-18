@@ -66,8 +66,13 @@ flowchart TD
    entry alone, a second pass (`db.refresh_difficulty`, one transaction) then recomputes the column from
    the stored rows, which carry the b-file facts a `fetch-bfiles` sweep left behind. The commit hash and
    time are written to `meta`.
+5. **Snapshot the pool** (`attempt.snapshot_after_sync`, called by `cmd_sync` after `oeisdata.sync` has
+   committed): builds the PARI pool as a session would and stores it as a Pick-map snapshot if it differs
+   from the newest one, so the map can show what the sync changed. It is a record and cannot fail the sync;
+   see [operations](operations.md#where-to-look) for its output lines and
+   [known limitations](known-limitations.md#the-pick-map) for its edges.
 
-The full sync takes about 70 seconds. The 2026-09-17 snapshot has 26,814 candidates, 186 of them
+The full sync takes about 70 seconds, and the snapshot about 6 more. The 2026-09-17 snapshot has 26,814 candidates, 186 of them
 `fini,more`.
 
 ## 2. Selection: `oeisbot run -n N [--alpha A] [--seed S] [--model]`

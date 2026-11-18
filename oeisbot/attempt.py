@@ -652,6 +652,16 @@ def budgets_json(budgets: Budgets) -> str:
     return json.dumps(dataclasses.asdict(budgets), sort_keys=True)
 
 
+def budgets_of(header) -> Budgets:
+    """The budgets a snapshot was built under (its `pick_snapshots.budgets`), or the defaults when there is no
+    snapshot, it has none, or they do not parse. `oeisbot sync` and the dashboard both build "the pool as the
+    newest snapshot saw it" from this, so the two cannot disagree about what that means."""
+    try:
+        return Budgets(**json.loads(header["budgets"]))
+    except (TypeError, ValueError):
+        return config.DEFAULT_BUDGETS
+
+
 def rules_fingerprint() -> str:
     """A short hash of the code that decides which sequences are in a pool: the `Runnable` gates and the
     plan they build (`PariPlan`, `pari_plan`), the dead-end test, the entry and b-file readers they call,
@@ -699,6 +709,37 @@ def snapshot_pool(conn: sqlite3.Connection, pool: list[select.Candidate], *, mod
     except Exception as e:     # noqa: BLE001 -- see the docstring
         log(f"pick snapshot not recorded: {type(e).__name__}: {e}")
         return None
+
+
+def snapshot_after_sync(conn: sqlite3.Connection, log: Callable[[str], None] = print) -> int | None:
+    """Record the PARI pool as a snapshot once `oeisbot sync` has changed the data it is built from, so the Pick
+    map has something to compare with when entries change between sessions. Never raises: a sync that has
+    pulled and parsed everything must not fail because the map's record could not be written.
+
+    It stores nothing when the pool is the one the newest snapshot holds, which is what a sync that changed
+    nothing produces. The pool is built under the budgets of the newest PARI snapshot (the defaults when there
+    is none), as the dashboard builds its own, so what differs between two snapshots is what happened and not a
+    change of budget; the model pool is left alone (building it takes about half a minute). The rules recorded
+    are those of the code on disk, which is the code that just built the pool. Returns the snapshot id, or None
+    when nothing was stored.
+
+    A pool whose check failed for some sequences is not stored: they would be missing for a reason that has
+    nothing to do with the sequences, and the map would show them as arrivals in the next snapshot. A session
+    records such a pool anyway, because it drew from it; a sync's snapshot is only a record."""
+    try:
+        headers = db.pick_snapshot_headers(conn, "pari")
+        budgets = budgets_of(headers[0] if headers else None)
+        pool, keep = session_pool(conn, budgets, model=False)
+        if keep.errors:
+            log(f"pick snapshot not recorded: the check failed for {len(keep.errors)} (first: {keep.errors[0]})")
+            return None
+        sid = record_snapshot(conn, pool, model=False, budgets=budgets)
+    except Exception as e:     # noqa: BLE001 -- see the docstring
+        log(f"pick snapshot not recorded: {type(e).__name__}: {e}")
+        return None
+    log(f"pick snapshot #{sid} stored ({len(pool)} candidates)" if sid is not None
+        else f"pick snapshot unchanged ({len(pool)} candidates)")
+    return sid
 
 
 def run_session(conn: sqlite3.Connection, count: int, budgets: Budgets = config.DEFAULT_BUDGETS, *,

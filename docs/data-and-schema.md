@@ -302,7 +302,7 @@ memory. Nothing else reads them and nothing in the attempt flow depends on them.
 | `id` (PK) | snapshot id; also the order: a larger id is a newer snapshot |
 | `pool` | `pari` (what `oeisbot run` draws from) or `model` (`run --model`). Checked in Python against `db.POOLS`, not by a SQL constraint, so a third pool needs no schema change |
 | `taken_at` | UTC ISO timestamp |
-| `session_id` | the session whose picks were drawn from this pool; NULL for one taken by `oeisbot snapshot` |
+| `session_id` | the session whose picks were drawn from this pool; NULL for one taken by `oeisbot snapshot` or by `oeisbot sync` |
 | `n` | how many candidates the pool held |
 | `digest` | sha256 of the sorted `(a_number, difficulty)` pairs, hashing each float's `repr` so a change in the last bit counts (`db.pick_digest`). Two snapshots, or a snapshot and the live pool, are "the same pool" exactly when their digests are equal |
 | `budgets` | `attempt.budgets_json(budgets)`: the `Budgets` the pool was built under, as JSON with sorted keys. NULL on a row written by something that did not pass it |
@@ -315,17 +315,23 @@ what the weight `d ** -alpha` is taken from. It holds no pick chance: that depen
 map lets the reader change, so it is derived at read time (`pickmap.chances`). A snapshot is about 3,400
 rows for `pari` and about 26,700 for `model`.
 
-- **Written in two places.** `attempt.run_session` records the pool right after it is built and before any
+- **Written in three places.** `attempt.run_session` records the pool right after it is built and before any
   program runs, so the snapshot is exactly the pool the picks came from (`attempt.snapshot_pool`, which
   logs and swallows any failure: a session that cannot write a snapshot must still run). An explicit
   `a_numbers` list builds no pool and so records none. `oeisbot snapshot [--all]` records the current
-  pool without running anything.
+  pool without running anything, under the default budgets. `oeisbot sync` records the PARI pool after it
+  has refreshed the data (`attempt.snapshot_after_sync`, history item 55), under the budgets of the newest
+  PARI snapshot, and **not at all** when the per-sequence check failed for any candidate: a session
+  records such a pool because it drew from it, but a sync's snapshot is only a record, and the sequences the
+  failed check dropped would show up as arrivals in the next comparison. Like `snapshot_pool`, it logs and
+  swallows any failure. The dashboard writes none.
 - **One transaction, write lock first.** `db.record_pick_snapshot` compares, inserts the header and rows,
   and prunes inside one `BEGIN IMMEDIATE`, so two writers cannot both decide the pool is new and a crash
   leaves the old state or the new one, never a header without rows.
 - **A pool identical to the newest snapshot of its pool is not stored again** (the call returns `None`).
   So not every session has a snapshot: one that drew from a pool nothing had changed since adds no rows.
-  `session_id` therefore names the session that *first* saw the pool. What the duplicate does do is
+  `session_id` therefore names the session that *first* saw the pool, and is NULL if a sync or `oeisbot
+  snapshot` saw it first, even when a session later draws from the same pool. What the duplicate does do is
   **replace that snapshot's `budgets` and `rules`** (`COALESCE(new, old)`, so a NULL never erases a
   value): they describe the newest session that drew this very pool, and an edit to the rule sources
   that provably changed nothing must not leave the snapshot stamped with a fingerprint the map then

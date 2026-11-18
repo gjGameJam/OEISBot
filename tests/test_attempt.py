@@ -1239,3 +1239,247 @@ def test_the_snapshot_command_stores_the_pari_pool_and_with_all_the_model_pool(e
     out = capsys.readouterr().out.splitlines()
     assert out[0].endswith("unchanged since the newest of 1 snapshots, nothing stored")
     assert out[1] == "model: 2 candidates; snapshot #3 stored (2 kept)"
+
+
+# ------------------------------------------------------------------ the snapshot `oeisbot sync` takes
+
+def pari_entries(monkeypatch, *a_numbers):
+    entries = {a: make_entry("a(n) = prime(n)", a_number=a) for a in a_numbers}
+    monkeypatch.setattr(oeisdata, "load_entry", lambda a: entries[a])
+
+
+def test_budgets_of_reads_a_snapshots_budgets_and_falls_back_to_the_defaults(env):
+    conn, _, _ = env
+    custom = Budgets(verify_wall_s=11, extend_wall_s=7, max_new_terms=3)
+    assert attempt.budgets_of(None) == config.DEFAULT_BUDGETS                    # no snapshot at all
+    db.record_pick_snapshot(conn, "pari", [("A999999", 2.0)], budgets=attempt.budgets_json(custom))
+    assert attempt.budgets_of(db.pick_snapshot_headers(conn, "pari")[0]) == custom
+    assert custom != config.DEFAULT_BUDGETS                                      # or the line above proves nothing
+    for bad in (None, "", "{not json", "[1, 2]", "7", "null", '{"no_such_budget": 1}'):
+        assert attempt.budgets_of({"budgets": bad}) == config.DEFAULT_BUDGETS, bad
+    db.record_pick_snapshot(conn, "pari", [("A999999", 3.0)])                     # a snapshot that stored no budgets
+    assert attempt.budgets_of(db.pick_snapshot_headers(conn, "pari")[0]) == config.DEFAULT_BUDGETS
+
+
+def test_snapshot_after_sync_stores_the_pari_pool_without_a_session(env, monkeypatch):
+    conn, state, _ = env
+    two_candidates(conn, monkeypatch)
+    lines: list[str] = []
+    assert attempt.snapshot_after_sync(conn, log=lines.append) == 1
+    assert lines == ["pick snapshot #1 stored (2 candidates)"]
+    (h,) = db.pick_snapshot_headers(conn, "pari")
+    assert (h["session_id"], h["n"]) == (None, 2)
+    assert h["budgets"] == attempt.budgets_json(config.DEFAULT_BUDGETS) and h["rules"] == attempt.rules_fingerprint()
+    built, _keep = attempt.session_pool(conn, config.DEFAULT_BUDGETS, model=False)
+    assert {c.a_number for c in built} == {"A999999", "A999997"}                 # a real pool, not an empty one
+    assert db.pick_snapshot_difficulties(conn, h["id"]) == {c.a_number: c.difficulty for c in built}
+    assert db.pick_snapshot_headers(conn, "model") == []                         # the model pool is left alone
+    assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+    assert not conn.in_transaction
+
+
+def test_snapshot_after_sync_stores_nothing_for_a_pool_that_has_not_changed(env, monkeypatch):
+    conn, state, _ = env
+    two_candidates(conn, monkeypatch)
+    attempt.snapshot_after_sync(conn, log=lambda m: None)
+    lines: list[str] = []
+    assert attempt.snapshot_after_sync(conn, log=lines.append) is None
+    assert lines == ["pick snapshot unchanged (2 candidates)"]
+    assert [h["n"] for h in db.pick_snapshot_headers(conn, "pari")] == [2]
+    # only the newest snapshot is compared: a pool that goes A, B, A is stored three times
+    pari_entries(monkeypatch, "A999999", "A999997", "A999995")
+    add_row(conn, "A999995")
+    assert attempt.snapshot_after_sync(conn, log=lambda m: None) == 2
+    with conn:
+        conn.execute("UPDATE sequences SET in_more = 0 WHERE a_number = 'A999995'")
+    assert attempt.snapshot_after_sync(conn, log=lambda m: None) == 3
+    assert [h["n"] for h in db.pick_snapshot_headers(conn, "pari")] == [2, 3, 2]
+
+
+def test_snapshot_after_sync_builds_the_pool_under_the_newest_snapshots_budgets(env, monkeypatch):
+    conn, state, _ = env
+    two_candidates(conn, monkeypatch)
+    attempt.run_session(conn, 0, FAST, seed=1, log=lambda m: None)              # a session's snapshot, under FAST
+    asked = []
+    real = attempt.session_pool
+
+    def spy(conn_, budgets, *, model, alpha=1.0):
+        asked.append((budgets, model))
+        return real(conn_, budgets, model=model, alpha=alpha)
+
+    monkeypatch.setattr(attempt, "session_pool", spy)
+    pari_entries(monkeypatch, "A999999", "A999997", "A999995")
+    add_row(conn, "A999995")
+    assert attempt.snapshot_after_sync(conn, log=lambda m: None) == 2
+    assert asked == [(FAST, False)]                                              # inherited, and the PARI pool only
+    assert db.pick_snapshot_headers(conn, "pari")[0]["budgets"] == attempt.budgets_json(FAST)
+
+
+def test_snapshot_after_sync_takes_the_budgets_of_the_newest_snapshot_not_the_oldest(env, monkeypatch):
+    conn, state, _ = env
+    two_candidates(conn, monkeypatch)
+    slow = Budgets(verify_wall_s=31, extend_wall_s=6, max_new_terms=4)
+    assert slow != FAST
+    attempt.run_session(conn, 0, FAST, seed=1, log=lambda m: None)              # the oldest snapshot: FAST
+    pari_entries(monkeypatch, "A999999", "A999997", "A999995")
+    add_row(conn, "A999995")
+    attempt.run_session(conn, 0, slow, seed=1, log=lambda m: None)              # the newest: `slow`
+    assert [h["budgets"] for h in db.pick_snapshot_headers(conn, "pari")] == [attempt.budgets_json(slow),
+                                                                              attempt.budgets_json(FAST)]
+    asked = []
+    real = attempt.session_pool
+
+    def spy(conn_, budgets, *, model, alpha=1.0):
+        asked.append(budgets)
+        return real(conn_, budgets, model=model, alpha=alpha)
+
+    monkeypatch.setattr(attempt, "session_pool", spy)
+    pari_entries(monkeypatch, "A999999", "A999997", "A999995", "A999993")
+    add_row(conn, "A999993")
+    assert attempt.snapshot_after_sync(conn, log=lambda m: None) == 3
+    assert asked == [slow]
+
+
+def test_snapshot_after_sync_does_not_raise_when_the_pool_cannot_be_built_or_stored(env, monkeypatch):
+    conn, state, _ = env
+    two_candidates(conn, monkeypatch)
+
+    def no_pool(*a, **k):
+        raise RuntimeError("boom")
+
+    def no_write(*a, **k):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    real = attempt.session_pool
+    monkeypatch.setattr(attempt, "session_pool", no_pool)
+    lines: list[str] = []
+    assert attempt.snapshot_after_sync(conn, log=lines.append) is None
+    assert lines == ["pick snapshot not recorded: RuntimeError: boom"]
+    monkeypatch.setattr(attempt, "session_pool", real)
+    monkeypatch.setattr(db, "record_pick_snapshot", no_write)
+    assert attempt.snapshot_after_sync(conn, log=lines.append) is None
+    assert lines[1:] == ["pick snapshot not recorded: OperationalError: disk I/O error"]
+    assert db.pick_snapshot_headers(conn, "pari") == []
+
+
+def test_snapshot_after_sync_leaves_a_pending_write_alone(env, monkeypatch):
+    conn, state, _ = env
+    two_candidates(conn, monkeypatch)
+    conn.execute("INSERT INTO meta(key, value) VALUES ('pending', 'yes')")
+    assert conn.in_transaction
+    lines: list[str] = []
+    assert attempt.snapshot_after_sync(conn, log=lines.append) is None
+    assert len(lines) == 1 and lines[0].startswith("pick snapshot not recorded: RuntimeError: ")
+    assert "cannot run inside a transaction" in lines[0]
+    assert conn.in_transaction                                                   # neither committed nor rolled back
+    conn.rollback()
+    assert conn.execute("SELECT COUNT(*) FROM meta WHERE key = 'pending'").fetchone()[0] == 0
+    assert db.pick_snapshot_headers(conn, "pari") == []
+
+
+def test_snapshot_after_sync_skips_a_pool_some_of_whose_checks_failed(env, monkeypatch):
+    """Rows missing because their check raised would show up as arrivals in the next snapshot, so a record
+    nobody drew from is not made. A session, which did draw from that pool, records it all the same."""
+    conn, state, _ = env
+    two_candidates(conn, monkeypatch)
+    pari_entries(monkeypatch, "A999999", "A999997", "A999995")
+    add_row(conn, "A999995")
+    real = attempt.Runnable._why_not
+
+    def flaky(self, a):
+        if a in ("A999997", "A999995"):
+            raise OSError("b-file cache unreadable")
+        return real(self, a)
+
+    monkeypatch.setattr(attempt.Runnable, "_why_not", flaky)
+    lines: list[str] = []
+    assert attempt.snapshot_after_sync(conn, log=lines.append) is None
+    (line,) = lines                                                              # two failed, one candidate is left:
+    assert line.startswith("pick snapshot not recorded: the check failed for 2 (first: A9999")   # the count is the failures'
+    assert line.endswith(": OSError: b-file cache unreadable)")
+    assert db.pick_snapshot_headers(conn, "pari") == []
+    attempt.run_session(conn, 0, FAST, seed=1, log=lambda m: None)
+    assert [h["n"] for h in db.pick_snapshot_headers(conn, "pari")] == [1]
+
+
+# ... and through the command, with the real `oeisdata.sync` over a small mirror
+
+def write_pari_seq(root, a_number, keywords="nonn,more"):
+    path = root / "seq" / a_number[:4] / f"{a_number}.seq"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f"%S {a_number} {PRIMES}", f"%N {a_number} The primes.", f"%O {a_number} 1,1", f"%K {a_number} {keywords}",
+             f"%o {a_number} (PARI) a(n) = prime(n)"]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+@pytest.fixture
+def mirror(tmp_path, monkeypatch):
+    root = tmp_path / "oeisdata"
+    monkeypatch.setattr(config, "OEISDATA", root)
+    monkeypatch.setattr(oeisdata, "_git", lambda *a, **k: "c0ffee1234")
+    monkeypatch.setattr(bfile, "fetch", lambda a, refresh=False: None)
+    monkeypatch.setattr(bfile, "cached", lambda a: (True, None))
+    conn = db.connect(tmp_path / "t.sqlite3")
+    monkeypatch.setattr(db, "connect", lambda *a, **k: conn)         # as the other command tests do: patching DB_PATH does nothing
+    yield root, conn, tmp_path / "t.sqlite3"
+    conn.close()
+
+
+def test_oeisbot_sync_records_a_snapshot_and_a_changed_mirror_a_second(mirror, capsys):
+    from oeisbot import cli
+    root, conn, _ = mirror
+    write_pari_seq(root, "A999999")
+    write_pari_seq(root, "A999997")
+    assert cli.main(["sync", "--no-pull"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[-2].endswith("2 candidates with keyword 'more'; 0 no longer 'more'")
+    assert out[-1] == "pick snapshot #1 stored (2 candidates)"       # after the sync's own line, from the real PARI entries
+    (h,) = db.pick_snapshot_headers(conn, "pari")
+    assert (h["n"], h["session_id"]) == (2, None)
+    assert set(db.pick_snapshot_difficulties(conn, h["id"])) == {"A999999", "A999997"}
+
+    assert cli.main(["sync", "--no-pull"]) == 0                       # nothing changed: nothing stored
+    assert capsys.readouterr().out.splitlines()[-1] == "pick snapshot unchanged (2 candidates)"
+    assert len(db.pick_snapshot_headers(conn, "pari")) == 1
+
+    write_pari_seq(root, "A999995")                                   # one arrives ...
+    write_pari_seq(root, "A999997", keywords="nonn,full")             # ... and one is extended by a human and leaves
+    assert cli.main(["sync", "--no-pull"]) == 0
+    assert capsys.readouterr().out.splitlines()[-1] == "pick snapshot #2 stored (2 candidates)"
+    newest, older = db.pick_snapshot_headers(conn, "pari")
+    assert set(db.pick_snapshot_difficulties(conn, newest["id"])) == {"A999999", "A999995"}
+    assert set(db.pick_snapshot_difficulties(conn, older["id"])) == {"A999999", "A999997"}
+    assert db.pick_snapshot_headers(conn, "model") == []
+
+
+def test_a_snapshot_that_cannot_be_stored_does_not_undo_or_fail_the_sync(mirror, monkeypatch, capsys):
+    from oeisbot import cli
+    root, conn, path = mirror
+    write_pari_seq(root, "A999999")
+
+    def no_write(*a, **k):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(db, "record_pick_snapshot", no_write)
+    assert cli.main(["sync", "--no-pull"]) == 0
+    assert capsys.readouterr().out.splitlines()[-1] == "pick snapshot not recorded: OperationalError: disk I/O error"
+    other = sqlite3.connect(path)                                     # another connection sees only what was committed
+    try:
+        assert other.execute("SELECT COUNT(*) FROM sequences WHERE in_more = 1").fetchone()[0] == 1
+        assert other.execute("SELECT value FROM meta WHERE key = 'oeisdata_commit'").fetchone()[0] == "c0ffee1234"
+    finally:
+        other.close()
+
+
+def test_a_sync_that_fails_takes_no_snapshot(mirror, monkeypatch):
+    from oeisbot import cli
+    root, conn, _ = mirror
+    write_pari_seq(root, "A999999")
+
+    def fail(*a, **k):
+        raise RuntimeError("git pull failed")
+
+    monkeypatch.setattr(oeisdata, "sync", fail)
+    with pytest.raises(RuntimeError, match="git pull failed"):
+        cli.main(["sync"])
+    assert db.pick_snapshot_headers(conn, "pari") == []

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  BIN_LABELS, CHANGE_BINS, LUMP, MAX_ALPHA, NEUTRAL_BIN, changeBin, fmtChange, labelFits, layoutGroups, parseAlpha,
-  pickmapPath, squarify, type Rect,
+  BIN_LABELS, CHANGE_BINS, LUMP, MAX_ALPHA, MIN_DRAWN_SIDE, NEUTRAL_BIN, changeBin, failureReason, fmtChange, focusOrder, labelFits,
+  layoutGroups, neighbour, parseAlpha, pickmapPath, squarify, undrawn, type Dir, type PlacedGroup, type Rect,
 } from "../src/treemap.ts";
 
 const area = (r: Rect) => r.w * r.h;
@@ -254,4 +254,247 @@ test("pickmapPath: the rebuild flag appears once a rebuild is asked for, with a 
   assert.equal(pickmapPath("pari", 1, 0), "/api/pickmap?pool=pari&alpha=1");
   assert.equal(pickmapPath("pari", 1, 3), "/api/pickmap?pool=pari&alpha=1&refresh=true&v=3");
   assert.notEqual(pickmapPath("pari", 1, 1), pickmapPath("pari", 1, 2));
+});
+
+// ----------------------------------------------------------------------------- undrawn
+
+const bare = (key: string, inner: Rect): PlacedGroup => ({ key, value: 0, rect: inner, inner, header: false, leaves: [] });
+
+test("undrawn: a group is listed when either side of its inner rect is under the limit, edge included, in layout order", () => {
+  assert.equal(MIN_DRAWN_SIDE, 6);
+  const at = (w: number, h: number) => bare("g", { x: 0, y: 0, w, h });
+  assert.deepEqual(undrawn([at(5.99, 400)]), ["g"]);
+  assert.deepEqual(undrawn([at(400, 5.99)]), ["g"]);
+  assert.deepEqual(undrawn([at(6, 6)]), []);                     // exactly the limit is drawn
+  assert.deepEqual(undrawn([at(0, 0)]), ["g"]);                  // no area at all
+  assert.deepEqual(undrawn([at(4.4, 400)]), ["g"]);             // band 7 at some widths: a sliver
+  assert.deepEqual(undrawn([at(8.2, 400)]), []);                // and at others, wide enough to point at
+  assert.deepEqual(undrawn([]), []);
+  const many = [bare("a", { x: 0, y: 0, w: 300, h: 300 }), bare("b", { x: 0, y: 0, w: 2, h: 300 }),
+                bare("c", { x: 0, y: 0, w: 100, h: 100 }), bare("d", { x: 0, y: 0, w: 100, h: 0 })];
+  assert.deepEqual(undrawn(many), ["b", "d"]);
+  assert.deepEqual(undrawn([at(10, 10)], 12), ["g"]);           // the limit is a parameter
+});
+
+test("undrawn: on a real layout it names the bands that are a hair of the picks and not the large ones", () => {
+  const leaves = (n: number, each: number, tag: string) => Array.from({ length: n }, (_, i) => ({ id: `${tag}-${i}`, value: each }));
+  const groups = [{ key: "b0", leaves: leaves(40, 0.0135, "x") }, { key: "b1", leaves: leaves(20, 0.0135, "y") },
+                  { key: "b2", leaves: [{ id: "tiny1", value: 0.00002 }, { id: "tiny2", value: 0.00002 }] }];
+  const opt = { headerH: 18, minLeafArea: 36, pad: 2 };
+  const placed = layoutGroups(groups, { x: 0, y: 0, w: 900, h: 500 }, opt);
+  assert.ok(placed[0].inner.w > 100 && placed[1].inner.w > 100);          // the two big bands have room ...
+  assert.deepEqual(undrawn(placed), ["b2"]);                              // ... and only the speck is listed
+  // the same bands in a box where nothing has room for a tile
+  const squeezed = layoutGroups(groups, { x: 0, y: 0, w: 10, h: 10 }, opt);
+  assert.deepEqual(undrawn(squeezed), ["b0", "b1", "b2"]);
+});
+
+// ----------------------------------------------------------------------------- neighbour
+
+/** Nine 10x10 tiles, ids 'a'..'i' in reading order: a b c / d e f / g h i. */
+const grid = (): { id: string; rect: Rect }[] =>
+  "abcdefghi".split("").map((id, i) => ({ id, rect: { x: (i % 3) * 10, y: Math.floor(i / 3) * 10, w: 10, h: 10 } }));
+
+test("neighbour: the four arrows move one tile on a grid, and nothing lies past the edge", () => {
+  const g = grid();
+  const want: Record<Dir, string> = { left: "d", right: "f", up: "b", down: "h" };
+  for (const dir of ["left", "right", "up", "down"] as Dir[]) assert.equal(neighbour(g, "e", dir), want[dir], dir);
+  assert.equal(neighbour(g, "a", "left"), null);
+  assert.equal(neighbour(g, "a", "up"), null);
+  assert.equal(neighbour(g, "i", "right"), null);
+  assert.equal(neighbour(g, "i", "down"), null);
+  assert.equal(neighbour(g, "g", "down"), null);
+  assert.equal(neighbour(g, "a", "right"), "b");
+  assert.equal(neighbour(g, "c", "left"), "b");        // 'e' touches c at a corner, but 'b' is level with it
+  assert.equal(neighbour(g, "i", "up"), "f");          // likewise 'e' at the corner
+});
+
+test("neighbour: an unknown source or an empty list gives null; a tile with no area is never a target", () => {
+  assert.equal(neighbour(grid(), "nope", "right"), null);
+  assert.equal(neighbour([], "a", "right"), null);
+  const items = [{ id: "a", rect: { x: 0, y: 0, w: 10, h: 10 } }, { id: "ghost", rect: { x: 10, y: 0, w: 0, h: 10 } },
+                 { id: "z", rect: { x: 10, y: 0, w: 10, h: 10 } }];
+  assert.equal(neighbour(items, "a", "right"), "z");
+  assert.equal(neighbour(items.slice(0, 2), "a", "right"), null);     // only the empty tile lies that way
+  const flat = [items[0], { id: "flat", rect: { x: 10, y: 0, w: 10, h: 0 } }, { id: "z", rect: { x: 30, y: 0, w: 10, h: 10 } }];
+  assert.equal(neighbour(flat, "a", "right"), "z");                   // a tile with a width but no height is no target either
+  assert.equal(neighbour(flat.slice(0, 2), "a", "right"), null);
+});
+
+test("neighbour: leftward and upward the gap is measured to the candidate's near edge, as it is rightward and downward", () => {
+  const wide = { x: 0, w: 40 }, narrow = { x: 20, w: 8 };            // 10 px and 22 px short of a source that starts at 50
+  const row = [{ id: "src", rect: { x: 50, y: 0, w: 10, h: 10 } }, { id: "wide", rect: { ...wide, y: 0, h: 10 } },
+               { id: "narrow", rect: { ...narrow, y: 0, h: 10 } }];
+  assert.equal(neighbour(row, "src", "left"), "wide");
+  const col = [{ id: "src", rect: { x: 0, y: 50, w: 10, h: 10 } }, { id: "wide", rect: { x: 0, y: wide.x, w: 10, h: wide.w } },
+               { id: "narrow", rect: { x: 0, y: narrow.x, w: 10, h: narrow.w } }];
+  assert.equal(neighbour(col, "src", "up"), "wide");
+  const mirrored = [{ id: "src", rect: { x: 0, y: 0, w: 10, h: 10 } }, { id: "wide", rect: { x: 20, y: 0, w: 40, h: 10 } },
+                    { id: "narrow", rect: { x: 32, y: 0, w: 8, h: 10 } }];     // the same, rightward: the nearer edge wins
+  assert.equal(neighbour(mirrored, "src", "right"), "wide");
+});
+
+test("neighbour: the miss across the axis is counted twice exactly, from either side, and an overlap earns nothing", () => {
+  const s = { id: "s", rect: { x: 0, y: 0, w: 10, h: 10 } };
+  // doubled, not tripled: X touches but is 10 px off across (0 + 2 x 10 = 20), Y is level but 25 px away
+  const x = { id: "x", rect: { x: 10, y: 20, w: 10, h: 10 } }, y = { id: "y", rect: { x: 35, y: 0, w: 10, h: 10 } };
+  assert.equal(neighbour([s, x, y], "s", "right"), "x");
+  // a miss above counts as much as a miss below
+  const low = { id: "low", rect: { x: 0, y: 100, w: 10, h: 10 } };
+  const above = { id: "above", rect: { x: 10, y: 0, w: 10, h: 10 } }, level = { id: "level", rect: { x: 60, y: 100, w: 10, h: 10 } };
+  assert.equal(neighbour([low, above, level], "low", "right"), "level");
+  // a tile that overlaps the source across the axis is not cheaper for overlapping more: the gap decides
+  const tall = { id: "tall", rect: { x: 0, y: 0, w: 10, h: 40 } };
+  const far = { id: "far", rect: { x: 20, y: 0, w: 10, h: 40 } }, near = { id: "near", rect: { x: 15, y: 10, w: 10, h: 10 } };
+  assert.equal(neighbour([tall, far, near], "tall", "right"), "near");
+});
+
+test("neighbour: among tiles of different sizes it picks the one level with the source's centre, not the one that is nearest", () => {
+  // a tall tile on the left; on its right a thin tile at the top and a big one below it
+  const items = [
+    { id: "tall", rect: { x: 0, y: 0, w: 10, h: 100 } },
+    { id: "top", rect: { x: 10, y: 0, w: 90, h: 10 } },
+    { id: "bottom", rect: { x: 10, y: 10, w: 90, h: 90 } },
+  ];
+  // both abut `tall`; the centre of 'bottom' (y 55) is closer to tall's (y 50) than that of 'top' (y 5)
+  assert.equal(neighbour(items, "tall", "right"), "bottom");
+  assert.equal(neighbour(items, "bottom", "left"), "tall");
+  assert.equal(neighbour(items, "top", "left"), "tall");
+  assert.equal(neighbour(items, "top", "down"), "bottom");
+  assert.equal(neighbour(items, "bottom", "up"), "top");
+});
+
+test("neighbour: a tile that abuts beats a nearer-looking one off to the side, and the miss across the axis counts double", () => {
+  const items = [
+    { id: "s", rect: { x: 0, y: 0, w: 10, h: 10 } },
+    { id: "abuts", rect: { x: 10, y: 0, w: 10, h: 10 } },
+    { id: "diag", rect: { x: 10, y: 30, w: 10, h: 10 } },       // no gap along the axis, 20 px off across it
+    { id: "far", rect: { x: 40, y: 0, w: 10, h: 10 } },
+  ];
+  assert.equal(neighbour(items, "s", "right"), "abuts");
+  // with the abutting tile gone, the diagonal (0 + 2 x 20 = 40) loses to the far one in line (30)
+  assert.equal(neighbour(items.filter((i) => i.id !== "abuts"), "s", "right"), "far");
+  // and with only the diagonal it is still reachable
+  assert.equal(neighbour(items.filter((i) => i.id === "s" || i.id === "diag"), "s", "right"), "diag");
+});
+
+test("neighbour: ties go to the closer centre across the axis, then to the smaller id, whatever the input order", () => {
+  const m = { id: "m", rect: { x: 0, y: 10, w: 10, h: 10 } };
+  const r1 = { id: "r1", rect: { x: 10, y: 0, w: 10, h: 10 } };       // both abut m; r2 is level with it, r1 is 10 px off
+  const r2 = { id: "r2", rect: { x: 10, y: 10, w: 10, h: 10 } };
+  assert.equal(neighbour([m, r1, r2], "m", "right"), "r2");
+  assert.equal(neighbour([r2, r1, m], "m", "right"), "r2");
+  const a = { id: "a", rect: { x: 10, y: 0, w: 10, h: 10 } };         // 10 px above and 10 px below: an exact tie
+  const b = { id: "b", rect: { x: 10, y: 20, w: 10, h: 10 } };
+  assert.equal(neighbour([m, b, a], "m", "right"), "a");
+  assert.equal(neighbour([m, a, b], "m", "right"), "a");
+});
+
+test("neighbour: on a layout, every arrow walk ends, and arrow keys together reach every tile", () => {
+  for (const seed of [7, 8, 9]) {
+    const r = rng(seed);
+    const leaves = Array.from({ length: 150 }, (_, i) => ({ id: `t${String(i).padStart(3, "0")}`, value: 1 / (0.05 + r()) ** 2 }));
+    const placed = layoutGroups([{ key: "g", leaves }], { x: 0, y: 0, w: 800, h: 500 }, { headerH: 0, minLeafArea: 0, pad: 0 });
+    const items = placed[0].leaves.map((l) => ({ id: l.id, rect: l.rect }));
+    assert.equal(items.length, 150);
+    for (const dir of ["left", "right", "up", "down"] as Dir[]) {
+      for (const start of items) {
+        let at = start.id, steps = 0;
+        for (;;) {
+          const next = neighbour(items, at, dir);
+          if (next === null) break;
+          assert.notEqual(next, at);
+          at = next;
+          assert.ok(++steps <= items.length, `${dir} from ${start.id} never ends`);      // every step moves the centre onwards
+        }
+      }
+    }
+    const seen = new Set([items[0].id]);
+    const todo = [items[0].id];
+    while (todo.length) {
+      const at = todo.pop()!;
+      for (const dir of ["left", "right", "up", "down"] as Dir[]) {
+        const next = neighbour(items, at, dir);
+        if (next !== null && !seen.has(next)) { seen.add(next); todo.push(next); }
+      }
+    }
+    assert.equal(seen.size, items.length, `seed ${seed}: ${items.length - seen.size} tiles cannot be reached by arrow keys`);
+  }
+});
+
+// ----------------------------------------------------------------------------- failureReason
+
+test("failureReason: the reason out of the text useApi keeps for a 503 with the server's JSON, and null for everything else", () => {
+  const body = JSON.stringify({ error: "pool_build_failed", reason: "OperationalError: database is locked" });
+  // useApi throws new Error(`${status}: ${body}`) and stores String(e), which starts with 'Error: '
+  const kept = String(new Error(`503: ${body}`));
+  assert.equal(kept, `Error: 503: ${body}`);
+  assert.equal(failureReason(kept), "OperationalError: database is locked");
+  assert.equal(failureReason(`503: ${body}`), "OperationalError: database is locked");         // without the prefix too
+  assert.equal(failureReason(`  ${kept}\n`), "OperationalError: database is locked");
+  const awkward = 'x: y "quoted" \\ z';
+  assert.equal(failureReason(String(new Error(`503: ${JSON.stringify({ error: "pool_build_failed", reason: awkward })}`))), awkward);
+  const pretty = JSON.stringify({ error: "pool_build_failed", reason: "KeyError: 'A000001'" }, null, 2);     // a body over several lines
+  assert.ok(pretty.includes("\n"));
+  assert.equal(failureReason(String(new Error(`503: ${pretty}`))), "KeyError: 'A000001'");
+  for (const other of [
+    String(new Error('503: {"detail":"no database at C:\\\\x; run `oeisbot setup`"}')),         // FastAPI's own 503
+    String(new Error("500: Internal Server Error")),
+    String(new Error(`500: ${body}`)),                                                         // the code is part of the contract
+    String(new Error(`404: ${body}`)),
+    String(new Error('503: {"error":"something_else","reason":"r"}')),
+    String(new Error('503: {"error":"pool_build_failed"}')),
+    String(new Error('503: {"error":"pool_build_failed","reason":7}')),
+    String(new Error("503: not json")),
+    String(new Error("503: ")),
+    String(new Error("503: null")),
+    String(new Error(`1503: ${body}`)),                                                        // the status is the whole number
+    String(new Error(`Error: 404: 503: ${body}`)),
+    "TypeError: Failed to fetch",
+    "",
+  ]) assert.equal(failureReason(other), null, other);
+});
+
+// ----------------------------------------------------------------------------- focusOrder
+
+test("focusOrder: layout order, leaving out the leaves of a group too small to see, tiles with no area, and (unless asked for) lumps", () => {
+  const placed = (key: string, inner: Rect, leaves: { id: string; rect: Rect; members?: string[] }[]): PlacedGroup =>
+    ({ key, value: 1, rect: inner, inner, header: false, leaves: leaves.map((l) => ({ id: l.id, rect: l.rect, members: l.members ?? null })) });
+  const r = (x: number, w: number, h = 40): Rect => ({ x, y: 0, w, h });
+  const layout = [
+    placed("b0", { x: 0, y: 0, w: 100, h: 40 }, [{ id: "a1", rect: r(0, 50) }, { id: "a2", rect: r(50, 30) }, { id: `${LUMP}b0`, rect: r(80, 20), members: ["z1", "z2"] }]),
+    placed("b1", { x: 100, y: 0, w: 4, h: 40 }, [{ id: "s1", rect: r(100, 4) }]),                    // 4 px wide: not drawn
+    placed("b2", { x: 104, y: 0, w: 60, h: 40 }, [{ id: "c1", rect: r(104, 40) }, { id: "ghost", rect: r(144, 0) }, { id: "flat", rect: r(144, 20, 0) }, { id: "c2", rect: r(144, 20) }]),
+  ];
+  assert.deepEqual(focusOrder(layout, true).map((i) => i.id), ["a1", "a2", `${LUMP}b0`, "c1", "c2"]);
+  assert.deepEqual(focusOrder(layout, false).map((i) => i.id), ["a1", "a2", "c1", "c2"]);
+  assert.deepEqual(focusOrder(layout, true)[0].rect, r(0, 50));
+  assert.deepEqual(focusOrder(layout, true, 3).map((i) => i.id), ["a1", "a2", `${LUMP}b0`, "s1", "c1", "c2"]);   // the limit is a parameter
+  assert.deepEqual(focusOrder([], true), []);
+  // a group is left out exactly when undrawn() lists it
+  const left = new Set(undrawn(layout));
+  assert.deepEqual(layout.filter((g) => !left.has(g.key)).map((g) => g.key), ["b0", "b2"]);
+});
+
+test("focusOrder: on a layout with a speck band, the arrow keys reach every tile it lists", () => {
+  const leaves = (n: number, each: number, tag: string) => Array.from({ length: n }, (_, i) => ({ id: `${tag}-${String(i).padStart(2, "0")}`, value: each }));
+  const groups = [{ key: "b0", leaves: leaves(60, 0.01, "x") }, { key: "b1", leaves: leaves(30, 0.01, "y") },
+                  { key: "b2", leaves: [{ id: "tiny1", value: 0.00002 }, { id: "tiny2", value: 0.00002 }] }];
+  for (const W of [360, 600, 900]) {
+    const H = Math.round(Math.min(680, Math.max(380, W * 0.55)));
+    const placed = layoutGroups(groups, { x: 0, y: 0, w: W, h: H }, { headerH: 18, minLeafArea: Math.max(36, (W * H) / 9000), pad: 2 });
+    assert.deepEqual(undrawn(placed), ["b2"]);
+    const items = focusOrder(placed, true);
+    assert.ok(items.length > 0 && items.every((i) => !i.id.startsWith("tiny")));
+    const seen = new Set([items[0].id]);
+    const todo = [items[0].id];
+    while (todo.length) {
+      const at = todo.pop()!;
+      for (const dir of ["left", "right", "up", "down"] as Dir[]) {
+        const next = neighbour(items, at, dir);
+        if (next !== null && !seen.has(next)) { seen.add(next); todo.push(next); }
+      }
+    }
+    assert.equal(seen.size, items.length, `W=${W}: ${items.length - seen.size} tiles cannot be reached by arrow keys`);
+  }
 });

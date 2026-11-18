@@ -63,11 +63,11 @@ could kill); in the offer-B check the same terms ran the whole 300 s extension w
 
 ### Pick map
 
-How likely each candidate is to be drawn, and how that has moved (history item 54). A treemap in the manner of
-a stock-market heat map: **a tile's area is the sequence's pick chance, its colour is how the chance has
-changed** since an earlier snapshot of the pool. The pool is the one a session draws from
-(`attempt.session_pool`, the same call `run_session`, `oeisbot queue` and `oeisbot snapshot` make), not the
-wider one the Queue tab shows.
+How likely each candidate is to be drawn, and how that has moved (history items 54 and 55). A treemap in the
+manner of a stock-market heat map: **a tile's area is the sequence's pick chance, its colour is how the chance
+has changed** since an earlier snapshot of the pool. The pool is the one a session draws from
+(`attempt.session_pool`, the same call `run_session`, `oeisbot queue`, `oeisbot snapshot` and `oeisbot sync`
+make), not the wider one the Queue tab shows.
 
 - **Pick chance** is `weight / sum of weights` with `weight = difficulty ** -alpha` (`select.weight`) over
   the pool, i.e. the chance of being a session's **first** draw. It is the share that adds up to 100%
@@ -86,7 +86,23 @@ wider one the Queue tab shows.
   - **Rebuild now asks once.** The request carries `refresh=true` and a counter (`treemap.pickmapPath`), so the
     browser cannot answer it from its cache; the hourly refresh that follows carries neither, and choosing
     another pool or α drops the request. While a load is in flight the button reads "Building…" and is
-    disabled, and the map is dimmed.
+    `aria-disabled` (a click does nothing), and the map is dimmed. It is `aria-disabled` rather than `disabled`
+    so that a keyboard user who pressed it keeps the focus, which a button that becomes disabled loses.
+  - **A pool that cannot be built is said so, and the last map stays.** The server answers 503 with a JSON body
+    `{"error": "pool_build_failed", "reason": "<ExceptionType>: <message>"}` (the message on one line, at most
+    200 characters; the traceback goes to the `oeisbot.dashboard` logger, which nothing configures, so Python's
+    last-resort handler prints it to the standard error of `oeisbot dashboard`; checked under uvicorn's own
+    logging configuration, which touches only its three loggers) and caches nothing, so the next request builds
+    again. The page shows
+    "The PARI pool could not be built: <reason>" (`treemap.failureReason` reads the reason out of the error text
+    `useApi` keeps) and a **Try again** button that asks for a rebuild, above the map of the last request that
+    loaded, which the message says it is. Any other failure (including the 503 for a missing database, whose
+    body is not this one) reads "Could not load: ..." with the same button. The message goes as soon as the
+    new request starts, taking the button with it, so **Try again moves the keyboard focus to Rebuild now**
+    (which then reads "Building…"); otherwise the focus would fall to the top of the page. The map is dimmed only while a
+    request is out, not behind the message. The failure is not stored anywhere: the message goes when the page
+    asks on another path (Try again, another pool or α) or when any request succeeds, and returns if the
+    new request fails; the hourly refresh is the only retry on a timer.
 - **Tiles** above the map: candidates; the snapshot compared with (id, time, session, size); how many
   sequences **moved 10% or more** and what share of the picks they hold; how many sequences entered and left
   the pool and what share of the picks each side held.
@@ -104,6 +120,28 @@ wider one the Queue tab shows.
   (`pickmap.BAND_EDGES`: 0.5, 0.75, 1, 1.5, 2, 4, 8, 16; a value equal to an edge belongs to the band above),
   and each tab carries the band's size and share. Clicking a band's header, or a lump inside it, opens that
   band's tab.
+- **Bands too small to draw are named under the map** (history item 55). In *All bands*, a band whose tiles get
+  less than 6 px (`treemap.MIN_DRAWN_SIDE`) in either direction, inside its frame and padding, can be neither
+  seen nor pointed at (`treemap.undrawn`; a band that got no area at all counts). A line under the map,
+  "Too small to draw here:", lists each as a button reading the band's label, size and share; it opens the band's
+  tab and puts the keyboard focus on that tab (the button it came from is gone). The area maths is not touched.
+  Measured on the real PARI pool (`data/item55/inner_sizes.ts`, the page's own `layoutGroups` call, widths 360
+  to 1600 px in steps of 40, 32 widths): **band 8 (2 sequences, 0.002%) has no inner width at any of them, and
+  band 7 has 0 to 5.1 px at 30 of the 32** (8.2 px at 1240 and 11.4 px at 1440). So the line is normally there,
+  and a band tab's own view never has it, because the band fills the box.
+- **Keyboard** (history item 55). Tab reaches the map at **one** tile, the one last focused or else the first
+  drawn; the arrow keys then move to the nearest tile in that direction (`treemap.neighbour`: of the tiles whose
+  centre lies beyond the current one's that way, the one with the smallest gap along the axis plus **twice** the
+  miss across it, 0 when they overlap there; then the closer centre across the axis, then the smaller
+  A-number; nothing happens at an edge), Home and End go to the first and the last, **Enter or Space** opens
+  the entry on oeis.org (a lump opens its band, in *All bands* only, and the focus then goes to the new map's
+  first tile; a key held down acts once, not once per repeat, so it cannot open a tab per repeat), and
+  **Escape** closes the tooltip (and it stays closed through a resize or a refresh, until the focus moves to
+  a tile again). A focused tile shows the same 2 px outline as a hovered one
+  and, when the browser calls the focus keyboard-driven (`:focus-visible`), its tooltip; a click that focuses a
+  tile shows none. A sequence tile is a `link`, a lump in *All bands* a `button`, each with an `aria-label` of
+  its name and figures. **Not reachable:** a lump on a band's own tab (it does nothing there), a tile with no
+  area, and every tile of a band listed in the "too small to draw" line; the table view reaches all of them.
 - **Colour** is one of seven classes of `ratio`, the chance now over the chance then (red is down, blue is
   up, gray is within 1%): down 45% or more (ratio at most 0.55), down 10 to 45%, down 1 to 10%, within 1%,
   up 1 to 10%, up 10 to 80%, up 80% or more (at least 1.8). The outer edges are 0.55 and 1.8 rather than 0.5
@@ -135,8 +173,16 @@ wider one the Queue tab shows.
   the frame all but swallows (less than a quarter of its block left, `MIN_KEPT`) is left as it was: it has
   nothing to compensate with. Two things still shave area, both listed in
   [known limitations](known-limitations.md#the-pick-map): that case, and the 1 px inset of every tile.
-- **Hover** shows the chance of being picked first, the chance before (rescaled) and the change, the difficulty
-  and the band; **clicking a tile opens its entry on oeis.org**. The map is an SVG with a label and a **table
+- **Hover or keyboard focus** shows the chance of being picked first, the chance before (rescaled) and the change,
+  the difficulty and the band; **clicking a tile opens its entry on oeis.org**. Whichever of the two moved last
+  owns the tooltip: the mouse leaving, or moving over a band's header or frame, does not close one the keyboard
+  opened, nor does blurring close one the mouse opened. A new layout (another band, a resize, a refresh) closes
+  the tooltip, except that a tile which still has the keyboard focus gets its tooltip back, placed where the tile
+  now is (it would otherwise stay closed until a key moved the focus). If the new layout no longer has the
+  focused tile (a refresh that lumps it, a pool without it) the browser drops the focus to the page and the next Tab
+  starts from the top of it, by reading of the DOM rules and not seen in a browser; only opening a lump from
+  the keyboard moves the focus on. The map is an SVG with `role="group"` and a
+  label that names the keys, and a **table
   view** (`details` under the legend, built only when opened) of the rows of the tab shown: sequence, name,
   difficulty, band, pick chance, before (rescaled), change, sortable; a new sequence has no "before" and reads
   `new`.
@@ -171,7 +217,8 @@ wider one the Queue tab shows.
   load waits for a rebuild. `oeisbot dashboard` builds the PARI pool in a background thread at start-up
   (a failure there is printed and the tab reports its own), so the first visit to the tab does not wait. The
   pool is built under the **budgets of the pool's newest snapshot** (the defaults when there is none), so a
-  difference from the baseline is something that happened and not a change of budget.
+  difference from the baseline is something that happened and not a change of budget. **A build that fails is
+  never cached**: the next request builds again, which is what the tab's "Try again" button asks for.
 
 ### Queue
 
@@ -232,7 +279,7 @@ sequences were skipped" chart, and the Sessions table's Attempts column (`sessio
 ## API
 
 All endpoints are `GET`, return JSON (except file contents), and open a fresh read-only connection. A
-missing database returns 503.
+missing database returns 503, and so does a Pick map pool that cannot be built (below).
 
 | Endpoint | Parameters | Returns |
 |---|---|---|
@@ -243,7 +290,7 @@ missing database returns 503.
 | `/api/reviews` | | `rows`, ordered new, then reviewing, then the rest, newest first; each with attempt facts (`strategy`, `program_origin`, `new_terms`, `runtime_s`, ...), sequence name, `files`, `weak_verification`, `rewrites` |
 | `/api/reviews/{id}/files/{name}` | | plain text of one artifact file |
 | `/api/history` | | `days` (per UTC day: runs, wins, skipped, machine hours); `sessions` (latest 100) |
-| `/api/pickmap` | `pool` (`pari` or `model`, default `pari`; anything else is a 422), `alpha` (1.0; outside 0 to 6, or `nan`, is a 422), `refresh` (false: rebuild the live pool now instead of using the cache) | `pool`, `alpha`, `n`, `bands` (per non-empty band: `band`, `label`, `n`, `share`), `built_at`, `age_s`, `note` (what the pool left out), `running_session`, `snapshots` (how many are stored for this pool), `baseline` (`id`, `taken_at`, `n`, `session_id`, `budgets_differ`, `rules_differ`; null when there is nothing to compare with), `entered` (`n`, `share`), `gone` (`n`, `share`, `reasons`, `top`), `rows` (largest first: `a`, `name`, `d`, `band`, `p`, `p0`, `ratio`, `new`) |
+| `/api/pickmap` | `pool` (`pari` or `model`, default `pari`; anything else is a 422), `alpha` (1.0; outside 0 to 6, or `nan`, is a 422), `refresh` (false: rebuild the live pool now instead of using the cache) | `pool`, `alpha`, `n`, `bands` (per non-empty band: `band`, `label`, `n`, `share`), `built_at`, `age_s`, `note` (what the pool left out), `running_session`, `snapshots` (how many are stored for this pool), `baseline` (`id`, `taken_at`, `n`, `session_id`, `budgets_differ`, `rules_differ`; null when there is nothing to compare with), `entered` (`n`, `share`), `gone` (`n`, `share`, `reasons`, `top`), `rows` (largest first: `a`, `name`, `d`, `band`, `p`, `p0`, `ratio`, `new`). **When the live pool cannot be built** (any exception from `session_pool`, a locked or unreadable database among them) the answer is a 503 with the body `{"error": "pool_build_failed", "reason": "<ExceptionType>: <message>"}` (the message on one line, cut at 200 characters) and the traceback goes to the `oeisbot.dashboard` logger; nothing is cached for it. A missing database keeps FastAPI's own 503 body (`no database at …`), which the tab shows as `Could not load: …` (also with the retry button) |
 
 ### Safety properties
 
@@ -251,7 +298,7 @@ missing database returns 503.
   database file is unchanged after calling the seven JSON endpoints (not the file endpoint), that every
   connection they opened was read-only (a spy on `db.connect`, which also covers the Pick map's pool build
   and the start-up warm-up), and that the read-only connection refuses an `UPDATE`. The Pick map reads
-  the snapshot tables but never writes them; only `oeisbot run` and `oeisbot snapshot` do.
+  the snapshot tables but never writes them; only `oeisbot run`, `oeisbot snapshot` and `oeisbot sync` do.
 - **Artifact files are confined.** The artifact folder must resolve inside `artifacts/`, and the file
   name must be one of that folder's own text files. Tested: path traversal (`..%2F...`, `..\...`) and
   unknown names return 404.
@@ -266,8 +313,8 @@ The server binds to `127.0.0.1` by default and has no authentication. Do not exp
 |---|---|
 | `src/main.tsx` | app shell, tabs, header summary |
 | `src/views.tsx` | five of the six views (the Pick map has its own file) |
-| `src/pickmap.tsx` | the Pick map view: controls, band tabs, the SVG treemap, legend, table view, "Left the pool" card |
-| `src/treemap.ts` | pure layout, colour binning and request building for the Pick map: squarified treemap, nested layout with lumping and `fairRects`, the seven change classes, `parseAlpha`, `pickmapPath`. No React, so `npm test` (`test/treemap.test.ts`, run by node itself) covers it |
+| `src/pickmap.tsx` | the Pick map view: controls, band tabs, the SVG treemap with its roving-tabindex keyboard handling and tooltip ownership, the "Too small to draw here" chips, the failure message with its retry button, legend, table view, "Left the pool" card. Node cannot run `.tsx`, so this file has no automated test |
+| `src/treemap.ts` | pure layout, colour binning and request building for the Pick map: squarified treemap, nested layout with lumping and `fairRects`, the seven change classes, `parseAlpha`, `pickmapPath`, and the logic the keyboard and the footer chip rest on (`undrawn`, `focusOrder`, `neighbour`, `failureReason`). No React, so `npm test` (`test/treemap.test.ts`, run by node itself) covers it |
 | `src/charts.tsx` | SVG charts: `LogScatter`, `BarList`, `StackedColumns`, tooltips, legend keys |
 | `src/lib.tsx` | `useApi` (polling fetch; `pollPath` is what the repeats ask for, so a forced rebuild is asked once), `useWidth` (responsive width via a callback ref), formatters, `Tile`, sortable `DataTable` |
 | `src/styles.css` | color tokens for light and dark themes (follows the OS setting), layout |
