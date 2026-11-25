@@ -25,7 +25,7 @@ uv venv .venv --python 3.11
 uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
 .venv\Scripts\oeisbot setup
 .venv\Scripts\oeisbot sync
-.venv\Scripts\python -m pytest            # 634 tests, about 100 s; confirms the sandbox works on this machine
+.venv\Scripts\python -m pytest            # 903 tests, about 100 s; confirms the sandbox works on this machine
 ```
 
 Optional dashboard: see [dashboard](dashboard.md#running-it).
@@ -49,7 +49,23 @@ ollama ps                                # PROCESSOR should read 100% GPU
 .venv\Scripts\oeisbot attempts --limit 30          # what happened
 .venv\Scripts\oeisbot review list                  # wins waiting for review
 .venv\Scripts\oeisbot snapshot                     # record the pick pool for the dashboard's Pick map (a session and a sync do too)
+.venv\Scripts\oeisbot daemon                       # sessions back to back until the window (22:00-08:00) closes; see "Running unattended"
 ```
+
+**One of these at a time** (since history item 58). `run`, `attempt`, `sync`, `recheck`, `fetch-bfiles`,
+`setup` and `snapshot` take the writers' lock while they run, and `oeisbot daemon` holds it for its whole
+window. A second one is refused at once, before it does anything, with a message that names the first:
+
+```
+`oeisbot run` not started: `oeisbot daemon` (pid 4242, started 2026-11-23 22:00:01 local time, by the
+lock file's account) is running, and only one command that runs programs, syncs or contacts oeis.org
+may run at a time. Wait for it, or stop it (`oeisbot daemon --stop` for the daemon)
+```
+
+Wait for the other command, or stop it. The lock belongs to the process, so a command that crashed or
+was killed does not leave it held, and there is never a lock file to delete. `queue`, `pick`, `stats`,
+`attempts`, `model-check`, `review` and the dashboard are never refused. Why these commands:
+[daemon](daemon.md#the-writers-lock).
 
 A session runs sequentially in the foreground and prints one line per step:
 
@@ -75,8 +91,114 @@ terms bring the sequence back.
 
 Stopping a session with Ctrl+C (or closing the window) ends the harness. The sandboxed job is killed
 with it by the Job Object's kill-on-close setting (tested for a killed harness). The session row is
-closed on Ctrl+C but stays unfinished if the process is killed outright. The interrupted run gets no
-attempt row, but every term it produced is already in `data/runs/`.
+closed on Ctrl+C but stays unfinished if the process is killed outright (the next start of
+`oeisbot daemon` closes such a row; nothing else does). The interrupted run gets no
+attempt row, but every term it produced is already in `data/runs/`. This is `oeisbot run`: the daemon
+handles Ctrl+C differently, recording the run in hand as `interrupted` (below).
+
+## Running unattended: `oeisbot daemon`
+
+The full reference is [daemon](daemon.md). **As of 2026-11-23 it has never been run on this machine's
+real data and is not armed; do the [first-night checklist](daemon.md#before-the-first-night) before
+trusting it with a night**, starting with one `oeisbot sync` by hand.
+
+**Arming: the first step, and yours.** A night runs only on a machine where a person has once run
+
+```
+.venv\Scripts\oeisbot daemon --arm        # writes data\daemon\armed and says so; starts nothing
+.venv\Scripts\oeisbot daemon --disarm     # takes it back: the next start does nothing
+```
+
+Until then every start of the daemon, whoever or whatever makes it (you at a console, the scheduled
+task, a script, a coding agent, a test), writes one line to `data/daemon/daemon-YYYYMMDD.log`,
+`daemon: not started: not armed. ...`, prints it, and exits with code 2. It takes no lock, opens no
+database and writes no heartbeat. Arming stays until you disarm: a finished night, a kill and a
+restart of the machine all leave it. `--disarm` does not stop a daemon that is running; `--stop` does.
+`--status`, `--stop` and `--task-xml` need no arming. The reasons are in [daemon](daemon.md#arming).
+
+**Running.**
+
+```
+.venv\Scripts\oeisbot daemon                         # one window, default 22:00-08:00 local time, then exit
+.venv\Scripts\oeisbot daemon --window 23:00-06:30    # another window
+.venv\Scripts\oeisbot daemon --window always         # no closing time
+.venv\Scripts\oeisbot daemon --no-sync               # do not pull the mirror first
+```
+
+Started outside its window it logs that and exits at once. Inside it, it tidies up after any killed
+predecessor, syncs the mirror once, then runs PARI sessions of up to 25 picks, starting at 60 s /
+1,800 s budgets and moving to longer ones only when nothing is left to draw. It takes no budget flags
+and no `--model`. **If another `run`, `attempt`, `sync` or the like is still running when it starts, it
+waits**, trying again every minute until the window closes (with `--window always` it gives up at
+once); while it waits, `--status` reports no daemon. To have Windows start it each night, write a Task
+Scheduler definition and import it yourself ([daemon](daemon.md#the-scheduled-task)); the project
+registers nothing:
+
+```
+.venv\Scripts\oeisbot daemon --task-xml oeisbot-daemon.xml
+schtasks /create /tn "OEISBot daemon" /xml oeisbot-daemon.xml
+```
+
+**An imported task on a machine that is not armed does nothing, every night.** It starts the daemon
+when the window opens; the daemon appends its `not started: not armed` line to that day's log in
+`data/daemon/` and exits with code 2, which Task Scheduler shows as the task's last result. Nothing
+else is written. It shows in three places: that log, `oeisbot daemon --status` (a line `not armed: a
+start will do nothing until you run `oeisbot daemon --arm``), and the dashboard's line (`Daemon is not
+armed, so a start will do nothing`). So the order of importing and arming does not matter, and
+`--disarm` is how to keep the task and have it do nothing.
+
+**The first night, in order** (the reference list, with the reasons, is
+[daemon](daemon.md#before-the-first-night)): `oeisbot sync` once by hand, with the pull; check the
+disk (the daemon pauses under 10 GiB free); `oeisbot daemon --arm`; one short run in the foreground,
+watched, then `--status` and `--stop`; restart the dashboard server and look at its line; write and
+import the task and check "Allow wake timers". The next morning: `oeisbot daemon --status` and the log.
+
+**Checking.**
+
+```
+.venv\Scripts\oeisbot daemon --status
+```
+
+says whether one is running, what it is on, when the window closes, and every warning of the night. The
+same is one line under the dashboard's header. The record is `data/daemon/daemon-YYYYMMDD.log`, which
+holds everything a console session would have printed. `oeisbot attempts` and the dashboard work while
+it runs.
+
+**Stopping.**
+
+```
+.venv\Scripts\oeisbot daemon --stop
+```
+
+or Ctrl+C once in its console, or the window's end. The run in hand is stopped and recorded with stop
+reason `interrupted`, which retires nothing, adds no failure penalty and leaves the sequence as
+drawable as it was. It usually exits within seconds; longer if it is syncing (a sync is not
+interrupted: up to 10 minutes for each git command, then the reading of the mirror) or the stopped run
+had just found new terms (its re-check runs first).
+Ctrl+C a second time ends it at once without recording the run in hand. If a stop is not obeyed for 20
+minutes the daemon ends its own process.
+
+**Closing the console window, logging off, Task Scheduler's "End" and `taskkill` are kills, not stops.**
+Nothing is corrupted by one: the lock is released, the sandboxed job dies, and the next start closes
+the session row and, once it is six hours old, removes the run's scratch directory. But the run in hand
+leaves no attempt row.
+Prefer `--stop`.
+
+**After a warning.** Warnings are in `--status`, on the dashboard line and in the log.
+
+| Warning or ending | What it means | What to do |
+|---|---|---|
+| `sync failed (...); going on with the mirror as it is` | the pull failed or timed out; the night ran on the old data | nothing at once; if it repeats, run `oeisbot sync` by hand and read git's message. While the last pull is over 7 days old the daemon stays at its lowest tier |
+| `sync failed and left the mirror unusable (...); no sessions tonight` | the reset failed and the mirror could not be put back: either it was ended half way by the time limit and the repair failed too, or git refused it because another git held the mirror's index (an `index.lock` the daemon leaves alone unless it is 5 minutes old before the sync, or was left by its own timed-out reset) | check that no git is running on `data/oeisdata`, then run `oeisbot sync` by hand before anything else reads the mirror. A sync by hand removes no lock file: if git says `index.lock` exists and no git is running, delete that file |
+| `attempt #N (A...) waits for a re-check but its saved result is missing` | a process was killed between recording a win and saving it | the terms are in the run log the attempt names; `oeisbot recheck --release N` frees the sequence ([below](#a-win-whose-re-check-failed-recheck_pending)) |
+| `A... raised <Error> outside the sandbox and is held back for 14 days` | a session raised while on that sequence; the traceback is in the log | read the traceback: it is a bug in the pipeline or an entry it cannot read |
+| `A...: N new term(s) found before the run was stopped; ... a longer run might find more` | a win was cut short by the window or a stop; its review holds the terms found | review it as any win; a targeted `oeisbot attempt A... --extend-s ...` is not possible while its review is open |
+| paused: `... GiB free on the data drive; a run needs 10 GiB` | under 10 GiB free | free disk space; it looks again every 10 minutes |
+| paused: `... GiB of RAM free; a run needs 4 GiB` | under 4 GiB of physical RAM free | close applications (Ollama keeps several GB loaded) |
+| ended: `5 picks in a row ended as launch_error / disk_cap / harness_error / bfile_error` | the machine or the network, not the programs | find which in `oeisbot attempts`; fix it before the next night |
+| ended: `2 sessions in a row raised` | a fault that repeats | read the traceback in the log |
+| `Daemon is not running, and its last run did not finish` (dashboard), `did not finish` (`--status`) | it was killed | nothing: the next start recovers. Check the log if it was not you |
+| `daemon: not started: not armed` (log, exit code 2), `not armed: a start will do nothing ...` (`--status`), `Daemon is not armed ...` (dashboard) | the daemon was started on a machine where `--arm` has not been run, or after `--disarm`. Nothing ran and nothing was touched but the log | if you want nights to run, `oeisbot daemon --arm`; if not, nothing. If you did not start it, find what did (the scheduled task, a script) |
 
 ## Command reference
 
@@ -89,17 +211,24 @@ attempt row, but every term it produced is already in `data/runs/`.
 | `pick` | a weighted random draw from that pool, without attempting | `--alpha`, `--all`, `-k N` (10), `--seed S` |
 | `attempt A... ` | attempt specific sequences (no session) | budget flags, `--model`, `--no-recheck` (testing only) |
 | `run` | pick and attempt | `-n N` (5; capped at 25, and the session log says so when the cap bites), `--alpha`, `--seed`, `--model`, budget flags |
-| `recheck` | retry the oeis.org re-check of wins left as `recheck_pending`; exits with status 1 if any are still pending | |
+| `recheck` | retry the oeis.org re-check of wins left as `recheck_pending`; exits with status 1 if any are still pending | `--release <attempt id>`: give up on one pending win whose saved result can no longer be read (refused while it still loads) |
 | `model-check` | confirm the model server and model answer | |
 | `fetch-bfiles` | look up b-files for the easiest candidates whose status is not `present` or `absent` (so earlier errors are retried); updates b-file facts and the stored difficulty | `--limit N` (100 successful lookups; errors do not count), `--all` |
 | `attempts` | recent attempt rows and failure-mode counts | `--limit N` (30), `--failure MODE` |
 | `review list` | all reviews | |
 | `review set ID STATUS` | change a review's status | `STATUS` = `new`, `reviewing`, `submitted`, `rejected`; `--note TEXT` |
 | `snapshot` | store the pool `run` would draw from, with each candidate's effective difficulty, as a snapshot the dashboard's Pick map can compare against later; prints how many candidates it held and whether anything was stored (a pool identical to the newest snapshot adds nothing). Takes about 10 s for PARI, about 30 s more with `--all`. Default budgets | `--all` (also the `run --model` pool) |
+| `daemon` | run sessions back to back, unattended, inside a window of local time; one invocation is one window ([daemon](daemon.md)). Takes the writers' lock itself. **Does nothing (one log line, exit code 2) until a person has run `--arm`** | `--window HH:MM-HH:MM` (22:00-08:00) or `always`, `--no-sync`, `--status` (read only), `--stop` (ask the running one to stop), `--arm` (allow nights to run here: writes `data/daemon/armed`, starts nothing), `--disarm` (take that back; does not stop a running daemon), `--task-xml [FILE]` (write a Task Scheduler definition to `FILE` as UTF-16, or print it; registers nothing) |
 | `dashboard` | read-only web UI; starts building the Pick map's PARI pool in the background so that tab opens quickly. It answers only to `127.0.0.1`, `localhost`, `::1` and the `--host` given; `--host 0.0.0.0` turns that check off and says so ([dashboard](dashboard.md#safety-properties)) | `--host` (127.0.0.1), `--port` (8765) |
+
+`setup`, `sync`, `attempt`, `run`, `recheck`, `fetch-bfiles` and `snapshot` are refused while another of
+them, or the daemon, is running (the writers' lock, above). The rest are never refused.
 
 Budget flags on `attempt` and `run`: `--verify-s` (60), `--extend-s` (10800), `--mem-gib` (6),
 `--max-new` (200). Every other limit is a constant in the code:
+
+- the daemon's window default, tiers, cooldown, margins and timeouts: the constants at the top of
+  `oeisbot/daemon.py` ([table](daemon.md#constants));
 
 - RAM and disk reserves, scratch cap, over-prediction factor and session cap: `Budgets` in
   `oeisbot/config.py`;
@@ -113,7 +242,7 @@ Budget flags on `attempt` and `run`: `--verify-s` (60), `--extend-s` (10800), `-
 
 | Stop reason | Usually means | Try |
 |---|---|---|
-| `verify_timeout` | the program cannot reproduce the known terms in time (common: the last known terms were expensive for their authors too) | a longer `--verify-s`, or accept that the sequence is hard. Until then the program is a dead end: it is not re-run at a `--verify-s` no longer than the time it already ran |
+| `verify_timeout` | the program cannot reproduce the known terms in time (common: the last known terms were expensive for their authors too) | a longer `--verify-s`, or accept that the sequence is hard. Until then the program is a dead end: it is not re-run at a `--verify-s` no longer than the time it already ran. Since history item 58 that holds only if the run also had CPU time of at least 80% of the `--verify-s` now asked; a timeout on a machine that slept or was busy does not retire the program, and it runs again |
 | `wrong_term` | wrong program, or the program computes a different sequence than the entry's DATA | nothing: recorded as a dead end for this program |
 | `bad_index` | the program starts at a different index than the offset | for PARI this points to an entry whose program and offset disagree |
 | `crash` / `incomplete` | program error, or it stopped early (often a built-in limit). A gp program that calls a function no one defined prints its error and still exits 0, so it lands on `incomplete`, not `crash` -- though since 2026-09-20 a PARI block calling another entry's helper is rejected before it runs (see [strategies](strategies.md#programs-that-call-another-entrys-helper)) | read `detail`: it ends with the last stderr lines the program wrote (see [verification](verification-and-estimation.md#the-stderr-tail-in-a-detail)); dead end |
@@ -124,6 +253,11 @@ Budget flags on `attempt` and `run`: `--verify-s` (60), `--extend-s` (10800), `-
 | `extend_budget` | verified; the budget ran out without (more) new terms. Also the usual end when the next term's projection was not trusted, since only a trusted one can kill a term and only a trustworthy cost fit can stop the run before it on time | a longer `--extend-s`; with `--model`, the model is asked for a faster program right away if no new terms were found. Without new terms the program is a dead end at the same or a shorter `--extend-s` (unless the machine was so busy the job got under 80% CPU) |
 | `launch_error` | not enough free RAM to start a job | free memory |
 | `harness_error` | **our** `on_line` or `on_tick` callback raised inside the sandbox; `detail` names the exception (since 2026-09-30). The program did nothing wrong | fix the harness bug, then re-run: this is deliberately not a dead end |
+| `interrupted` | `oeisbot daemon` stopped the run: a stop request, the end of its window, or Ctrl+C (since history item 58). `detail` says how far in and in which phase. The program did nothing wrong | nothing: it is not a dead end, adds no failure penalty, and the sequence can be drawn again the next night. If the run had already found new terms it is a win like any other |
+
+A skip row with reason `daemon_error` (strategy `daemon`) is not a stop: the daemon writes it for the
+sequence a session was on when the session raised, so that the same sequence is not drawn again for 14
+days. The exception is in `detail` and the traceback in the daemon's log.
 
 Skip reasons are listed in [pipeline](pipeline.md#3-per-sequence-gates-attemptattempt_sequence).
 
@@ -187,15 +321,25 @@ If one stays pending, the logged error type says why:
 - **`FileNotFoundError`, `JSONDecodeError`, `ValueError` and similar**: the saved result is missing, or
   can no longer be read. A `ValueError` naming fields that "do not match the code" means the saved win
   predates a change to one of the classes it holds; the new terms are still in the run log. To release
-  the sequence, mark the attempt by hand and attempt it again:
+  the sequence, give the win up and attempt the sequence again:
 
-  ```sql
-  UPDATE attempts SET outcome = 'verified' WHERE id = <id>;
+  ```
+  .venv\Scripts\oeisbot recheck --release <id>
   ```
 
-  Then delete `data/pending/attempt-<id>.json` if it exists. The new terms stay in the run log named in
-  the attempt's `extra`. `verified` counts toward that sequence's selection penalty, at most once for
-  its attempt: nothing more if another row of the same attempt already counts.
+  This marks the attempt `verified`, records why and when in its `extra` (`recheck`, `released_at`) and
+  renames `data/pending/attempt-<id>.json`, if it exists, to `attempt-<id>.released.json` (a result whose
+  fields drifted is still the whole result in readable JSON, and nothing reads that name again). It replaces the `UPDATE attempts SET outcome =
+  'verified'` this page used to prescribe (item 57), and it checks what a person at a SQL prompt cannot
+  easily check: **it refuses a win whose saved result still loads** (that one is not lost: wait for
+  oeis.org, or move the folder that is in the way, and run `oeisbot recheck`), it refuses a saved result
+  that exists and cannot be opened (close whatever has the file open), and it refuses a row that is not
+  `recheck_pending`. It exits with a message beginning `not released:` in each case and writes nothing.
+  **Do not run it while `oeisbot run` is in progress**: a run records its row a moment before it saves
+  the result, and a release in that moment would give up a live win. The pipeline never runs it: giving up on new terms is a person's decision. The new terms stay
+  in the run log named in the attempt's `extra`; the command prints its path and says so if the file is gone. `verified` counts toward that
+  sequence's selection penalty, at most once for its attempt: nothing more if another row of the same
+  attempt already counts.
 
 ## Reviewing a result
 
@@ -259,7 +403,7 @@ Four notes specific to this review, so the checklist below is not misread:
   real purpose.
 
 1. **Claim it**: `oeisbot review set <id> reviewing`. The sequence stays out of future picks while the
-   review is new, reviewing or submitted.
+   review is new, reviewing or submitted (and, since history item 58, when it is rejected too).
 2. **Read `README.md`**, especially the warnings:
    - *Weak verification*: fewer than 10 known terms were checked.
    - *Program was rewritten*: a print loop's bounds were lifted; compare `program.gp` with `executed.gp`
@@ -288,12 +432,28 @@ Four notes specific to this review, so the checklist below is not misread:
    blank line SubmitB.html requires (item 49); an artifact written before that date does **not**, and the
    rule's stated consequence is that the last data line — the highest new term — may be ignored.
 9. **Record the result**: `oeisbot review set <id> submitted --note "..."`, or `rejected` with the reason.
+   **Either one keeps the sequence out of every future draw** (since history item 58, see below). For
+   review #1 that means: once step 9 is recorded, in either way, A385331 is not picked again by
+   `oeisbot run` or the daemon for as long as that row stands. `review set` is not refused while the
+   daemon runs.
 
 Marking a second review for the same sequence as `submitted` is refused. `rejected` is a legal status
-(`db.py`'s CHECK constraint) but is **not** in `db.OPEN_REVIEW_STATUSES`, so closing a review that way
-**releases the sequence back into `select.candidates`** — which is why rejecting a false win needs a
-reason to believe the pipeline will not simply pick it again. For reviews #2 and #3 that reason was
-`pari.conjectural` (item 47), measured before the close and again after: the pool stayed at 3,438.
+(`db.py`'s CHECK constraint) and is **not** in `db.OPEN_REVIEW_STATUSES`, so it does not gate a targeted
+`oeisbot attempt`. **Until history item 58 it also released the sequence back into the draw**, which
+is why rejecting a false win needed a reason to believe the pipeline would not simply pick it again (for
+reviews #2 and #3 that reason was `pari.conjectural`, item 47, measured before the close and again
+after: the pool stayed at 3,438). **Since item 58 `select.candidates` does not draw a sequence with a
+`rejected` review at all.** A win for such a sequence is refused a review anyway (next paragraph), so
+drawing it could only spend the run and write an artifact folder nobody is shown, and an unattended
+loop would repeat that. The consequences:
+
+- All four statuses now keep a sequence out of the draw, and no command deletes a review row. A
+  sequence that has had a review is drawn again only if someone removes the row by hand.
+- Rejecting a win because the *run* was wrong (not the sequence) therefore gives up the sequence for
+  sessions too. A targeted `oeisbot attempt A...` still runs it.
+- For review #1: if A385331's terms are accepted by OEIS, the entry gains them at the next sync and
+  nothing is lost by its staying out. If the review is `rejected`, A385331 stays out as well, where
+  before it would have been re-run from a(1).
 
 **A `rejected` review also refuses any later review for the same sequence** (2026-09-30, history item
 51). A `rejected` row does not gate `attempt_sequence` — only the open statuses do, deliberately, so a
@@ -386,13 +546,14 @@ their own certificate bundles then fail, while tools using the Windows certifica
   [data and schema](data-and-schema.md#meta) and
   [known limitations](known-limitations.md#runtime-provenance).
 - **Refresh the mirror** with `oeisbot sync` before sessions. Sequences that lost `more` drop out of the
-  pool.
+  pool. `oeisbot daemon` does this itself at each start, under a 10-minute limit per git command.
 - **Disk growth**: `data/runs/` (logs and generated programs) and `data/bfiles/` are never pruned. Both
-  are safe to delete, but deleting run logs loses the term records of past runs. The database's pick
+  are safe to delete, but deleting run logs loses the term records of past runs. The daemon's logs in
+  `data/daemon/` are never pruned either and are safe to delete while it is not running. The database's pick
   snapshots **are** pruned, in the transaction that writes a new one: the 30 newest of the PARI pool
   (about 3,400 rows each) and the 10 newest of the model pool (about 26,700 rows each), set by
   `config.PICK_SNAPSHOTS_KEPT`. At those numbers they are a few tens of megabytes at most.
   See [data and schema](data-and-schema.md#pick_snapshots-and-pick_snapshot_rows-the-pool-a-session-drew-from-history-item-54).
-- **Starting over**: stop any session and the dashboard, then delete `data/oeisbot.sqlite3*` and run
+- **Starting over**: stop any session, the daemon and the dashboard, then delete `data/oeisbot.sqlite3*` and run
   `oeisbot setup` and `oeisbot sync`. This deletes all attempt and review history, including which
   sequences were already submitted.

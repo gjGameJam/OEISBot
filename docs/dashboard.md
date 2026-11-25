@@ -28,7 +28,11 @@ It can run while a session is writing: SQLite WAL lets it read mid-write.
 
 Tabs are addressable by URL hash (`#estimator`, `#pickmap`, `#queue`, `#attempts`, `#reviews`,
 `#history`); choosing a tab adds a browser-history entry, and an address with no fragment or an unknown
-one is corrected in place to the first tab. The header shows the number of sequences with keyword `more`
+one is corrected in place to the first tab. **From the keyboard the row of tabs is one Tab stop**, on the
+selected tab: Left and Right move the focus along the row and wrap at its ends, Home and End go to the
+first and last, and Enter or Space opens the focused tab (`tabs.tabAfter`, `lib.tabKeys`; item 57). Moving
+does not open, because opening adds a history entry and starts a request; a key held with Alt, Ctrl,
+Shift or the Windows key is left to the browser. The Pick map's band tabs work the same way. The header shows the number of sequences with keyword `more`
 in the mirror (`sequences.in_more`: far more than any pool a session draws from, which the Queue and the
 Pick map each count for themselves), runs, **wins** and, after them, how many more were rejected in review,
 reviews awaiting action, machine hours, and the oeisdata commit and sync time. **A win, everywhere on the
@@ -38,15 +42,77 @@ counted them (the header read "3 wins" where there is one). Data refreshes every
 The previous data stays on screen while it reloads; the estimator card, the queue table, the attempts table
 and the Pick map are also dimmed during a reload.
 
+### The daemon line
+
+One line under the header, on every tab (`DaemonStrip` in `src/main.tsx`; history item 58), says whether
+`oeisbot daemon` is running and what it is doing. It polls `/api/daemon` every 15 s like the rest. Until
+the first answer arrives an empty line of the same height holds its place, so the tabs do not jump. **If
+the request fails the line says `Daemon status unavailable (<error>)`** instead of keeping the last
+answer, which `useApi` would otherwise leave on screen: a "Daemon running ..." left by a server that has
+gone away would read as current. The words are decided by
+`daemonLine` in `src/daemonline.ts`, and the tone is carried by a dot and the rule down the left side,
+never by text colour. The line is deliberately not a live region: its text carries a ticking "N min
+ago", which a screen reader would read out again every minute. **It has not been seen in a browser**
+(2026-11-23): only `daemonLine` is tested,
+by the 12 node tests in `test/daemonline.test.ts` (the `test(` calls at the start of a line, counted
+2026-11-23; the 12th is the not-armed line), and a server started before item 58 has no
+`/api/daemon`, so against such a server the line reads `Daemon status unavailable`.
+
+Whether a daemon is running comes from the writers' lock, never from the heartbeat's age: a daemon
+inside one long pick can be quiet for an hour, and a killed one leaves a fresh-looking heartbeat.
+
+| Situation | Text | Tone |
+|---|---|---|
+| no daemon, and `armed` is false | `Daemon is not armed, so a start will do nothing (oeisbot daemon --arm allows it)`, with `; last night: <why it ended>` added when the last heartbeat is `stopped` and has a detail | idle |
+| no daemon, another locked command running | `Daemon not running; oeisbot <command> is` | idle |
+| no daemon, no heartbeat file | `Daemon has not run here` | idle |
+| no daemon, last heartbeat `stopped` | `Daemon not running; last night: <why it ended>` | idle; warn if that night left warnings |
+| no daemon, last heartbeat not `stopped` | `Daemon is not running, and its last run did not finish (it was <state> when its process ended)` | warn |
+| running a pick | `Daemon running A123456 at tier base · window closes 08:00 · started 12 min ago` | ok |
+| running, between picks | `Daemon building the pool at tier base · window closes 08:00` (the heartbeat's detail, or `between picks`) | ok |
+| syncing | `Daemon syncing the mirror · window closes 08:00` | ok |
+| paused | `Daemon paused, the disk is nearly full` / `paused, memory is short` / `paused, the machine was short of disk or memory`, with what is short as a note | warn |
+| stopping | the line gains ` · stopping (<reason>), N min so far` | warn |
+
+**Not armed is said first** (history item 58, section F; [daemon](daemon.md#arming)). The rows are
+tried in the order of the table, so while no daemon is running and the answer's `armed` is `false`
+the not-armed text replaces whichever of the next four rows would have applied: it is why nothing will
+happen tonight, whatever last night's heartbeat says. Two consequences, both as coded: its tone is
+always idle, even when last night left warnings (they are still listed as notes), and a last run that
+did not finish is not said at all until the daemon is armed. Only `armed === false` counts: an answer
+without the field (a server started before section F) is read as it was before, never as "not armed".
+While a daemon is running the line says nothing about arming, so disarming in the middle of a night
+does not change it.
+
+The three tones are CSS classes on the line (`styles.css`): `ok` colours the dot and the rule with
+`--good-text`, `warn` with `--critical`, and `idle` leaves the dot at `--text-muted`.
+
+Further rules: with `--window always` the line reads `window always` in place of a closing time. The
+closing time is cut out of the heartbeat's local timestamp as text, not parsed as a date, since a
+browser would shift it. "started N ago" is the time since the main loop's last step (`progress_at`).
+**If that step is more than 4.5 hours old** (`NO_STEP_MS`: the longest honest silence is one pick at the top
+tier, three ten-minute verifications, a three-hour extension and a win's re-check in network trouble,
+about 3 h 45 min) the tone is warn and a note says `no step for ...: it may be stuck (see oeisbot daemon --status)`.
+**If the heartbeat of a daemon the lock says is running was written more than 5 minutes ago**
+(`NO_BEAT_MS`; the daemon writes it every 30 s) the tone is warn and a note says `this was written ...
+ago and has not been refreshed since: it may not be current`: the file cannot be written, or the whole
+process is frozen.
+Each of the night's warnings from the heartbeat is shown as a note on its own row, and any note makes
+the tone warn. The heartbeat's fields are listed in [daemon](daemon.md#the-heartbeat-file-and---status).
+
 ### Estimator accuracy
 
 Whether the feasibility step works.
 
-- **Filters**: cost unit (all, work counts, CPU time), trusted projections only (`predictions.trustworthy`:
-  those the over-prediction kill acts on, unless the term is value-dependent; session 5's two kills came before
-  that rule and are stored untrusted), chart/table toggle. This filter is the *kill's* flag, not the cost
-  fit's: since 2026-09-21 the table also has `fit_trustworthy`, which the dashboard does not yet show, so a
-  fit withdrawn only by the rate drift is filtered out here while reading as a sound fit in SQL.
+- **Filters**: cost unit (all, work counts, CPU time), projections (all; trusted; trusted, or cost fit
+  sound), chart/table toggle. *Trusted* is `predictions.trustworthy`: the projections the over-prediction
+  kill acts on, unless the term is value-dependent (session 5's two kills came before that rule and are
+  stored untrusted). It is the *kill's* flag, not the cost fit's: a sound fit whose rate of work per second
+  was drifting is stored `trustworthy = 0, fit_trustworthy = 1`. Since item 57 the page is sent both
+  (`tabs.trustOf`), the third choice keeps such a projection, the table's Trusted column reads "no: rate
+  drifting, cost fit sound" for it and the tooltip says the same. One of the 20 points has that pair on
+  2026-11-18 (A229209, a(12)); a row from before the fit's own verdict was stored has neither and reads
+  "no".
 - **Tiles** (computed by the server over all points; the unit and trusted filters do not change them):
   - terms predicted and finished (and how many were stopped before finishing);
   - share within 2× of prediction;
@@ -220,7 +286,12 @@ make), not the wider one the Queue tab shows.
   exactly equal is the tile's rect, gutter included; what that leaves is in
   [known limitations](known-limitations.md#the-pick-map).
 - **Hover or keyboard focus** shows the chance of being picked first, the chance before (rescaled) and the change,
-  the difficulty and the band; **clicking a tile opens its entry on oeis.org**. Whichever of the two moved last
+  the difficulty and the band; **clicking a tile opens its entry on oeis.org**. **On a touch screen the first
+  tap on a tile shows its tooltip, with a line saying to tap again, and only a second tap on that same tile
+  opens it** (`tabs.tapActs`; item 57): a finger cannot hover, and one tap used to open oeis.org before a
+  word of the tooltip could be read. The tile stays armed only while its tooltip is up, so after a scroll or
+  a tap elsewhere the next tap shows a tooltip again. A lump follows the same rule; a band's header, a mouse
+  and a pen act at once. Whichever of the two moved last
   owns the tooltip: the mouse leaving, or moving over a band's header or frame, does not close one the keyboard
   opened, nor does blurring close one the mouse opened. A new layout (another band, a resize, a refresh) or a
   scroll (of the page or of anything in it) closes
@@ -241,16 +312,22 @@ make), not the wider one the Queue tab shows.
   and a share too small for four decimals reads "< 0.0001%" (`format.fmtShare`).
 - **"Left the pool since #N"**: the sequences in the baseline that are not in the live pool, how much of the
   baseline's picks they held, **why** (`pickmap.departure_reason`, read from what the database recorded after
-  the snapshot) and the ten that held most. In order of precedence: an open review (`review new`, ...); the
+  the snapshot) and the ten that held most. In order of precedence: an open review (`review new`, ...) or,
+  since history item 58, a rejected one (`review rejected`: it keeps a sequence out of the draw now, and it
+  is the reason whatever the run that led to it recorded); the
   newest attempt since the snapshot (`attempted: failed (verify_timeout)`; `win waiting for its re-check` for a
-  `recheck_pending` win); the sequence no longer being in the `more` list at a sync; the selection rules
+  `recheck_pending` win), **passing over any `failed` or `verified` row whose stop is `interrupted`**
+  (`app._departures`): such a run takes nothing out of the pool, and the daemon writes one whenever its
+  window closes on a run, so it would be named as the reason for whatever really happened to the
+  sequence. An interrupted run that had found new terms is not passed over, since its outcome is a win
+  (`win waiting for its re-check`, or `attempted: extended (interrupted)`); the sequence no longer being in the `more` list at a sync; the selection rules
   having changed; the budgets differing; otherwise **`unexplained`**. A sequence reads `unexplained` only when
   nothing the database recorded accounts for it and neither fingerprint is known to differ. When the rules
   cannot be compared (the baseline recorded none, or a fingerprint is `unknown`) the map carries a note saying
   a change in them cannot be ruled out, and a departure that rules could explain still reads `unexplained`,
   because the label would otherwise claim a cause nobody measured. The attempt reason looks at attempts that
   started at or after the baseline's `taken_at`, so the session that took the snapshot counts; the review
-  reason is whatever review is open now, and the `more` list is read as it is now.
+  reason is whatever review is open or rejected now (the newest such row), and the `more` list is read as it is now.
   The rules fingerprint is the one of the code the dashboard process **loaded** (taken once per process, so
   an edit to a rule file the server has not reloaded does not read as a change), against the one stored with
   the baseline (`attempt.rules_fingerprint`: [data and schema](data-and-schema.md#pick_snapshots-and-pick_snapshot_rows-the-pool-a-session-drew-from-history-item-54)
@@ -282,10 +359,13 @@ The candidate pool as selection sees it, before the last check a session applies
   invalid and the message names the α the table still shows. The server refuses the same values with a 422.
 - **Table** (up to 2,000 rows, sortable): A-number (links to oeis.org), name, difficulty, pick chance,
   programs, known terms, b-file status, extension credits, search flag. **Sorting reorders the rows that
-  were sent, not the whole queue** (5,315 with a PARI program on 2026-11-17, of which the 2,000 most likely
+  were sent, not the whole queue** (5,313 with a PARI program on 2026-11-23, the PARI pool's 3,359 plus
+  the 1,954 a session leaves out; it was 5,315 until history item 58 took out the two sequences with a
+  rejected review; of these the 2,000 most likely
   are sent), and at α 0 every sequence is equally likely, so which 2,000 are sent is arbitrary; the caption
   says both.
-- Sequences with an open review or a `recheck_pending` win are excluded, exactly as in selection.
+- Sequences with an open review, a rejected review (since history item 58) or a `recheck_pending` win
+  are excluded, exactly as in selection.
 - Unlike a session, `oeisbot queue` and `oeisbot pick`, the tab does **not** leave out sequences an attempt
   could only skip (no supported PARI program, all programs dead ends or out of reach): that check reads
   every PARI-bearing entry from disk (about 3 s) and the tab refreshes every minute. Its totals and pick
@@ -303,7 +383,10 @@ What to fix next.
 - **"Why sequences were skipped"**: bar chart of skip reasons.
 - **Table** (latest 1,000 matching rows, with a line saying so when more match): id, start time, sequence,
   strategy, outcome, stop reason, reproduced/known, new terms, runtime, peak memory, detail. An `extended`
-  run that is not a win is marked "review rejected". Peak memory reads "–" for a gp run that ended before
+  run that is not a win is marked with why (`tabs.notAWin`; item 57): "review rejected" when a person
+  rejected its review, "no review opened" when it never had one because its sequence already had a rejected
+  review (`extra.review_refused`), with the earlier review's number in the label's tooltip when the row
+  records it. No run of the second kind exists on 2026-11-18. Peak memory reads "–" for a gp run that ended before
   reporting any stack figure (the stored value is 0 there, which is "not measured": 20 rows on 2026-11-17).
 
 ### Review inbox
@@ -354,8 +437,9 @@ sequences were skipped" chart, and the Sessions table's Attempts column (`sessio
 
 ## API
 
-All endpoints are `GET`, return JSON (except file contents), and open a fresh read-only connection. A
-missing database returns 503, and so does a Pick map pool that cannot be built (below). A number out of
+All endpoints are `GET`, return JSON (except file contents), and open a fresh read-only connection
+(`/api/daemon` opens none). A
+missing database returns 503 (not from `/api/daemon`, which does not need one), and so does a Pick map pool that cannot be built (below). A number out of
 its range is a 422 (FastAPI's validation), a request addressed to a host name the server does not answer to
 is a 400, and an API request a browser says another page made is a 403 (both under
 [safety properties](#safety-properties)).
@@ -363,9 +447,10 @@ is a 400, and an API request a browser says another page made is a 403 (both und
 | Endpoint | Parameters | Returns |
 |---|---|---|
 | `/api/summary` | | `candidates` (sequences with keyword `more`), `attempts` (non-skip), `skipped`, `wins` and `new_terms` (of runs that are wins: `extended`, review neither rejected nor refused), `rejected_wins` (the other `extended` runs), `open_reviews` (new + reviewing), `machine_hours`, `oeisdata_commit`, `synced_at` |
-| `/api/estimator` | | `points`: prediction rows with a positive prediction and an actual or censored time, joined with sequence and strategy, each with `finished` (it has a positive actual time; a zero is not one); `stats`: `finished`, `censored`, `within_2x`, `median_ratio`, `mean_abs_log10_error`, `in_reported_range_2x`, `underestimated_censored` |
+| `/api/daemon` | | `daemon.status()` (history item 58): `running` (true when the writers' lock is held and its description names `daemon`, or is held with no readable description beside a heartbeat that is not `stopped`), `other_command` (the name of a different command holding the lock, else null), `heartbeat` (the contents of `data/daemon/heartbeat.json`, or null when it is missing or unreadable), `armed` (whether `data/daemon/armed` exists, that is, whether the user has run `oeisbot daemon --arm`; false until they have, and the page then says so). The lock is probed without creating or writing anything, and the database is not opened, so it answers 200 where the rest of the API answers 503 for a missing database. The host and other-page refusals apply to it as to the rest |
+| `/api/estimator` | | `points`: prediction rows with a positive prediction and an actual or censored time, joined with sequence and strategy, each with `finished` (it has a positive actual time; a zero is not one), `fit_trustworthy` and `rate_drift` (null on a row stored before the fit's own verdict was kept); `stats`: `finished`, `censored`, `within_2x`, `median_ratio`, `mean_abs_log10_error`, `in_reported_range_2x`, `underestimated_censored` |
 | `/api/queue` | `alpha` (1.0; 0 to 6, as the Pick map's), `pari_only` (true), `limit` (500; 0 to 30,000), `sort` (`weight`, `difficulty`, `a_number`) | `total`, `alpha`, `rows` with difficulty, weight, pick probability, languages, keywords, b-file status, known terms, credits, search flag |
-| `/api/attempts` | `failure_mode` (`none` selects runs with no stop reason), `outcome`, `strategy`, `limit` (300; 0 to 5,000) | `rows` (newest first, each with `win_rejected`: an `extended` run that is not a win), `total` (how many match in all), `failure_counts` (non-skip; a missing reason under `none`), `skip_counts`, `outcome_counts`, `strategies` |
+| `/api/attempts` | `failure_mode` (`none` selects runs with no stop reason), `outcome`, `strategy`, `limit` (300; 0 to 5,000) | `rows` (newest first, each with `win_rejected`: an `extended` run that is not a win, and `review_refused`: for such a run that was never given a review, the number of the rejected review that stood in the way, or `true` when the row does not record a whole number; null otherwise), `total` (how many match in all), `failure_counts` (non-skip; a missing reason under `none`), `skip_counts`, `outcome_counts`, `strategies` |
 | `/api/reviews` | | `rows`, ordered new, then reviewing, then the rest, newest first; each with `status`, `note`, attempt facts (`strategy`, `program_origin`, `new_terms`, `runtime_s`, ...), sequence name, `files`, `weak_verification`, `rewrites`, `below_bound` (the published bound a new term lands below, or null) |
 | `/api/reviews/{id}/files/{name}` | `id` from 1 to 2⁶³ − 1 | plain text of one artifact file |
 | `/api/history` | `session_limit` (100; 0 to 5,000) | `days` (per UTC day: runs, `wins`, `rejected_wins`, skipped, machine hours); `sessions` (the latest, with `wins` and `rejected_wins` counted from their attempts); `sessions_total` |
@@ -379,7 +464,11 @@ is a 400, and an API request a browser says another page made is a 403 (both und
   database file is unchanged after calling the seven JSON endpoints (not the file endpoint), that every
   connection they opened was read-only (a spy on `db.connect`, which also covers the Pick map's pool build
   and the start-up warm-up), and that the read-only connection refuses an `UPDATE`. The Pick map reads
-  the snapshot tables but never writes them; only `oeisbot run`, `oeisbot snapshot` and `oeisbot sync` do.
+  the snapshot tables but never writes them; only `oeisbot run`, `oeisbot snapshot`, `oeisbot sync` and
+  `oeisbot daemon` (through the same two functions) do. `/api/daemon` (history item 58) has its own two
+  tests: asking it creates nothing, not even the data directory or the lock file (`lock.held` opens the
+  lock file only if it exists), it answers without a database, and it keeps the host and other-page
+  refusals below.
 - **Artifact files are confined.** The artifact folder must resolve inside `artifacts/`, and the file
   name must be one of that folder's own text files. Tested: path traversal (`..%2F...`, `..\...`) and
   unknown names return 404.
@@ -413,10 +502,12 @@ The server binds to `127.0.0.1` by default and has no authentication. Do not exp
 
 | File | Role |
 |---|---|
-| `src/main.tsx` | app shell, tabs, header summary |
+| `src/main.tsx` | app shell, tabs, header summary, and `DaemonStrip`, the daemon's line under the header |
+| `src/daemonline.ts` | what the daemon's line says: `daemonLine` (text, tone and notes from an `/api/daemon` answer and the present time), `ago`, `clock`, `NO_STEP_MS`, `NO_BEAT_MS`. **No imports**, like the four modules below, so that node can test it; `test/daemonline.test.ts` |
 | `src/views.tsx` | five of the six views (the Pick map has its own file) |
 | `src/pickmap.tsx` | the Pick map view: controls, band tabs, the SVG treemap with its roving-tabindex keyboard handling and tooltip ownership, the "Too small to draw to scale here" chips, the failure message with its retry button, legend, table view, "Left the pool" card. Node cannot run `.tsx`, so this file has no automated test |
 | `src/treemap.ts` | pure layout, colour binning and request building for the Pick map: squarified treemap, nested layout at one common scale with lumping (`layoutGroups`, `commonScale`, `fairRects`), the seven change classes and `fmtChange`, `parseAlpha` (the Queue uses it too), `pickmapPath`, and the logic the keyboard and the footer chip rest on (`undrawn`, `focusOrder`, `neighbour`, `failureReason`). No React and no imports, so `npm test` (`test/treemap.test.ts`, run by node itself) covers it |
+| `src/tabs.ts` | pure decisions shared by the views: `tabAfter` (the arrow keys along a row of tabs), `tapActs` (the two-tap rule on a touch screen), `notAWin` (the label of an `extended` run that is not a win), `trustOf` and `passesTrust` (the three levels of trust). No imports; `test/tabs.test.ts` |
 | `src/scale.ts` | pure scale arithmetic for the charts: the time-tick ladder and `timeDomain`, `logFraction`, the 2× band's corners, label thinning, `niceStep`, `actualOrBound`, `dayColumns`. No imports; `test/scale.test.ts` |
 | `src/format.ts` | pure formatting: `fmtSeconds`, `sigFixed`, `fmtBytes`, `fmtPct`, `fmtInt`, `fmtTime` (the year shown when it is not this one), `fmtShare`, `describeError`. No imports; `test/format.test.ts`. Nothing in it may print exponent notation |
 | `src/charts.tsx` | SVG charts: `LogScatter`, `BarList`, `StackedColumns` (with empty-day slots and gap markers), tooltips, legend keys |

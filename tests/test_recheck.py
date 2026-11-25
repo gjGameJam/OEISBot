@@ -220,3 +220,143 @@ def test_recheck_command_reports_what_is_pending(tmp_path, monkeypatch, capsys):
     assert f"attempt #{attempt_id}: still pending (FileNotFoundError" in capsys.readouterr().out
     assert db.pending_recheck(conn, "A999999")["id"] == attempt_id
     conn.close()
+
+
+# ------------------------------------------------------------------ item 57: releasing a win that is lost
+
+def release_setup(tmp_path, monkeypatch):
+    conn = db.connect(tmp_path / "t.sqlite3")
+    monkeypatch.setattr(db, "connect", lambda *a, **k: conn)
+    monkeypatch.setattr(config, "DATA", tmp_path)
+    return conn, pending_row(conn)
+
+
+def test_release_frees_a_win_whose_saved_result_is_gone(tmp_path, monkeypatch, capsys):
+    """The hand-written UPDATE of operations.md as a command: the row becomes `verified`, which is not
+    a dead end while it carries new terms, so the sequence is attempted again."""
+    conn, attempt_id = release_setup(tmp_path, monkeypatch)
+    conn.execute("UPDATE attempts SET extra = json_set(extra, '$.log', 'runs/A999999-x.jsonl') WHERE id = ?",
+                 (attempt_id,))
+    assert cli.main(["recheck", "--release", str(attempt_id)]) == 0
+    row = conn.execute("SELECT * FROM attempts WHERE id = ?", (attempt_id,)).fetchone()
+    extra = json.loads(row["extra"])
+    assert row["outcome"] == "verified" and row["new_terms"] == 2
+    assert extra["recheck"].startswith("released by hand, saved result unreadable: FileNotFoundError")
+    assert extra["log"] == "runs/A999999-x.jsonl" and extra["released_at"]
+    assert db.pending_recheck(conn, "A999999") is None
+    assert db.is_dead_end(conn, "A999999", "deadbeef", 3, Budgets()) is None
+    out = capsys.readouterr().out
+    assert f"attempt #{attempt_id} released" in out and "runs/A999999-x.jsonl" in out
+    conn.close()
+
+
+def test_release_frees_a_win_whose_fields_drifted_and_deletes_the_file(tmp_path, monkeypatch):
+    conn, attempt_id = release_setup(tmp_path, monkeypatch)
+    saved = json.loads(attempt._dump_pending(a_win(), "The primes.", Budgets()))
+    saved["result"]["program"].pop("script")
+    path = attempt.pending_path(attempt_id)
+    path.parent.mkdir(parents=True)
+    path.write_bytes(json.dumps(saved).encode("utf-8"))
+    attempt.release_pending(conn, attempt_id, log=lambda m: None)
+    row = conn.execute("SELECT outcome, extra FROM attempts WHERE id = ?", (attempt_id,)).fetchone()
+    assert row["outcome"] == "verified"
+    assert "ValueError: Program: saved fields do not match" in json.loads(row["extra"])["recheck"]
+    # not deleted: a drifted result is still the whole result, kept under a name nothing reads again
+    kept = path.with_name(f"attempt-{attempt_id}.released.json")
+    assert not path.exists() and json.loads(kept.read_bytes()) == saved
+    conn.close()
+
+
+def test_release_is_refused_while_the_saved_win_still_loads(tmp_path, monkeypatch):
+    """The whole reason this is a command and not a line of SQL: a win waiting on oeis.org is not lost,
+    and releasing it would discard its terms to save a wait."""
+    conn, attempt_id = release_setup(tmp_path, monkeypatch)
+    attempt._save_pending(attempt_id, a_win(), "The primes.", Budgets())
+    before = tuple(conn.execute("SELECT * FROM attempts WHERE id = ?", (attempt_id,)).fetchone())
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["recheck", "--release", str(attempt_id)])
+    assert "not released" in str(exit_info.value) and "still loads" in str(exit_info.value)
+    assert "2 new term(s)" in str(exit_info.value)
+    assert tuple(conn.execute("SELECT * FROM attempts WHERE id = ?", (attempt_id,)).fetchone()) == before
+    assert attempt.pending_path(attempt_id).exists()
+    conn.close()
+
+
+@pytest.mark.parametrize("outcome", ["extended", "verified", "failed", "superseded"])
+def test_release_is_refused_for_a_row_that_is_not_pending(tmp_path, monkeypatch, outcome):
+    """`verified` written over an `extended` row would un-record a win."""
+    conn, attempt_id = release_setup(tmp_path, monkeypatch)
+    with conn:
+        conn.execute("UPDATE attempts SET outcome = ? WHERE id = ?", (outcome, attempt_id))
+    before = tuple(conn.execute("SELECT * FROM attempts WHERE id = ?", (attempt_id,)).fetchone())
+    with pytest.raises(attempt.ReleaseRefused, match=f"its outcome is {outcome}"):
+        attempt.release_pending(conn, attempt_id, log=lambda m: None)
+    assert tuple(conn.execute("SELECT * FROM attempts WHERE id = ?", (attempt_id,)).fetchone()) == before
+    with pytest.raises(attempt.ReleaseRefused, match="there is no attempt #999"):
+        attempt.release_pending(conn, 999, log=lambda m: None)
+    assert db.release_recheck(conn, attempt_id, "x") is False          # the condition is in the UPDATE too
+    assert tuple(conn.execute("SELECT * FROM attempts WHERE id = ?", (attempt_id,)).fetchone()) == before
+    conn.close()
+
+
+@pytest.mark.parametrize("extra", [None, "[1, 2]", '"a string"', "7", "{not json"])
+def test_release_survives_an_extra_edited_into_any_shape(tmp_path, monkeypatch, extra):
+    """`extra` is JSON a person may have edited by hand, and `json_set` raises on anything but an object.
+    This command is the only exit such a row has, so it must not be the thing that fails."""
+    conn, attempt_id = release_setup(tmp_path, monkeypatch)
+    with conn:
+        conn.execute("UPDATE attempts SET extra = ? WHERE id = ?", (extra, attempt_id))
+    attempt.release_pending(conn, attempt_id, log=lambda m: None)
+    row = conn.execute("SELECT outcome, extra FROM attempts WHERE id = ?", (attempt_id,)).fetchone()
+    after = json.loads(row["extra"])
+    assert row["outcome"] == "verified" and after["recheck"].startswith("released by hand")
+    assert after.get("extra_was") == extra
+    conn.close()
+
+
+def test_release_is_refused_when_the_saved_result_cannot_be_opened(tmp_path, monkeypatch):
+    """The audit's finding: a file that exists and is locked (open in an editor, held by a scanner) says
+    nothing about whether it still loads, and used to be released as unreadable."""
+    conn, attempt_id = release_setup(tmp_path, monkeypatch)
+    attempt._save_pending(attempt_id, a_win(), "The primes.", Budgets())
+    path = attempt.pending_path(attempt_id)
+    before = tuple(conn.execute("SELECT * FROM attempts WHERE id = ?", (attempt_id,)).fetchone())
+    real = type(path).read_bytes
+
+    def locked(self):
+        if self == path:
+            raise PermissionError(13, "The process cannot access the file", str(self))
+        return real(self)
+
+    monkeypatch.setattr(type(path), "read_bytes", locked)
+    with pytest.raises(attempt.ReleaseRefused, match="could not be opened"):
+        attempt.release_pending(conn, attempt_id, log=lambda m: None)
+    assert tuple(conn.execute("SELECT * FROM attempts WHERE id = ?", (attempt_id,)).fetchone()) == before
+    assert path.exists()
+    conn.close()
+
+
+def test_release_says_so_when_the_row_stops_waiting_under_it(tmp_path, monkeypatch):
+    conn, attempt_id = release_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(db, "release_recheck", lambda *a, **k: False)     # a re-check resolved it in between
+    lines = []
+    with pytest.raises(attempt.ReleaseRefused, match="stopped waiting"):
+        attempt.release_pending(conn, attempt_id, log=lines.append)
+    assert lines == []                                                     # nothing is announced as released
+
+
+@pytest.mark.parametrize("make_log, said", [(True, "they are in the run log: "), (False, "the run log the row names is gone: ")])
+def test_release_does_not_promise_a_run_log_it_has_not_seen(tmp_path, monkeypatch, make_log, said):
+    conn, attempt_id = release_setup(tmp_path, monkeypatch)
+    run_log = tmp_path / "A999999-x.jsonl"
+    if make_log:
+        run_log.write_text("{}\n")
+    conn.execute("UPDATE attempts SET extra = json_set(extra, '$.log', ?) WHERE id = ?", (str(run_log), attempt_id))
+    lines = []
+    attempt.release_pending(conn, attempt_id, log=lines.append)
+    assert any(said + str(run_log) in line for line in lines), lines
+    conn.execute("UPDATE attempts SET outcome = 'recheck_pending', extra = '{}' WHERE id = ?", (attempt_id,))
+    lines.clear()
+    attempt.release_pending(conn, attempt_id, log=lines.append)
+    assert any("the row names no run log" in line for line in lines), lines
+    conn.close()

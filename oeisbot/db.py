@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config
+from . import config, guard
 
 # 2 since 2026-09-21: `predictions` gained the cost fit's own statistics. Advisory only -- nothing reads
 # it, and `connect` writes it with INSERT OR IGNORE, so an existing database keeps whatever it has unless
@@ -163,7 +163,13 @@ OPEN_REVIEW_STATUSES = ("new", "reviewing", "submitted")
 DETERMINISTIC_FAILURES = ("wrong_term", "bad_index", "protocol", "crash", "incomplete")
 # a verified run that used its whole extension without a new term is a dead end only if it had the CPU:
 # a run starved by a busy machine did less work than its budget allows. Real runs had 0.93-0.99.
+# Since item 58 a `verify_timeout` needs the same fraction of the verify budget on the CPU (see
+# is_dead_end); the name is kept.
 EXTEND_DEAD_END_MIN_CPU_SHARE = 0.8
+# The stop a run is recorded under when its caller asked it to stop (verify.Stop.INTERRUPTED, spelled
+# out here because this module cannot import verify). Never a dead end, and select.candidates leaves
+# such rows out of the failure penalty: the run says nothing about its program or its sequence.
+INTERRUPTED = "interrupted"
 
 
 def now() -> str:
@@ -180,6 +186,7 @@ def connect(path: Path = config.DB_PATH, *, readonly: bool = False) -> sqlite3.C
     if readonly:
         conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, check_same_thread=False)
     else:
+        guard.refuse_if_real(path, "opening the database for writing")     # never from a test (oeisbot.guard)
         path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(path)
         conn.execute("PRAGMA journal_mode=WAL")
@@ -305,6 +312,25 @@ def record_win(conn: sqlite3.Connection, attempt_id: int, a_number: str, artifac
             return None
 
 
+def release_recheck(conn: sqlite3.Connection, attempt_id: int, note: str) -> bool:
+    """Give up on one `recheck_pending` win: the row becomes `verified`, so its sequence can be picked
+    and attempted again. Returns False, and writes nothing, when the row is not `recheck_pending` -- the
+    condition is in the UPDATE itself, so a re-check that resolved the row in between is not undone.
+
+    Only `attempt.release_pending` may call this, and only for a win whose saved result can no longer be
+    read. `extra` may have been edited by hand into something that is not a JSON object (operations.md
+    says how to edit it), and `json_set` raises on that, so such a value is kept whole under
+    `extra_was` rather than refusing the one command that exists for a row nothing else can move."""
+    with conn:
+        done = conn.execute(
+            """UPDATE attempts SET outcome = 'verified',
+                      extra = CASE WHEN json_valid(COALESCE(extra, '{}')) AND json_type(COALESCE(extra, '{}')) = 'object'
+                                   THEN json_set(COALESCE(extra, '{}'), '$.recheck', ?1, '$.released_at', ?2)
+                                   ELSE json_object('recheck', ?1, 'released_at', ?2, 'extra_was', extra) END
+               WHERE id = ?3 AND outcome = 'recheck_pending'""", (note, now(), attempt_id)).rowcount
+    return done == 1
+
+
 def pending_rechecks(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM attempts WHERE outcome = 'recheck_pending' ORDER BY id").fetchall()
 
@@ -323,7 +349,15 @@ def is_dead_end(conn: sqlite3.Connection, a_number: str, program_sha: str, known
     EXTEND_DEAD_END_MIN_CPU_SHARE of its wall time on the CPU (memory never ends a run as
     `extend_budget`, so memory is not compared there; attempts recorded before the budgets were stored in
     `extra` never count for either); or ran at least `verify_wall_s` seconds without reproducing the known
-    terms (`verify_timeout`, keyed on the measured runtime, so older attempts count too).
+    terms (`verify_timeout`, keyed on the measured runtime, so older attempts count too) with at least
+    EXTEND_DEAD_END_MIN_CPU_SHARE of **this** verify budget on the CPU. That last condition is item 58's:
+    the verify budget is wall time, so a machine that slept or was busy through a verification used to
+    retire a program that never had its minute. It asks what the run got against the budget now planned,
+    not what share of its own wall time it had: a run that took 600 s at half speed still had 300 s of
+    CPU, which settles a 60 s budget and not a 600 s one. On 2026-11-22, 5 of the 163 such rows were
+    under 0.8 of their own wall time, all in three starved spells; the rule frees 2 sequences at the
+    60 s tiers and 2 others at the 600 s tiers. The 0.8 is inherited from the extension rule, not fitted:
+    undisturbed runs are at 0.95 and over. A row without a CPU figure never counts.
 
     The infeasible clause compares the cap the earlier run was actually judged against
     (`extra.mem_cap_bytes`, the budget lowered to free RAM minus the reserve) with the budget the planned
@@ -348,12 +382,13 @@ def is_dead_end(conn: sqlite3.Connection, a_number: str, program_sha: str, known
                        END)
                OR (verified = 1 AND new_terms = 0 AND failure_mode = 'extend_budget'
                    AND json_extract(extra, '$.extend_wall_s') >= ? AND cpu_s >= ? * runtime_s)
-               OR (failure_mode = 'verify_timeout' AND runtime_s >= ?))
+               OR (failure_mode = 'verify_timeout' AND runtime_s >= ? AND cpu_s >= ?))
         ORDER BY id DESC LIMIT 1""", (a_number, program_sha, known_terms, *DETERMINISTIC_FAILURES,
                                       budgets.extend_wall_s, budgets.mem_bytes,
                                       budgets.extend_wall_s, budgets.mem_bytes,
                                       budgets.extend_wall_s, EXTEND_DEAD_END_MIN_CPU_SHARE,
-                                      budgets.verify_wall_s)).fetchone()
+                                      budgets.verify_wall_s,
+                                      EXTEND_DEAD_END_MIN_CPU_SHARE * budgets.verify_wall_s)).fetchone()
 
 
 # ------------------------------------------------------------------ reviews

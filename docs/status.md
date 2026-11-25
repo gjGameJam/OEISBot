@@ -1,6 +1,6 @@
 # Project status and handoff
 
-Snapshot as of **2026-10-14**, written at the end of session 5 and updated after offer B, the
+Snapshot as of **2026-11-23**, written at the end of session 5 and updated after offer B, the
 extension dead end, offers A, C, G, H, F, D and E, the flaky-test fix, session 6, items 2, 3, the
 smaller-follow-ups bundle, session 7, the cost fit's statistics, the guards that keep them honest,
 session 8, session 9, the searched-bound check, the predicate scan's progress heartbeats, the decision
@@ -9,21 +9,344 @@ false wins, bundle A's three defect fixes, the conjectural-program check and its
 the three reviews, session 11, the day every open decision was answered and the chosen items built,
 session 12 with the offer (a) backfill, the two refusals that followed, the dashboard's Pick map and
 its loose ends (history items 21 to 55), the commit that landed items 34 to 54, and the dashboard defect
-sweep (item 56; item 55 is committed and pushed, item 56 is built and not committed).
+sweep (item 56, committed and pushed as `31d5b7e`), the tie-up of what the roadmap still listed
+(item 57, built and not committed), and the first part of running unattended, `oeisbot daemon` (item 58,
+built and not committed).
 This page
 exists so work can resume in a new session without the history of the one that built the project. Update
 it at the end of each working session.
 
-**No task is in progress** (2026-11-18). The latest is **history item
-56**: the user saw points drawn outside the axes of the estimator chart and asked for an audit of the whole
+## Resume here (2026-11-23)
+
+Written on the user's request, 2026-11-23: "Update the functionality to have safeguard to avoid
+incidents like this again. Also update documentation so I can clear context without losing progress."
+A session that has read only `CLAUDE.md` and this section knows where the work stands and what comes
+next. Every figure in it was read from the code, the database or the disk on 2026-11-23, and the
+command that gives it is beside it. Nothing here depends on a conversation.
+
+### What is built and not committed
+
+- **History item 57** (the tie-up of the open roadmap items, 2026-11-18) and **history item 58, Part
+  A** (`oeisbot daemon`, the writers' lock, three selection-rule changes, and **section F, the
+  safeguards**: arming, the product's own guard, the test wall, the mutation harness's own check) are
+  built, reviewed and **uncommitted**, in one working tree and partly in the same files.
+- `HEAD` and `origin/main` are both `31d5b7e` ("Item 56: the dashboard defect sweep"; `git log -1
+  --oneline`, `git rev-parse --short origin/main`). `git status --short` lists **53 paths: 39 modified
+  and 14 untracked** (counted 2026-11-23, 12:35).
+- **14 of those files are untracked, and only one snapshot holds them.** They are `oeisbot/daemon.py`,
+  `guard.py`, `lock.py`, `schedule.py`, `tests/test_daemon.py`, `test_guard.py`, `test_isolation.py`,
+  `test_lock.py`, `test_schedule.py`, `docs/daemon.md`, `dashboard/src/daemonline.ts`, `tabs.ts` and
+  `dashboard/test/daemonline.test.ts`, `tabs.test.ts`. **`refs/item58/complete` is the one snapshot
+  that holds everything, including the untracked files** ([below](#where-the-record-is)); check that
+  it exists with `git for-each-ref refs/item58/complete`. The older `refs/item58/*` hold the changes
+  to tracked files only. Whether or not that ref is there, do not run `git clean`, and do not delete
+  or move the 14: the working tree is the copy the work goes on in.
+- **903 Python tests** are collected (`.venv\Scripts\python -m pytest --collect-only -q`, 2026-11-23)
+  and 92 node tests are written (the `test(` calls at the start of a line in
+  `dashboard/test/*.test.ts`; not run for this page). The three documentation guards in
+  `tests/test_docs.py` hold the 903 in its eight places.
+- **All four mutation sets have a clean run**, each made once on 2026-11-23 under the harness as it
+  now is (a marker while a mutant is in the code, and a check of the real project after every
+  mutant): 29, 16, 107 and 44 mutants, **196 in all, none surviving**, each of
+  `data/item58/mutation_slice1.txt` to `mutation_slice4.txt` ending `... 0 not killed; the real
+  project is as it was` (last lines read, and the `killed` lines counted, for this page).
+- **Nothing is committed and nothing is to be committed unasked.** The user commits, or asks for a
+  commit, item by item; a request to update the docs is not a request to commit.
+
+### What has not been done, and must not be done unasked
+
+- **The daemon has never run against the real project, and it is NOT ARMED.** `data/daemon/` and
+  `data/writer.lock` do not exist (`ls`). A start does nothing until the user runs `oeisbot daemon
+  --arm`. **An agent never arms it**, as an agent never closes a review.
+- **Done by the user, 2026-11-25: one sync by hand and the task's import** (their pasted output; not
+  re-run here). The sync printed `oeisdata be2f360122: 27083 candidates with keyword 'more'; 296 no
+  longer 'more'` and `pick snapshot #2 stored (3367 candidates)`; `schtasks /create` answered
+  `SUCCESS`, and the query shows the task `Ready`, daily at 22:00, `Interactive only`, next run
+  2026-11-25 22:00. **So every pool and candidate count on this page and in the other docs (26,814
+  candidates, `queue` 3,359 / 1,954, the tier pools, snapshot #1 alone, the database's size and date)
+  is from before that sync and has not been re-baselined**, and `data/item49/recheck_numbers.py` will
+  report the pool lines as mismatches until it is. The daemon is still NOT armed, so the task's first
+  nights only log `not started: not armed`. `oeisbot-daemon.xml` at the root is the generated
+  definition, untracked and left out of the commit. The next two bullets say what was true until then.
+- **`oeisbot sync` has not been run since 2026-09-17** (`meta.synced_at` is
+  `2026-09-17T18:31:41+00:00` and there is no `meta.pulled_at`; the mirror's `HEAD` is `9566689`).
+- **The scheduled task has not been imported.** `schtasks /query /tn "OEISBot daemon"` answers `ERROR:
+  The system cannot find the file specified.` (run 2026-11-23; read-only). Nothing in the project
+  registers a task, and an agent must not.
+- **Done 2026-11-25, on the user's "go for it": the dashboard server was restarted and the daemon line
+  seen in a browser.** The old process (started 2026-11-18) was stopped and `oeisbot dashboard --host
+  127.0.0.1 --port 8765` started from the working tree; `/api/daemon` answers
+  `{"running":false,"other_command":null,"heartbeat":null,"armed":false}` and the page shows `Daemon is
+  not armed, so a start will do nothing (oeisbot daemon --arm allows it)` under the header (one
+  screenshot, dark theme, Estimator tab; the armed and running wordings are still unseen). Afterwards
+  the database was 6,791,168 bytes dated 2026-10-13 21:30 with an empty `-wal`, and `data/daemon/` and
+  `data/writer.lock` did not exist (`ls`). What the rest of this bullet says was true until then: the
+  line had not been seen in a browser, and the dashboard server had not been restarted. A server is listening on `127.0.0.1:8765` (`netstat`, 2026-11-23); it was started
+  before items 57 and 58, so it has no `/api/daemon` and the line reads `Daemon status unavailable`.
+  It is the user's process: do not stop or start it unasked.
+- **Part B of item 58, the "To submit" page, is not started.**
+- **Nothing has been submitted to OEIS**, review #1 is untouched at `new`, and no pipeline has run
+  since session 12 (2026-09-30): still 280 attempt rows.
+- Do not start the daemon, a sync, a session or an `oeisbot attempt`, and do not run
+  `data/item58/mutate.py`, on your own initiative.
+
+### The user's next steps, in order
+
+Each is the user's own. An agent may explain a step or check its result read-only; it does not do it.
+
+1. **Run one sync by hand: `.venv\Scripts\oeisbot sync`** (with the pull; not `--no-pull`). The
+   fetch-and-reset path has never run on this mirror, and a person should see the first one. A good
+   result prints `fetching latest oeisdata ...`, then `oeisdata <10 hex digits>: N candidates with
+   keyword 'more'; M no longer 'more'` with a commit other than `9566689775`, then `pick snapshot #2
+   stored (N candidates)` (or `pick snapshot unchanged`). Afterwards `meta.pulled_at` exists. Reading
+   the mirror takes about 70 s after the fetch. **Every pool and candidate count on this page will then
+   be out of date** (26,814 candidates, `queue` 3,359 / 1,954, the tier pools), and
+   `data/item49/recheck_numbers.py` will report the pool lines as mismatches until the docs are
+   re-baselined: that is the sync working, not a fault. If git says `index.lock` exists and no git is
+   running, delete that file and run it again ([daemon](daemon.md#the-sync)).
+2. **Decide whether to commit items 57 and 58**, and say so. They share files (`oeisbot/attempt.py`,
+   `db.py`, `verify.py`, `cli.py`, `dashboard/app.py`, the docs), so they go in one commit or need
+   hunks split. Until then the 14 untracked files above are the only copy of that code. A push needs
+   `git -c http.sslBackend=schannel push`.
+3. **Write and import the scheduled task:**
+
+   ```
+   .venv\Scripts\oeisbot daemon --task-xml oeisbot-daemon.xml
+   schtasks /create /tn "OEISBot daemon" /xml oeisbot-daemon.xml
+   ```
+
+   The first prints `wrote ...oeisbot-daemon.xml; import it with` and the second line. `schtasks`
+   should answer with its own success message; **that it accepts this file has never been tried**
+   (the definition was checked against the schema by reading only). Check "Allow wake timers" in the
+   active power plan, or the task will not wake the machine. Until step 4 the task does nothing: each
+   night it writes one `not started: not armed` line to `data/daemon/daemon-YYYYMMDD.log` and exits
+   with code 2.
+4. **Arm the daemon: `.venv\Scripts\oeisbot daemon --arm`.** It prints `armed
+   (...\data\daemon\armed): `oeisbot daemon` will now run a night when it is started inside its
+   window.` and how to take it back (`oeisbot daemon --disarm`). Before the first unattended night it
+   is worth one short watched run in the foreground: `.venv\Scripts\oeisbot daemon --window
+   HH:MM-HH:MM`, then `--status` from a second prompt, then `--stop`; the stopped run's row should say
+   `interrupted` ([daemon](daemon.md#before-the-first-night), which also has the disk check).
+5. **Restart the dashboard server and look at the line.** Stop the process on port 8765, run
+   `.venv\Scripts\oeisbot dashboard`, open `http://127.0.0.1:8765`. Under the header, on every tab,
+   one line: `Daemon is not armed, so a start will do nothing (oeisbot daemon --arm allows it)` before
+   step 4, `Daemon has not run here` after it and before the first night, `Daemon running A...
+   at tier base · window closes 08:00 · started N min ago` during one. `Daemon status unavailable`
+   means the server is still the old one. This is the line's first time in a browser: its layout and
+   contrast are unreviewed.
+6. **The first morning: `.venv\Scripts\oeisbot daemon --status`**, and the log
+   `data\daemon\daemon-YYYYMMDD.log` (two files for a night over midnight). A good result is `daemon is
+   not running` and `last daemon: stopped at ... UTC (the window 22:00-08:00 closed)`, with any
+   `warning:` lines below it; `did not finish` means the process was killed and the next start tidies
+   up. In the log, look for the sync's lines, what each session printed, and `daemon: finished:
+   <reason>` at the end. The exit codes and every warning are in [daemon](daemon.md#exit-codes) and
+   [operations](operations.md#running-unattended-oeisbot-daemon).
+7. **Review #1 (A385331), steps 8 and 9**, unchanged and still the user's alone: submit by hand with
+   the material in `data/review1/SUBMISSION.md` (the b-file to upload is `b385331-submit.txt`, renamed
+   `b385331.txt`), then record it with `.venv\Scripts\oeisbot review set 1 submitted --note "..."`
+   ([operations](operations.md#reviewing-a-result)). Since item 58 either closing status keeps A385331
+   out of every draw.
+8. **Register an OEIS account name.** There is none yet; Part B's `%E` and `%H` lines carry a
+   placeholder until it is set.
+
+One smaller thing is also the user's to decide, in no particular place in that order:
+
+- **Whether to set `OEISBOT_UNDER_TEST=1` for coding agents in this project**, by a project
+  `.claude/settings.json` with `"env": {"OEISBOT_UNDER_TEST": "1"}`. The safeguards' reviewer
+  recommended it (`data/item58/safeguards.md`): every command an agent runs here would then be refused
+  the real project, and a real run would need a visible `OEISBOT_UNDER_TEST=0`. Not done: it is a
+  change to the user's own settings, and it would also make `recheck_numbers.py`'s two `oeisbot queue`
+  calls and any `oeisbot` command an agent is asked to run fail until the variable is cleared for
+  them.
+
+### What comes next in the build: Part B, the "To submit" page
+
+**Not started, and not to be started unasked.** The plan is `data/item58/plan.md`, Part B. The user's
+decisions, as that file records them (all 2026-11-19 unless dated):
+
+- **A page on the dashboard, not generated files**: "all results that are yet to be submitted (and
+  don't exist already as terms) are in one space for me to review and submit".
+- **It lists reviews at `new` or `reviewing` whose new terms are not already on OEIS** (today: one,
+  #1). A result that is no longer new is not listed but is counted in a line under the list.
+- **"Not already on OEIS" comes from a stored live check**, never from a request on each poll: one of
+  "still new", "partly live", "live", "disagrees", kept in three columns appended to `reviews`
+  (when it was checked, the state, the last live index; the plan names them), run by the daemon once per window and by the
+  page's "Check now".
+- **A card per result**: its flags first, the program to read, **copy buttons** for the DATA, `%E` and
+  `%H` lines and a b-file download, behind **two boxes the page never ticks for the user** ("I have
+  read and understand the program", "independent check done (method: ...)").
+- **It may write, narrowly**: review status, its note, and the live-check result. Everything else
+  stays read-only.
+- **Submit only opens oeis.org** (the entry's edit page and the b-file upload page, in new tabs)
+  beside the copy buttons. The page sends nothing to oeis.org.
+- **The user closes a review**; the page flags one whose terms are seen live, and nothing closes
+  automatically.
+- **No automated submission of any kind**: "It is against policy for automated submissions and
+  programs you do not understand." [Invariant 1](development.md#invariants) stays as written.
+
+**Still undecided**, left by the plan to the build's own critic: the closed status that is not
+`rejected`. Either a new `accepted` status, which means rebuilding the `reviews` table because SQLite
+cannot alter a CHECK constraint (backup by `VACUUM INTO`, ids copied, the index recreated, the daemon
+stopped, one checked transaction), or an added "closed at" column that the open-review test also
+reads. Also unsettled: the b-file's line endings, to be decided by what the real upload form accepts
+when review #1 is submitted, which the plan puts before Part B is trusted for a second win.
+
+**The method the user asked for** (2026-11-22: "Continue the buildout starting with part A", one part
+at a time, each reviewed by adversarial agents before the next): build in parts; each part attacked by
+several adversarial review agents before the next starts; mutation checks on what was built; the docs
+verified against the code afterwards. That is how Part A was built, and what the user asked to be kept
+for Part B. The dashboard's invariant
+"never writes" will need rewording for the three review endpoints, with a test attacking each.
+
+### Where the record is
+
+`data/item58/` (local state, gitignored; `ls`, 2026-11-23):
+
+| File | What it is |
+|---|---|
+| `plan.md` | the plan for both parts, with the user's decisions and the critic's corrections. **Part B's plan: keep it** |
+| `slice1.md` | slice 1 (the stop hooks, three selection rules): what was built, every review finding and what was done |
+| `slice2.md` | slice 2 (the writers' lock), as first built; its last section points to the rewrite |
+| `slice3.md` | slice 3 (the daemon): the table of what the rework changed, the account of the 2026-11-22 incident, and what the independent re-check of the rework found |
+| `final_audit.md` | the fifth reviewer's 14 findings, what each changed, and what it could not verify |
+| `safeguards.md` | section F, by the author of the code: the incidents, the first version of the safeguards, then (under "The safeguards' own adversarial review") the twelve holes a reviewer found and what closed each, the third touch of the real database, and a recommendation left to the user. Its first half describes the first version; its last section is current except for its closing counts (902 tests, 42 mutants), which predate the last four changes: 903 and 44 |
+| `docs_owed.md` | slice 1's selection-rule reviewer's list of doc sentences and numbers the rule changes made false, by file |
+| `measure_pool.py` | read-only: the pool at each tier through the real `attempt.session_pool`, and the `verify_timeout` rows by CPU share |
+| `pool_before.txt`, `pool_after_slice1.txt`, `pool_final.txt` | its output before the rule changes, after slice 1 and at the end |
+| `mutate.py` | the mutation harness (sets `slice1` and `slice2` inside it). **It changes the working tree while it runs: run it alone, and never unasked** |
+| `mutants3.py`, `mutants4.py` | the sets `slice3` (the daemon, 107 mutants) and `slice4` (the guard, arming and the marker, 44) |
+| `mutation_slice1.txt` to `mutation_slice4.txt` | one clean run of each set, all made on 2026-11-23 under the harness as it now is: 29, 16, 107 and 44 mutants, 196, none surviving, each ending "the real project is as it was" |
+
+**`refs/item58/complete` is the one snapshot that holds everything, including the untracked files.**
+It was made after this page was written, so its hash is not here: `git for-each-ref
+refs/item58/complete` prints it, and prints nothing if the ref does not exist; `git ls-tree -r
+--name-only refs/item58/complete` should list `oeisbot/daemon.py` and `oeisbot/guard.py`. Like the
+others it is local, on no branch, never pushed, and not a commit the user asked for: it is a safety
+copy, not a substitute for committing items 57 and 58. Such a snapshot is made with a temporary index,
+so that the user's own index and branch are not touched (Git Bash, from the repository root):
+
+```
+export GIT_INDEX_FILE="$(mktemp -u)"                 # a throwaway index, not .git/index
+git add -A                                           # tracked changes and untracked files; .gitignore still applies
+tree=$(git write-tree)
+commit=$(git commit-tree "$tree" -p HEAD -m "item58 complete, untracked files included")
+unset GIT_INDEX_FILE
+git update-ref refs/item58/complete "$commit"
+```
+
+(Run exactly so on 2026-11-23 to make `refs/item58/complete`, and checked afterwards: the eleven new
+code, test and doc files compared equal byte for byte with the snapshot, `git status --short` was 53
+before and after, nothing was staged, and the branch and `HEAD` did not move. `data/`, `tools/` and
+`artifacts/` are gitignored and are in no snapshot: the database and the evidence under `data/item58/`
+exist only on this disk.)
+
+The older local refs, listed by `git for-each-ref refs/item58` (2026-11-23). Each is a snapshot made with
+`git stash create`: a commit on no branch whose first parent is `31d5b7e`. They are never pushed, are
+safe to delete (`git update-ref -d <ref>`), and **hold the tracked files only**: none of the 14
+untracked files is in any of them (`git ls-tree -r --name-only refs/item58/safeguards` lists no
+`oeisbot/daemon.py`).
+
+| Ref | Commit | Made (local time) | Its message |
+|---|---|---|---|
+| `refs/item58/slice1-pre-review` | `8084d4a` | 2026-11-22 21:47 | item58 slice1 before review |
+| `refs/item58/slice1` | `60b9612` | 2026-11-22 22:21 | item58 slice1 final |
+| `refs/item58/slice3` | `33f1a3d` | 2026-11-22 23:50 | item58 slice3 after rework |
+| `refs/item58/partA-code` | `f2e9e05` | 2026-11-23 00:44 | item58 part A code complete |
+| `refs/item58/partA` | `fbc1e1b` | 2026-11-23 02:40 | item58 part A complete |
+| `refs/item58/safeguards` | `035c63c` | 2026-11-23 11:17 | item58 safeguards (the first version: it predates the changes made from 11:26 on to `artifact.py`, `attempt.py`, `oeisdata.py`, `conftest.py` and the test files, which only `refs/item58/complete` holds) |
+
+### Checking the state on arrival
+
+All read-only. Run them from `C:\gtest\OEISBot\OEISBot`. The `.venv\Scripts\...` lines are written
+for PowerShell or cmd (in Git Bash write `.venv/Scripts/python`); the `ls` and `wc` lines are Git
+Bash's.
+
+| Command | Expected on 2026-11-23 |
+|---|---|
+| `ls MUTANT_IN_TREE.json` | `No such file or directory`. If it exists, a mutation run was killed with a changed file in the code: restore that file as the marker says before anything else ([development](development.md#mutation-sets-for-item-58)) |
+| `.venv\Scripts\python -m pytest --collect-only -q` | last line `903 tests collected in ...` |
+| `.venv\Scripts\python -m pytest -q` | `903 passed`, about 2 minutes. 90 or more failures that all say `disk_cap` mean `C:` has under 8 GiB free |
+| `.venv\Scripts\python data\item49\recheck_numbers.py` | every line `[OK ]`, last line `ALL CHECKS PASSED`. It runs `oeisbot queue` twice, which opens the database as every `oeisbot` command does and writes no row |
+| `.venv\Scripts\python scripts\check_docs.py` | 0 link problems; the 5 expected IDENT lines |
+| `git log -1 --oneline` | `31d5b7e Item 56: the dashboard defect sweep` |
+| `git status --short \| wc -l` | `53` (39 ` M`, 14 `??`) |
+| `git for-each-ref refs/item58` | the six refs above |
+| `ls data/daemon data/writer.lock` | `No such file or directory` for both: no daemon has started, none is armed, no locked command has run |
+| `ls data/oeisdata/.git/*.lock` | `No such file or directory`: no git lock file in the mirror |
+| `git -C data/oeisdata rev-parse HEAD` | `956668977564dbec38a657dafa875f021b4d052b` |
+| `ls -l data/oeisbot.sqlite3*` | one file, the database: 6,791,168 bytes, modified `Oct 13 21:30` (item 54's snapshot; no row has been written since). A `-wal` of 0 bytes and a `-shm` appear beside it while something has it open and went away again after `recheck_numbers.py` ran at 11:46; a `-wal` that is not empty means something wrote |
+| `schtasks /query /tn "OEISBot daemon"` | `ERROR: The system cannot find the file specified.` |
+
+The database's counts, without opening it for writing:
+
+```
+.venv\Scripts\python -c "import sqlite3; c=sqlite3.connect('file:data/oeisbot.sqlite3?mode=ro', uri=True); print([c.execute('select count(*) from '+t).fetchone()[0] for t in ('attempts','sessions','reviews','predictions','pick_snapshots','pick_snapshot_rows')]); print(c.execute('select id,a_number,status from reviews').fetchall()); print(c.execute('select key,value from meta where key in (?,?)',('synced_at','pulled_at')).fetchall())"
+```
+
+Expected, three lines (the command was run for this page on 2026-11-23 and printed exactly these):
+`[280, 12, 3, 456, 1, 3357]`, then `[(1, 'A385331', 'new'), (2, 'A162762', 'rejected'), (3,
+'A162764', 'rejected')]`, then `[('synced_at', '2026-09-17T18:31:41+00:00')]` (no `pulled_at` row
+until the first sync that pulls). If any of these differ, something ran: trust the disk, find out
+what, and update this page. The longer checklist, with the `oeisbot` commands and the history of each
+number, is [below](#resuming-in-a-new-session).
+
+**After any agent, harness or mutation run, check the real project the same way** before going on:
+the database's size, time and counts as above, `data/daemon/` (nothing unexpected in it), no
+`data/writer.lock` left held, and no `*.lock` in `data/oeisdata/.git`. Both incidents of item 58 were
+found by looking, not by a test failing.
+
+**One build is half done, by design** (2026-11-23). The latest is **history item 58**: the user asked
+for the project to run sequences continuously and for submission to be automated, then ruled automated
+submission out themselves ("It is against policy for automated submissions and programs you do not
+understand"), so **invariant 1, "Nothing submits", stands unchanged**. By option question they chose
+sync-driven picks with a budget ladder and no model pool, idle hours only (window 22:00 to 08:00, the
+task may wake the machine), and the daemon first, then a dashboard page to review and submit from.
+**Part A is built: `oeisbot daemon`**, which runs PARI sessions back to back inside the window, syncs the
+mirror first, starts at the 60 s / 1,800 s budgets sessions 8 to 12 really ran at (session 7 verified at 600 s) and climbs only when a
+tier is exhausted, holds back for 14 days a sequence whose last attempt changed nothing, pauses on a full
+disk, stops the run in hand under a new stop reason `interrupted` that retires nothing, and recovers at
+its next start from having been killed; with it one writers' lock for every command that runs, syncs or
+fetches, three selection-rule changes (a `verify_timeout` needs the CPU to be a dead end, an interrupted
+run adds no failure penalty, a sequence with a rejected review is not drawn), a Task Scheduler
+definition the user imports, and a line on the dashboard. Built in three slices, each attacked by
+adversarial reviewers (seven across the slices, two re-checks, then a final audit that changed 14 more
+things) and by mutation sets (29, 16 and 107 mutants, none surviving; for the 107, see the item); one
+review incident reached the real mirror and led to a wall in the test suite (see the item). **On
+2026-11-23 the user asked for safeguards against such incidents, and section F of the item built
+them: the daemon does nothing until a person has armed it (`oeisbot daemon --arm`, the user's step
+alone, not yet taken); the product itself refuses the real project and oeis.org while it runs under a
+test (`oeisbot/guard.py`, 15 guarded calls); the mutation harness checks the real project after
+every mutant and leaves a marker if it is killed. Two more touches of the real project happened while
+they were being built and tested, both found by looking and neither changing a row (see the item).**
+**903 tests are collected and pass, the 3 documentation guards among them (whole suite run 2026-11-23,
+after the docs), and all four mutation sets, the safeguards' own 44 included, were run clean the same
+day: 196 mutants, none surviving. Not
+committed. Not done: the daemon has never been run against the real project and is not armed, `oeisbot
+sync` has not been run since 2026-09-17 and should be run once by hand before the first unattended
+night, the scheduled task has not been imported, the dashboard line has not been seen in a browser, and
+Part B, the "To submit" page, is decided and not built.** The reference is [daemon](daemon.md). The item
+before it was **history item 57** (2026-11-18): the user asked whether any
+roadmap item was open and then to "tie up all these things". By option question they chose to commit
+item 56 first, to close value dependence as it stands, and to build all four leftovers on offer. Built:
+the `@T` identity check on a predicate driver's term lines, three of the bound extractor's five recall
+gaps (the other two measured as wrong about half the time and pinned unread), `oeisbot recheck
+--release` in place of hand-typed SQL, arrow keys along the dashboard's tabs, a label of its own for a
+refused win, a three-way trust filter, and a two-tap rule so that a touch screen shows a tile's tooltip
+before opening it. Measured: a resize of the Pick map is cheap; of the 15 predicates beside a list
+printer 6 are real and 9 are helpers; 80% of the 5,282 Mathematica-only programs are definitions,
+`Select`s or search loops. 77 mutation checks, an independent audit (10 findings, the three that
+mattered all in `bounds.py` and all fixed), a browser pass, **703 tests**. **Not committed. Two
+decisions followed the same day, both the user's: Wolfram Engine is struck ("keep this project lean") and a
+predicate beside a list printer is left as it is ("Okay leave it"). No decision is open.** The item before it was **history item
+56** (2026-11-17 and 18): the user saw points drawn outside the axes of the estimator chart and asked for an audit of the whole
 dashboard, a plan, and an audit of the plan. Three audit agents and a browser walk found about 45 defects;
 the plan's critic found 25 problems with the plan (3 blockers); four decisions were the user's, by option
 question ("Exclude everywhere", "Commit item 55 first", "Lump opens the table", "Exact common scale"). Built
 in four sections with tests first, 96 mutation checks, two independent audits of the diff and a browser pass
 after each section. The ones that showed wrong information: the estimator's axes now hold every point; **a
 win is an `extended` run whose review was not rejected or refused, so the header reads 1 win and not 3**; the
-Pick map draws every band at exactly one scale; and a band too dense for tiles opens the table view. **Not
-committed, by the user's word ("The sweep can stay uncommitted", 2026-11-18).** While it was built `C:` had
+Pick map draws every band at exactly one scale; and a band too dense for tiles opens the table view. **Committed
+and pushed as `31d5b7e` on 2026-11-18** (the user: "The sweep can stay uncommitted", then "Commit and push first" before item 57). While it was built `C:` had
 7.3 GB free, under the sandbox's 8 GiB reserve, so the 90 tests that run the sandbox stopped with `disk_cap`;
 the user freed space, **the whole suite then passed (634, with 9.6 GiB free) and item 55's commit `a6ae951`
 was pushed**, both later the same day. The item before it was **history item 55** (2026-10-14): the Pick map's loose ends, each
@@ -233,19 +556,25 @@ outcome, with the material assembled in `data/review1/SUBMISSION.md`. **The two 
 reviews #2 and #3, are no longer waiting**: they were closed as `rejected` on 2026-09-28 (item 49) at
 the user's instruction, with both pools measured unchanged (3,438 and 26,747) — though **not free**: the
 close also released the `open_review` gate on a targeted `--model` attempt of those two, see item 49.
-**One thing waits on a commit: item 55.** Everything through item 54 is committed
-and pushed as `f0081d9` (2026-10-14, at the user's request), but that answer covered the work to item 54
-and not the Pick map follow-ups of item 55, which are built and uncommitted (`git status` lists the
-files; history item 55 says what each does). The user commits, so do not commit or push unless asked again.
-**One offer is still open** — what to do about the 35
-sequences item 41 un-retired (changing the driver changed every predicate `program_sha`); see
-[open offers](#open-offers-and-next-steps). **One new decision is waiting too** — next-step (v), created
-by item 49 and found by its own audit: a `rejected` review no longer guards its sequence from a targeted
-`oeisbot attempt A... --model`, and `db._insert_review` would let such a run open a fresh review for a
-false win already rejected. The recommended fix is a guard in `_insert_review`, **not** in
-`attempt_sequence`, which item 48 forbids touching. The other two questions are settled: the gp version
-is recorded (item 43) and resume is decided against (item 42). No background jobs, no pending re-checks,
-`data/pending/` is empty.
+**Two things wait on a commit: items 57 and 58** (2026-11-23). Everything through item 56 is committed and
+pushed (`f0081d9` for items 34 to 54, `a6ae951` for item 55, `31d5b7e` for item 56); items 57 and 58 are
+built and uncommitted, in the same working tree and partly in the same files (`git status` lists them).
+The user commits, so do not commit or push unless asked.
+**One build is open: item 58's Part B**, the dashboard's "To submit" page, decided on 2026-11-19 and not
+started; the user asked for the parts to be built one at a time, each reviewed by adversarial agents.
+**Four more things are the user's alone**: one `oeisbot sync` by hand before the first unattended night,
+importing the scheduled task, registering an OEIS account name (they have none yet), and review #1's
+steps 8 and 9. See [open offers](#open-offers-and-next-steps).
+**No offer is open.** The offer about the sequences item 41 un-retired was decided and carried out
+(items 51 and 52), and next-step (v), the guard in `db._insert_review` against a second review for a
+rejected sequence, was built (item 51). **No decision is open either** (2026-11-23): a predicate
+beside a list printer is left as it is (next step (vi), read in item 57), Wolfram Engine is struck, and
+item 58's decisions are all made; see
+[open offers](#open-offers-and-next-steps). Still settled: the gp version is recorded (item 43) and resume
+is decided against (item 42). No background jobs, no daemon running or scheduled, no pending re-checks,
+`data/pending/` is empty (checked 2026-11-23: no `recheck_pending` row, no `data/daemon/`, no `data/writer.lock`). (This
+paragraph said until 2026-11-18 that item 55 waited on a commit and that an offer and next-step (v) were
+open, all three long closed further down the page: the summary had not been re-read when they closed.)
 
 ### What is committed
 
@@ -291,17 +620,22 @@ in the database changed.
 **Item 55 is its own commit, `a6ae951` ("Item 55: the Pick map's loose ends"), on top of `f0081d9`, and
 it is `origin/main`.** The user chose "Commit item 55 first" on 2026-11-17, so that item 56 would be a separate diff, and
 the answer included the push. The push waited a day: the suite could not be run whole until the disk had room (see
-item 56), and it was made on 2026-11-18 after 634 tests passed and a fetch showed `origin/main` still at `f0081d9`. **Item 56 is in
-the working tree, uncommitted**; `git status` is the authority on which files. Item 55's plan, critic, timing
+item 56), and it was made on 2026-11-18 after 634 tests passed and a fetch showed `origin/main` still at `f0081d9`. **Item 56 is commit
+`31d5b7e` ("Item 56: the dashboard defect sweep"), on top of `a6ae951`, pushed on 2026-11-18 after 634 tests
+passed, and it is `origin/main`. Items 57 and 58 are in the working tree, uncommitted** (the two items share files, `oeisbot/attempt.py`, `db.py`, `verify.py`, `cli.py`, `dashboard/app.py` and the docs among them, so they cannot be committed apart without splitting hunks); `git status` is the authority on which files. Item 55's plan, critic, timing
 scripts, mutation runs and audits are in the gitignored `data/item55/`, item 56's in `data/item56/`. **It wrote nothing to the live
 database, and nor did item 56:** on 2026-11-18 `data/oeisbot.sqlite3` still has the modification time of item 54's
 snapshot (2026-10-13 21:30) and the one snapshot in it, and the sync snapshot was timed on a `VACUUM INTO`
 copy. The rules fingerprint is unchanged by both as well (`attempt.rules_fingerprint()` is `af16ba7ce8d3`,
 equal to snapshot #1's), because `budgets_of` and `snapshot_after_sync` sit outside what the fingerprint
 hashes; so the first snapshot a sync records will not carry a "the selection rules changed" note on that
-account.
+account. **That stopped being true with item 58**, which changed three selection rules: the fingerprint
+of the code is now `260fee4c701e` (printed by `data/item58/measure_pool.py` on 2026-11-23) while
+snapshot #1 still carries `af16ba7ce8d3`, so the next snapshot will differ in rules as well as in
+content. Item 58 also wrote nothing to the live database (the file's counts are unchanged:
+`recheck_numbers.py`, 2026-11-23); its incident touched the mirror's `.git`, not the database (see the item).
 
-634 tests pass and `scripts/check_docs.py` reports no link problems. (Seen on 2026-11-18, with item 56 in the working tree, once the disk had room; see item 56.) Every decision made so far is in the
+903 tests pass and `scripts/check_docs.py` reports no link problems. (The 903 is the whole suite run on 2026-11-23 with items 57 and 58 in the working tree, section F's safeguards included, by the documentation pass for section F after these pages carried the new counts: 903 passed, the 3 documentation guards included. The run before it, 886 passed, was the audit of item 58's docs earlier the same day. Before that the last full run was the final audit's, `data/item58/final_audit.md`: 883 passed, the 3 guards failing by design until the docs caught up. `C:` had 31 GB free that day.) Every decision made so far is in the
 table below; what could come next is in [next steps](#open-offers-and-next-steps).
 
 ## Offers G, H and F, one at a time (done)
@@ -489,9 +823,20 @@ critic's findings, summarised in history item 41.
 3. **Confirm the machine is still set up** (every command should succeed without reinstalling):
 
    ```
-   .venv\Scripts\python -m pytest            # expect 634 passed (on an otherwise idle machine: history item 30).
+   .venv\Scripts\python -m pytest            # expect 903 passed (on an otherwise idle machine: history item 30).
                                              # 90 failures that all say disk_cap mean C: has under 8 GiB free, not a bug
-   cd dashboard && npm test                  # 68 node tests (the dashboard's pure logic, three files); npm run build must be clean too
+                                             # (that count of 90 is item 56's; item 58 added tests that run the sandbox).
+                                             # No test can touch the real database, mirror or network any more:
+                                             # tests/conftest.py refuses it (ReachedTheRealProject, item 58),
+                                             # and so does the product itself (oeisbot/guard.py, section F).
+                                             # If pytest answers "MUTANT_IN_TREE.json exists", a mutation run
+                                             # was killed: restore the file it names first
+   cd dashboard && npm test                  # 92 node tests (the dashboard's pure logic, five files; counted from the
+                                             # test files on 2026-11-23, not run then); npm run build must be clean too
+   .venv\Scripts\oeisbot daemon --status     # expect "daemon is not running", then "not armed: a start will do nothing
+                                             # until you run `oeisbot daemon --arm` ..." (until the user arms it), then
+                                             # "no daemon has run here yet" until the user first runs one
+                                             # (read from daemon.describe; reads only, creates nothing)
    .venv\Scripts\oeisbot model-check         # expect 'ready' (first call loads the model, about a minute)
    .venv\Scripts\oeisbot stats               # expect 26,814 candidates (14,436 with no program)
    .venv\Scripts\oeisbot attempts --limit 300 # expect 280 rows, ids 1-280; failure modes include
@@ -500,7 +845,12 @@ critic's findings, summarised in history item 41.
                                               # incomplete: 11 (session 12 added 3 and 1; session
                                               # 11 had brought them to 30 and 10)
    .venv\Scripts\oeisbot queue --all --limit 0  # the --model pool: expect 26745 candidates; left out
-                                             # 18 (11 too_few_known_terms, 7 conjectural_program).
+                                             # 16 (11 too_few_known_terms, 5 conjectural_program).
+                                             # Was 26745 / 18 (11 / 7) until item 58 (2026-11-22): a
+                                             # sequence with a rejected review is no longer drawn, so
+                                             # A162762 and A162764 are dropped in select.candidates
+                                             # before the conjectural gate and are counted nowhere.
+                                             # The pool total did not move. Before that:
                                              # Was 26747 / 16 (9 / 7) until 2026-09-30: item 51's
                                              # helper check refused A122036's block (1 known term)
                                              # and item 52's backfill retired A309238's program (2
@@ -515,9 +865,19 @@ critic's findings, summarised in history item 41.
                                              # open reviews earlier in select.candidates, so the same
                                              # two sequences moved from one exclusion to another.
                                              # The POOL TOTAL did not move, and that was the point
-   .venv\Scripts\oeisbot queue --limit 0    # expect 3357 candidates; left out 1958 (1432 / 383 / 143)
-                                             # the three add up to the 1958: 1432 no_supported_program,
-                                             # 383 verify_out_of_reach, 143 all_programs_dead_ends.
+   .venv\Scripts\oeisbot queue --limit 0    # expect 3359 candidates; left out 1954 (1430 / 383 / 141)
+                                             # the three add up to the 1954: 1430 no_supported_program,
+                                             # 383 verify_out_of_reach, 141 all_programs_dead_ends.
+                                             # Was 3357 / 1958 (1432 / 383 / 143) until item 58
+                                             # (2026-11-22) changed two rules, with no row written:
+                                             # a verify_timeout is a dead end only with CPU time of at
+                                             # least 80% of the verify budget (+2 pool, -2 dead ends:
+                                             # A217380 and A101569), and a sequence with a rejected
+                                             # review is not drawn (-2 no_supported_program: A162762
+                                             # and A162764, which were not in the pool before either).
+                                             # At the daemon's tiers: 60/1800 s 3336 (164 dead ends),
+                                             # 600/1800 s 3548 (50), 600/10800 s 3571 (27).
+                                             # Evidence: data/item58/measure_pool.py, pool_final.txt.
                                              # Was 3375 / 1940 (1407 / 383 / 150) until item 53 (2026-09-30,
                                              # later the same day) refused 28 print loops and 4 bulk
                                              # printers: -18 pool, +25 no_supported_program, -7 dead ends
@@ -564,9 +924,12 @@ critic's findings, summarised in history item 41.
                                              # a(25)..a(42) at `new`, waiting on the user; #2 A162762
                                              # and #3 A162764 are `rejected` with a note (item 49) --
                                              # NOT submittable, see history item 45
-   .venv\Scripts\python scripts\check_docs.py  # expect 0 link problems; the 10 IDENT lines are the expected
-                                               # ones (a PARI type, illustrative names, and PARI function
-                                               # names from OEIS entries' own programs -- not real code
+   .venv\Scripts\python scripts\check_docs.py  # expect 0 link problems; the 5 IDENT lines are the expected
+                                               # ones (5 on 2026-11-23, as development.md says; this line
+                                               # said 10 from 2026-09-29 and was not updated when item 51
+                                               # took it to 6; item 58 took it to 5 by using the process-
+                                               # creation flag sandbox.md names: a PARI type, illustrative
+                                               # names, and names that are not real code
                                                # identifiers). It checks that count itself now, so a new
                                                # one is a problem, not a judgement call. Was 5 until
                                                # session 11 (2026-09-29) cited is_A274003, is_A178751 and
@@ -605,6 +968,17 @@ critic's findings, summarised in history item 41.
    (before the backfill, i.e. after the run). Item 54 (2026-10-13) then added the pick-snapshot tables and
    snapshot #1 (3,357 rows) without moving any of these counts; its backup is
    `data/oeisbot-before-pickmap.sqlite3`.
+
+   **Item 58 (2026-11-22 and 23) moved both pool lines and the test total, and wrote no database row.**
+   Re-derived on 2026-11-23: `queue` **3,359 / 1,954 (1430 / 383 / 141)** and `queue --all` **26,745 / 16
+   (11 / 5)**, both through the real `attempt.session_pool` on a read-only connection and again through
+   `data/item49/recheck_numbers.py` (which runs the two `queue` commands and was re-baselined to these);
+   **886 tests collected** (903 since section F, later the same day); still 280 attempt rows, 12 sessions, 456 predictions, three review rows with
+   #1 `new` and `updated_at` unchanged, one pick snapshot of 3,357 rows, `data/runs/` 290, `data/pending/`
+   empty. The pools moved because the *code* changed (three selection rules), which is the "stale without
+   a run" effect item 46 first had. Not re-run by the docs pass: `model-check`, `stats`, `attempts`,
+   `recheck`, `review list`, `replay_predictions.py` and the node tests (it was not allowed to run
+   `oeisbot` commands); their expected values above are the earlier ones and nothing in item 58 changes them.
 
    **Item 49 (2026-09-28) moved the review line and nothing else.** `review list` now shows **three rows,
    one open**: #1 `new`, #2 and #3 `rejected`. Both pool lines were re-run through the CLI after the
@@ -722,9 +1096,37 @@ critic's findings, summarised in history item 41.
 
 ## Where things stand
 
-- **Build:** all eight steps of the [design spec](design-spec.md) are implemented, with 634 passing tests.
-- **The dashboard had a defect sweep** (item 56, 2026-11-17 and 18), **built, tested, and in the working
-  tree uncommitted** (19 modified files and 5 new; `git status`). The page now reads 1 win, 2 rejected and
+- **Build:** all eight steps of the [design spec](design-spec.md) are implemented, with 903 passing tests.
+- **The daemon is not armed, and tests cannot reach the real project by two independent layers**
+  (item 58, section F, 2026-11-23, uncommitted). `oeisbot daemon` runs a night only where a person has
+  run `oeisbot daemon --arm` (a file, `data/daemon/armed`; it does not exist); unarmed, a start writes
+  one log line and exits with code 2. `oeisbot/guard.py` makes the product refuse, under a test, to
+  write the real `data/` or `artifacts/` or to contact oeis.org, beside the wall in
+  `tests/conftest.py`. What neither covers is in
+  [known limitations](known-limitations.md#the-safeguards-against-reaching-the-real-project).
+- **Unattended running is built and has not run** (item 58, 2026-11-22 and 23, uncommitted). `oeisbot
+  daemon` runs PARI sessions back to back inside a window of local time (default 22:00 to 08:00) and
+  exits: recovery after a kill, one sync under a time limit, a ladder of three budget tiers (60 s /
+  1,800 s, 600 s / 1,800 s, 600 s / 3 h; pools 3,336, 3,548 and 3,571 on 2026-11-23), a 14-day cooldown
+  for sequences whose last attempt changed nothing, pauses under 10 GiB of disk or 4 GiB of RAM, a
+  breaker at 5 machine failures in a row, a heartbeat file and a log in `data/daemon/`, `--stop` and
+  `--status`, and `--task-xml FILE` for Task Scheduler. A stop, the window's end or Ctrl-C records the run in
+  hand as `interrupted`, which retires nothing. `run`, `attempt`, `sync`, `recheck`, `fetch-bfiles`,
+  `setup` and `snapshot` now share one writers' lock with it and are refused while another holds it.
+  **It submits nothing and nothing registers the task.** **Never run on the real project; `data/daemon/`
+  does not exist.** The first-night checklist is in [daemon](daemon.md#before-the-first-night), and what
+  is known not to be handled in [known limitations](known-limitations.md#the-daemon-and-the-writers-lock).
+- **Three selection rules changed with it** (item 58): a `verify_timeout` is a dead end only if the run
+  had CPU time of at least 80% of the verify budget now asked; a run stopped as `interrupted` adds no
+  failure penalty; and **a sequence with a `rejected` review is not drawn**, so every review status now
+  keeps its sequence out of the draw (recording review #1 as `rejected` would no longer return A385331
+  to it). `queue` went 3,357 → 3,359 and `queue --all`'s left-out count 18 → 16.
+- **Part B is decided and not built** (item 58): a "To submit" page on the dashboard listing results not
+  yet on OEIS, with narrow writes for review status, a Submit button that only opens oeis.org beside
+  copy buttons, and the user closing reviews. Plan: `data/item58/plan.md`.
+- **The dashboard had a defect sweep** (item 56, 2026-11-17 and 18), **committed and pushed as `31d5b7e`**. Item 57 then changed the server (two more API fields), so a
+  server started before it serves the new page with the old API until it is restarted (the new filter and
+  labels do not appear; nothing breaks). The page now reads 1 win, 2 rejected and
   18.6 hours per win. The frontend is built into `oeisbot/dashboard/static` (not committed; `npm run build`
   in `dashboard/` remakes it). **A dashboard server may still be running** at `http://127.0.0.1:8765`: the
   user asked for it on 2026-11-17 and uses it; it is a process of that session, so check the port before
@@ -930,11 +1332,17 @@ critic's findings, summarised in history item 41.
   it, each at the user's request: `63cc9ae` (the flaky-test fix, history item 30, tests and docs only),
   `f325786` (items 32 and 33) and `3dacfb8` (the git TLS flag in CLAUDE.md). On 2026-10-14, again at the
   user's request ("Commit and push"), **`f0081d9` landed items 34 and 36 to 54 and everything from
-  sessions 7 to 12 in one commit**, and it is `HEAD` and `origin/main`; nothing is uncommitted. What it
-  holds is in [what is committed](#what-is-committed), the one place to update when this changes (the
+  sessions 7 to 12 in one commit**. Two more followed on 2026-11-18, `a6ae951` (item 55) and `31d5b7e`
+  (item 56), and **`31d5b7e` is `HEAD` and `origin/main`** (`git log -1 --oneline`, `git rev-parse
+  origin/main`, 2026-11-23); **items 57 and 58 are uncommitted on top of it**. (This bullet said until
+  2026-11-23 that `f0081d9` was `HEAD` and that nothing was uncommitted, which had been untrue since
+  2026-11-18.) What is committed
+  is in [what is committed](#what-is-committed), the one place to update when this changes (the
   bullet and the two paragraphs in the header have drifted from it before). Do not commit or push
   unless the user asks. `.gitignore` excludes the local state below.
-- **Background processes:** none. The Ollama tray app keeps its server running on port 11434.
+- **Background processes:** none. The Ollama tray app keeps its server running on port 11434. No daemon is
+  running (2026-11-23: no `data/writer.lock`, no `data/daemon/`), and by the build's notes the scheduled
+  task was never imported (`schtasks /query /tn "OEISBot daemon"` finds no such task, 2026-11-23).
 
 ### Local state on this machine (not in git)
 
@@ -945,7 +1353,7 @@ critic's findings, summarised in history item 41.
 | `tools/pari/gp.exe` | PARI/GP 2.17.4 standalone |
 | AppContainer `OEISBot.Sandbox` | profile created; read grants on `tools/python`, `tools/pari`; modify grant on `data/scratch` |
 | `data/oeisdata/` | synced to commit `956668977564dbec38a657dafa875f021b4d052b` at 2026-09-17 13:06 UTC; the candidate table was rebuilt from that same checkout after the `fini` fix (`sync --no-pull`) |
-| `data/oeisbot.sqlite3` | **Item 54 (2026-10-13) added two tables, `pick_snapshots` (1 row: the PARI pool, 3,357 candidates, rules `af16ba7ce8d3`) and `pick_snapshot_rows` (3,357 rows); every count below is unchanged** (checked by `data/item49/recheck_numbers.py`). **Re-derived 2026-09-30 after items 51 and 52 (session 12, then the offer (a) backfill): 280 attempt rows (ids 1-280; 48 of them with a backfilled `program_sha`), 12 sessions, 456 predictions, 3 reviews (#1 `new`), 26,814 sequences; `queue` 3,357 / 1,958 (1432 / 383 / 143) after item 53; `queue --all` 26,745 / 18** — checked by `data/item49/recheck_numbers.py`, re-baselined the same day. Before that: **Re-derived 2026-09-29 after session 11 (item 50), by query, not by hand** — first re-derived 2026-09-28 (item 49), when this row had been left at session 7's numbers and was wrong on five counts after session 10. 26,814 candidates; **11** sessions; **253** attempt rows by outcome (207 `failed`, 40 `verified`, **3 `extended`**, 3 `skipped`) over **182** distinct sequences; **455** predictions; **3 reviews** — #1 A385331 `new`, #2 A162762 and #3 A162764 `rejected` (item 49). 44 rows have no `session_id`: standalone `oeisbot attempt` runs, including the A129250 re-attempt, the 12 rows of the step-2 run (history item 20), the 2 rows of the offer-B check (item 21), the 20 rows of the offer-C measurement (item 24) and the 3 rows of session 7's targeted P4 probe (item 35). A copy taken just before session 5 is in that session's scratchpad only, not in the repo. Since offer D (2026-09-19) the run rows carry `extra.attempt_call` (`legacy-<first row id>` for the pre-D ones), **202** distinct attempts — counted the way `select.candidates` counts them, `COALESCE(json_extract(extra,'$.attempt_call'), 'row:'||id)`, so the 3 rows with no `extra` at all (ids 1, 5, 11, all `skipped`) each count as one; the distinct non-null `attempt_call` values number **199**. The failure penalty uses the same COALESCE but only over `failed`/`verified` rows, so no skip reaches it; see the backups below |
+| `data/oeisbot.sqlite3` | **Item 58 (2026-11-22 and 23) wrote nothing here; what changed is what the code derives from it: `queue` 3,359 / 1,954 (1430 / 383 / 141) and `queue --all` 26,745 / 16 (11 / 5), re-derived 2026-11-23, and the code's rules fingerprint `260fee4c701e` against snapshot #1's `af16ba7ce8d3`. The pool figures further down this row are their own dates'.** **Item 54 (2026-10-13) added two tables, `pick_snapshots` (1 row: the PARI pool, 3,357 candidates, rules `af16ba7ce8d3`) and `pick_snapshot_rows` (3,357 rows); every count below is unchanged** (checked by `data/item49/recheck_numbers.py`). **Re-derived 2026-09-30 after items 51 and 52 (session 12, then the offer (a) backfill): 280 attempt rows (ids 1-280; 48 of them with a backfilled `program_sha`), 12 sessions, 456 predictions, 3 reviews (#1 `new`), 26,814 sequences; `queue` 3,357 / 1,958 (1432 / 383 / 143) after item 53; `queue --all` 26,745 / 18** — checked by `data/item49/recheck_numbers.py`, re-baselined the same day. Before that: **Re-derived 2026-09-29 after session 11 (item 50), by query, not by hand** — first re-derived 2026-09-28 (item 49), when this row had been left at session 7's numbers and was wrong on five counts after session 10. 26,814 candidates; **11** sessions; **253** attempt rows by outcome (207 `failed`, 40 `verified`, **3 `extended`**, 3 `skipped`) over **182** distinct sequences; **455** predictions; **3 reviews** — #1 A385331 `new`, #2 A162762 and #3 A162764 `rejected` (item 49). 44 rows have no `session_id`: standalone `oeisbot attempt` runs, including the A129250 re-attempt, the 12 rows of the step-2 run (history item 20), the 2 rows of the offer-B check (item 21), the 20 rows of the offer-C measurement (item 24) and the 3 rows of session 7's targeted P4 probe (item 35). A copy taken just before session 5 is in that session's scratchpad only, not in the repo. Since offer D (2026-09-19) the run rows carry `extra.attempt_call` (`legacy-<first row id>` for the pre-D ones), **202** distinct attempts — counted the way `select.candidates` counts them, `COALESCE(json_extract(extra,'$.attempt_call'), 'row:'||id)`, so the 3 rows with no `extra` at all (ids 1, 5, 11, all `skipped`) each count as one; the distinct non-null `attempt_call` values number **199**. The failure penalty uses the same COALESCE but only over `failed`/`verified` rows, so no skip reaches it; see the backups below |
 | `data/oeisbot-before-offerD.sqlite3` | a copy of the database (`VACUUM INTO`, checked table by table) taken just before offer D's backfill wrote `extra.attempt_call` into the 108 run rows on 2026-09-19; nothing else in the database was changed. Safe to delete once D is accepted |
 | `data/oeisbot-before-session6.sqlite3` | a copy (`VACUUM INTO`, integrity-checked: 111 attempt rows, 26,814 sequences) taken just before session 6 on 2026-09-19, so the pre-run pool can still be rebuilt now that the run has changed it (history item 31 uses it for the H10 pool comparison and the wasted-pick sizing). Safe to delete once item 31 is accepted |
 | `data/oeisbot-before-session8.sqlite3` | a copy (`VACUUM INTO`) taken just before session 8 on 2026-09-21: 155 attempt rows, 40 predictions, 7 sessions. Lets session 8's pre-run pool be rebuilt now that the run has moved it. Safe to delete once item 38 is accepted |
@@ -971,6 +1379,10 @@ critic's findings, summarised in history item 41.
 | `data/item42-43/` | 10 files with a `README.md`: items 42 and 43's working files, copied out of the temp scratchpad so they survive. **`planRESUME2.md`** is to be read before ever re-opening resume, and **`mutate43.py`** re-run before changing `runtime_versions` or `db.set_meta_many` (24 mutations, 23 caught; line-ending aware). Safe to delete once items 42 and 43 are accepted |
 | `data/item46/` | 12 files and a `critic/` subfolder with 8 more, all with a `README.md`: item 46's evidence, harnesses and the critic's scripts from all three of its passes. **`mutateA.py`** is to be re-run before changing `verify.on_line`'s parse block, `pari._drivable` or `build_candidates`' structure (13 mutations, 13 caught; whole suite per mutation; line-ending aware). **`classify_m1.py` is kept as the record of a mistake** -- the static check that was measured wrong on 5 of 32 and therefore does not ship. **`pool_diff.py`** reproduces the 3,448 -> 3,434 diff by emulating the old builder on top of the new code. Safe to delete once item 46 is accepted |
 | `data/runs/` | **290** files (268 until session 12 added 22 on 2026-09-30 — five of its 27 runs accepted no term and so wrote no log; 247 until session 11 added 21 on 2026-09-29 — four of its 25 runs accepted no term and so wrote no log; 198 until session 10 added 49) (term logs and generated programs from the runs above; a run that stopped at its first term has no term log, so 35 of the older run rows name one that was never created. Rows written since the item-32 fix leave `extra.log` out instead) |
+| `data/item58/` | 18 files and a `__pycache__` (`ls`, 2026-11-23; 15 before section F added `safeguards.md`, `mutants4.py` and `mutation_slice4.txt`, each described in [where the record is](#where-the-record-is)): item 58's plan (`plan.md`, with the user's decisions), the three slice notes with every review finding and what was done (`slice1.md`, `slice2.md`, `slice3.md`), `final_audit.md` (the fifth reviewer's 14 findings and what each changed, with what it could not verify), `docs_owed.md` (a reviewer's list of doc sentences the change made false), `measure_pool.py` (read-only: the pool at each tier, and the `verify_timeout` rows by CPU share) with its outputs `pool_before.txt`, `pool_after_slice1.txt` and `pool_final.txt`, and the mutation sets `mutate.py` and `mutants3.py` with their last runs `mutation_slice1.txt`, `mutation_slice2.txt`, `mutation_slice3.txt` (29, 16 and 107 mutants, none surviving; the slice-3 file is one run of 106 with 2 not killed, then a note that those were fixed, a 107th added and the four re-run and killed). **`mutate.py` changes the working tree while it runs: nothing else may read, run or edit the code meanwhile** ([development](development.md#mutation-sets-for-item-58)). **Keep `plan.md` until Part B is built**: it is that part's plan |
+| `data/daemon/`, `data/writer.lock` | **do not exist** (`ls`, 2026-11-23, 11:38): the daemon has never run here, **it is not armed**, and no locked command has run since the lock was built. (A `data/daemon/` holding a stray `stop`, and for a moment an `armed`, was created by a mutant on the morning of 2026-11-23 and removed: item 58, section F.) The first holds `armed` (written only by `oeisbot daemon --arm`, the user's step), `heartbeat.json`, `stop` (while a stop is pending) and `daemon-YYYYMMDD.log` files; the second is the writers' lock, whose contents only describe the holder ([data and schema](data-and-schema.md#directory-layout)) |
+| `data/oeisdata/.git` | holds a pack and a `FETCH_HEAD` from the one real `git fetch` item 58's review incident ran on 2026-11-22 (by `data/item58/slice3.md`; harmless, the next sync uses them). The 0-byte `index.lock` it left was removed the same day; on 2026-11-23 there is no `*.lock` file in that directory and `HEAD` is still `9566689` (`ls`, `git rev-parse`) |
+| `data/scratch/` | 34 leftover directories (`ls`, 2026-11-23, the same before and after a run of the suite), with names such as `test-...`, `smoke-...`, `bigalloc-...` and `A000079-python-...`; who left each was not traced. The daemon's recovery removes only those named like a run's (`A123456-<language>-<8 hex>`) and at least 6 hours old: 2 of the 34 today. The rest are safe to delete by hand while nothing is running |
 | `data/pending/` | exists and is **empty**. Created by session 7's win, which saved `attempt-139.json` before its re-check and deleted it after the re-check succeeded, so only `_save_pending` has ever run — `_load_pending` is still unexercised |
 | `data/session8/` | 16 files (a `README.md` explaining how to run them, plus 15): session 8's prediction page (`planS8.md`, and `planS8-v1-precritic.md` before its critic), the corrected write-up (`resultsS8.md`) and the 10 scripts plus 2 JSON fixtures behind them. Copied out of the temp scratchpad so they outlive it. `nomoreterms.py` measured what became next step 1; `data/session9/` supersedes it. Safe to delete once item 38 is accepted |
 | `data/*.log` | `session12_pari.log` (session 12's console, 2026-09-30), `clone.log`, `session1.log`, `session2_model.log`, `session3_real.log`, `session5_probe.log`, `session5_model_step2.log`, `session6_pari.log`, `session7_pari.log`, `session8_pari.log`, `p4_probe.log`, `offerB_check.log`, `offerC_measure.log`, `bfile_sweep.log`, `model_smoke2.log`, `ollama_pull.log`, `session10_runA.log`, `session10_runB.log`, `session11_pari.log` (console output of earlier runs; safe to delete). `session6_pari.err` was created empty and stays empty |
@@ -1088,6 +1500,30 @@ critic's findings, summarised in history item 41.
 | Pick map: the old balancing search is kept as a pre-step that picks the least wasteful of nine layouts; the tile inset is 0.5 px, not 1 | assistant, reported to the user, not objected to | history item 56; `data/item56/area_spread.txt` |
 | The server answers only to its own host names and refuses an API request made by another page, `same-site` included; a wildcard `--host` turns the host check off with a warning | assistant (in the approved plan; the `same-site` refusal is stricter than the plan and was reported) | history item 56; `app.guard` |
 | Item 56 stays uncommitted for now | user ("The sweep can stay uncommitted", 2026-11-18) | [what is committed](#what-is-committed) |
+| Commit and push item 56 before the tie-up work | user ("Commit and push first", 2026-11-18) | `31d5b7e` |
+| Value dependence: leave it, close the item | user ("Leave it, close the item", 2026-11-18), on the 2026-09-30 replay | history item 57 |
+| Build all four leftovers offered: the dashboard bits, the bound extractor's recall, item 34's leftovers, the `@T` identity check | user (all four ticked, 2026-11-18) | history item 57 |
+| Of the five recall gaps, build three and leave `checked up to X`, `none found up to X` and primorials unread | assistant, on the measurement (about half the live hits are not a bound on the next term); the user had asked for the gaps to be built | history item 57; [known limitations](known-limitations.md) |
+| The pending-win release is a checked command a person runs, not an automatic release | assistant, against its own wording of the option, because "Flag only" (item 34) stands | history item 57; [operations](operations.md#a-win-whose-re-check-failed-recheck_pending) |
+| No code reader for `sequences.difficulty` | already decided by "Make sync consistent" (item 34); restated, not re-decided | history item 57 |
+| Wolfram Engine: **struck**. No second runtime; the project stays PARI and model-written Python | user (first "Explain what it would do. Why should I not strike it?", then, with the tradeoffs laid out, "Ignore wolfram engine (strike it) I don't need to use it and want to keep this project lean", 2026-11-18) | history item 57; next step 9 |
+| A predicate beside a list printer (next step vi): **leave it**; neither refuse the shape nor build the lister's own loop | user ("Okay leave it", 2026-11-18), on the reading (6 real, 9 helpers) and the three options' effects | history item 57 |
+| Update the documentation so the context can be cleared; not a request to commit | user ("Update documentation so I can clear context without losing progress", 2026-11-18) | this page |
+| **No automated submission of any kind.** Invariant 1 ("Nothing submits") stays as written | user ("It is against policy for automated submissions and programs you do not understand", 2026-11-19), after first asking for submission to be automated | history item 58; [development](development.md#invariants) |
+| Running continuously: **sync-driven picks plus a budget ladder, no model pool** | user (option question, 2026-11-19) | history item 58; [daemon](daemon.md#the-budget-ladder) |
+| Machine load: **idle hours only**, a time window and not round the clock; the window is **22:00 to 08:00** local time and **the task may wake the machine from sleep** | user (option question, 2026-11-19; the hours and the wake on 2026-11-22) | history item 58; [daemon](daemon.md#the-window) |
+| Build order: **the daemon first, then the submission side**; "Continue the buildout starting with part A", one part at a time, each reviewed by adversarial agents before the next | user (2026-11-19 and 2026-11-22) | history item 58 |
+| The submission side is **a page, not generated files** ("all results that are yet to be submitted (and don't exist already as terms) are in one space for me to review and submit"); it may write narrowly (review status, its note, the live-check result); its Submit button opens oeis.org's pages beside copy buttons and sends nothing; the user closes a review, nothing closes automatically | user (2026-11-19) | `data/item58/plan.md`, Part B; **not built** |
+| OEIS account name: the user has none yet; registering one is their TODO, and Part B's `%E` / `%H` lines carry a placeholder until then | user (2026-11-22) | `data/item58/plan.md` |
+| The ladder's tiers and budgets (60 s / 1,800 s, 600 s / 1,800 s, 600 s / 3 h; start from the lowest every night; no climbing on a mirror unsynced for 7 days); no budgets clipped to fit the window, a pick started while there is time to verify it and its extension interrupted by the window; a 14-day cooldown judged only at budgets no larger than the row's own; pauses, a breaker at 5, recovery at each start; one Pick-map snapshot a night | assistant, each open to attack in the slice reviews and several reversed by them (the start gate, the budget-aware cooldown, the per-night snapshot) | history item 58; [daemon](daemon.md) |
+| A new stop reason `interrupted` that no dead-end rule matches, rather than recording a stopped run as `extend_budget` | assistant, in the plan the user told it to build ("recording it as `extend_budget` would retire the program wrongly", `data/item58/plan.md` A2) | history item 58; [verification](verification-and-estimation.md#stop-reasons) |
+| `verify_timeout` is a dead end only with CPU time of at least 80% of the verify budget asked now; a sequence with a `rejected` review is not drawn; an interrupted run adds no failure penalty | assistant, in the approved plan; the CPU rule's form (against the budget asked, not the run's own wall time) is a reviewer's correction | history item 58; [pipeline](pipeline.md#4a-the-entrys-own-pari-programs-always-first) |
+| One writers' lock for `run`, `attempt`, `sync`, `recheck`, `fetch-bfiles`, `setup`, `snapshot` and the daemon; an operating-system lock, so no stale lock; `snapshot` added by the lock's reviewer | assistant, in the approved plan | history item 58; [daemon](daemon.md#the-writers-lock) |
+| The project prints a Task Scheduler definition and registers nothing; importing it is the user's | assistant; the import is left to the user | history item 58; [daemon](daemon.md#the-scheduled-task) |
+| Tests are walled off from the real database, mirror and network | assistant, after the incident of 2026-11-22 | history item 58; [development](development.md#the-test-wall) |
+| Safeguards in the product itself, so that such an incident cannot recur | user ("Update the functionality to have safeguard to avoid incidents like this again", 2026-11-23) | history item 58, section F |
+| The form of those safeguards: the daemon runs only where a person has armed it (`oeisbot daemon --arm`, a file, the user's step alone); the product refuses the real project and oeis.org when it is running under a test (`oeisbot/guard.py`); the mutation harness stops if the real project changes | assistant (the request named no form) | history item 58, section F; [daemon](daemon.md#arming), [development](development.md#the-products-own-guard) |
+| Update the documentation so the context can be cleared; not a request to commit | user ("Also update documentation so I can clear context without losing progress", 2026-11-23) | this page, [resume here](#resume-here-2026-11-23) |
 
 ## History (condensed)
 
@@ -3973,7 +4409,527 @@ critic's findings, summarised in history item 41.
     `dashboard/src/styles.css`, `dashboard/test/treemap.test.ts`, `tests/test_dashboard.py`,
     `tests/test_pickmap.py`, and the docs. Evidence in the gitignored `data/item56/`. Not committed.
 
+57. **The tie-up: every optional item the roadmap still listed, built, measured or closed (2026-11-18).**
+    The user asked "Are there any open roadmap items?", then "I want to tie up all these things like wolfram
+    engine". Four option questions followed. Answers: on Wolfram, **"Explain what it would do. Why should I
+    not strike it?"** (a question back, so nothing was decided: see E below); value dependence, **"Leave it,
+    close the item"**; which leftovers to build, **all four offered** (the dashboard bits, the bound
+    extractor's recall, item 34's leftovers, the `@T` identity check); and item 56, **"Commit and push
+    first"**. So **item 56 was committed as `31d5b7e` ("Item 56: the dashboard defect sweep") and pushed**
+    after the suite passed (634), and everything below is on top of it, **uncommitted**.
+
+    **A. The `@T` identity** (deferred by item 41, homeless since item 42). A predicate driver's term line
+    states one fact twice, as its heartbeats do: the term is the k just tested and `work` counts every k
+    from `start`. `verify.Harness.on_line` now requires `value - start + 1 == work` whenever the caller
+    passed `ScanTracking`, and a line that breaks it **halts as `protocol`** (a heartbeat is only dropped: a
+    term line makes a term, and its work count sets the rate the searched-bound check reasons with). It is
+    checked before the index and the value, and the detail holds no number. **Measured first**: all 731
+    term lines in the 67 predicate run logs that can still be matched to a row keep it (62 scans from 1, 5
+    from 0; `data/item57/term_identity.txt`; 56 of the 117 predicate rows match no log by name, because the
+    offer (a) backfill re-keyed their `program_sha`).
+
+    **B. The bound extractor's recall gaps, measured before any was built** (`data/item57/bound_gaps.py`,
+    every hit read). The five shapes item 41 listed were tried over all 42,222 `%C` lines of the 26,814
+    sequences. **Three were built**: number words from `thousand` to `decillion` (no bound claim uses one
+    past `trillion` today), factorial notation (`No other elements < 31!` was read as 31) and `are the
+    only terms [known] up to X` in a strict form. **Two were measured as not worth building and are pinned
+    unread by tests**: `checked / tested / verified / searched up to X` (106 lines, 14 on sequences with a
+    predicate candidate; of the eight that would be live, three are not a bound on the next term and two
+    leave it unsaid what `n` or `k` is: the A088783 class again) and `none was found up to X` (two lines,
+    both about a side question). Primorial notation was also left: its one bound claim, A057230's `up to
+    23#`, writes `n#` for the product of the first n primes and is about the products searched. **The net
+    effect on the corpus is seven lines read differently and five sequences with a different applicable
+    bound, one of which has a predicate candidate and so a consumer: A119748, 10^10**
+    (`data/item57/bound_diff.txt`, the committed `bounds.py` against the working tree). So the item was
+    worth doing for the measurement more than for the yield, as item 41 had predicted.
+
+    **C. Item 34's leftovers.** *The release of a pending win whose saved result can no longer be read* is
+    now a command, `oeisbot recheck --release <attempt id>` (`attempt.release_pending`,
+    `db.release_recheck`), in place of the `UPDATE` operations.md told a person to type. It does what that
+    SQL did (the row becomes `verified`, the sequence returns to the draw) and refuses what the SQL could
+    not: a row that is not `recheck_pending` (also in the UPDATE's own WHERE), **a win whose saved result
+    still loads**, and a saved result that exists and cannot be opened. It keeps a drifted result as
+    `attempt-<id>.released.json` and records why and when in `extra`. **It is not automatic and must not
+    become so**: the user's "Flag only" (item 34) stands, a pending win is retried for ever, and only a
+    person gives one up. (The option put to the user called it an "automatic release"; that wording was
+    the assistant's and was wrong, and what was built is the checked command.) *The `sequences.difficulty`
+    reader* was **not built, because it was already decided**: the user's "Make sync consistent" (item 34)
+    kept the column for a person querying the database by hand, and
+    [known limitations](known-limitations.md) says so; a reader invented in code would be work with no
+    user. The three design-intent mismatches item 34 turned into documentation were not on offer and stay
+    documentation.
+
+    **D. The dashboard bits.** (1) **Arrow keys along the tabs**: each row of tabs (the six views, the Pick
+    map's bands) is one Tab stop on the selected tab; Left, Right, Home and End move the focus and wrap,
+    Enter or Space opens. Moving does not open, because opening adds a history entry and starts a request.
+    Item 55's hand-off of the focus from a "too small to draw" chip to its band's tab still works (seen).
+    (2) **A refused win has its own label**: "no review opened", with the earlier review's number in its
+    tooltip, where it would have read "review rejected"; `/api/attempts` sends `review_refused`. A test
+    written first found that `json_extract` hands a JSON `true` back as the integer 1, which would have
+    named review #1: the query asks `json_type` instead. No such run exists in the live database. (3)
+    **The estimator's trust filter has three positions** (item 36's follow-up, "Leave it, note it" in
+    September): all, trusted, and trusted or cost fit sound; the table and the tooltip say "rate drifting,
+    cost fit sound" for the one such point (A229209, a(12)), with its rate drift. (4) **The two suspicions
+    item 56's audit left unchecked.** *Touch*: confirmed with a simulated tap, **one tap opened oeis.org
+    before the tooltip could be read**; a touch now shows the tooltip with a "Tap again" line and opens on
+    the second tap on the same tile (`tabs.tapActs`). *Resize*: the layout does run at every pixel of a
+    drag and it is cheap. The page's own `layoutGroups` over the saved pools, at each of the 599 widths
+    from 1198 to 600 px, takes a median 0.66 ms and at most 2.7 ms for the PARI pool's "All bands", and
+    3.2 ms, at most 9.6 ms, for the model pool's (`data/item57/resize_cost.txt`); a frame is 16.7 ms. No
+    change was made.
+
+    **E. Two measurements for decisions that are the user's.** *Next step (vi)*: the 15 blocks with a
+    drivable predicate beside a list printer were read (`data/item57/lista15.txt`). **Six predicates are
+    the sequence's own test** (A053706, A131122, A252540, A252541, A292083, A293184; attempt #164 on A292083 verified, and
+    attempt #156 on A131122 reproduced 24 of its 28 known terms within the 60 s gate) and **nine are helpers** that
+    the lister restricts, transforms or counts (A257929 and A301776 are tested only on primes, A262251 only
+    on triangular numbers, A338371 only on non-palindromes not ending in 0, A348266 prints `n + nb`,
+    A294026, A294027 and A335304 keep state between calls, A363170 counts). So "a predicate beside a
+    lister yields nothing" would be wrong 6 times in 15, and the gate catches the helpers that have been
+    run (attempts #169 on A294026 and #237 on A335304 both stopped at a wrong term). **Decided by the user later the same day: leave it** ("Okay leave it"), with the three options' effects set out
+    (leave; refuse the shape, losing the 6 real tests; also run the lister's own loop, which would give up to 5
+    of the 9 helpers a correct program at the price of a new builder path). As put: leave it (recommended: 15 blocks, each misread costs
+    one fast pick), or also offer the lister's own loop as item 46 does for a block's loop. *Wolfram*: the
+    first Mathematica program of each of the **5,282** `more` sequences with Mathematica and no PARI was
+    classified by shape (`data/item57/mma_shapes.txt`): **35.7% a one-argument definition, 29.3% a
+    `Select` over a range, 15.2% a search loop that prints, 14.6% a `Table` or `Array`, 1.2% a bare
+    generator** (a linear recurrence and the like), 4.0% other; three carry item 47's words. The scoping
+    note expected formula-shaped programs to dominate; by this (crude, regex) count they do not. The
+    go/no-go experiment stays as the note describes it and has two blockers that are the user's: about
+    9 GB to install with `C:` at 8.3 GiB free against an 8 GiB reserve, and a Wolfram ID. **Struck by the
+    user later the same day** ("Ignore wolfram engine (strike it) I don't need to use it and want to keep this project lean"), after the tradeoffs were set
+    out: a pool of 5,282 untried sequences against a build of three to five items, a probably lower rate
+    per run, the disk, a licence, and a kernel that might not start in a sandbox with no network. Nothing
+    was installed. Do not re-open it unless the user asks.
+
+    **Checks.** Tests written with each change: **703 Python tests** (634 before: 5 more functions in
+    `test_heartbeat.py`, 8 in `test_bounds.py`, 8 in `test_recheck.py`, 4 in `test_dashboard.py`; 69 more
+    collected) and **80 node tests** (68 before; the 12 of the new `test/tabs.test.ts`). **77 mutation
+    checks, every one killed** (`data/item57/mutation/`), run in a copy of the tree with its own
+    `OEISBOT_HOME`; the first run of 66 was also clean, and one of the eleven added after the audit
+    survived until a test for a clause ending in a comma was written. **An independent audit of the diff
+    (10 findings, none breaking an invariant on today's corpus or database)**, of which the ones that
+    mattered were all in the direction a bound must never err: a factorial's `!` ended the sentence for
+    the borrowed-bound guard, so `No more terms < 20! (the search limit of A001220).` was read as the
+    entry's own bound; `10!!` was read as `10!`; and the new `only terms` pattern accepted a qualifier
+    after the number (`... below 10^8 which are squares`) or took its number from the next sentence. All
+    three are fixed with tests, and the corpus diff is the same seven lines afterwards. Also from the
+    audit: a saved result that is locked was released as unreadable (now refused), the release deleted an
+    intact drifted file (now renamed), a touch tile could stay armed while another tile's tooltip was up
+    (now disarmed), and a comment claimed the `protocol` detail reaches the model (it does not; reworded).
+    **A browser pass** in Chrome on the live database, read-only: the tab keys on both rows with the
+    history length unchanged until Enter, the three filter positions (20, 6 and 7 rows), "review
+    rejected" with its tooltip on the two real rejected rows ("no review opened" has no row to appear on
+    and was seen only in its node tests), the chip hand-off, and the tap rule with simulated
+    touch events, no console errors.
+
+    **Not done, and why.**
+    - **Not seen under a real finger.** The tap rule was driven with synthetic pointer and mouse events.
+      Two things the audit raised cannot be settled that way: iOS Safari may withhold the click when a
+      mouse-move handler changes the page, which would make it three taps there, and a screen reader's
+      activation on a touch device is a touch click too, so it also needs two with nothing announced
+      between them.
+    - **The resize was timed in node, not in a visible window.** In the page, three one-pixel steps each
+      finished within four animation frames before Chrome throttled the window it could not see; React's
+      render and the paint are therefore not measured beyond that.
+    - **A release typed while a session is running can catch a win between its row and its saved file**
+      (`release_pending`'s docstring). The window is a few milliseconds and the command is a person's; it
+      is documented, not closed.
+    - **The older bound patterns share two holes the new one was built without** (a qualifier after the
+      number, a number taken from the next sentence). They are left as measured in September; narrowing
+      them needs the census redone.
+    - **The dashboard server on port 8765 was not restarted** (a stop was refused in this session), so
+      until it is, it serves the new page with the old API: the new filter and labels simply never appear.
+      The pass above used a second server on port 8766, since stopped.
+    - **This item is not committed**; it waits for its own request.
+
+    **No database row was written**, no schema changed, no pipeline ran, nothing was submitted and review
+    #1 is untouched. Files: new `dashboard/src/tabs.ts`, `dashboard/test/tabs.test.ts`; changed
+    `oeisbot/verify.py`, `oeisbot/bounds.py`, `oeisbot/attempt.py`, `oeisbot/db.py`, `oeisbot/cli.py`,
+    `oeisbot/dashboard/app.py`, `dashboard/src/{lib,main,pickmap,views}.tsx`, the four test files named
+    above, and the docs. Evidence in the gitignored `data/item57/`.
+
+58. **Running unattended, Part A: `oeisbot daemon`, one lock for every writer, and three selection rules
+    (2026-11-19 to 23).** The user asked (2026-11-18 and 19) for the project to run sequences
+    continuously and for submission to be automated. On 2026-11-19 they ruled the second half out
+    themselves: **"It is against policy for automated submissions and programs you do not understand."**
+    So [invariant 1](development.md#invariants), "Nothing submits", is unchanged, and nothing in this item
+    sends anything anywhere. The rest was decided by option questions the same day: **sync-driven picks
+    plus a budget ladder, no model pool**; **idle hours only**, a time window and not round the clock;
+    **the daemon first, then the submission side**; and the submission side as a page rather than
+    generated files, **"all results that are yet to be submitted (and don't exist already as terms) are
+    in one space for me to review and submit"**, which may write narrowly (review status, its note, a
+    live-check result), whose Submit button only opens oeis.org's pages beside copy buttons, and where
+    the user, not the page, closes a review. On 2026-11-22 they set the window (**22:00 to 08:00**, and
+    the task **may wake the machine**), said they have no OEIS account name yet (their TODO), and said
+    **"Continue the buildout starting with part A"**, one part at a time, each reviewed by adversarial
+    agents before the next. This item is Part A. **Part B, the "To submit" page, is decided and not
+    built.** The plan is `data/item58/plan.md`; its critic returned 13 findings before anything was built.
+
+    **Two facts reshaped the plan** (both in the plan, queried 2026-11-19). Every session since session 7
+    ran with a 30-minute extension, not the 3-hour default (`extra.extend_wall_s = 1800` on all 144 rows
+    of sessions 7 to 12), which no session note recorded; a pass of the pool at 3 h was estimated at about
+    1,050 hours, so the first tier is 60 s / 1,800 s. And the local mirror is two months old (`9566689`,
+    2026-09-17), while every pick is decided offline from it. The first design clipped a run's extension
+    to fit the window; the critic showed what that costs (the clipped extension is repeated, each such
+    run adds a failure penalty to exactly the programs that verify, a tier whose budget is "the window"
+    never exhausts, and every clipped session would snapshot the pool under an arbitrary budget), and
+    the design became: no clipped budgets, and a stop that interrupts.
+
+    **A. Slice 1: the stop hooks and three selection-rule changes** (`data/item58/slice1.md`). A new stop
+    reason, **`interrupted`** (`verify.Stop.INTERRUPTED`, `db.INTERRUPTED`): `Harness(should_stop=...)`
+    is asked first on every tick, and a run stopped that way is matched by no dead-end rule.
+    `attempt_sequence` and `run_session` pass it down, and `run_session` gained `note`, `keep`,
+    `before_attempt`, `may_start`, `should_stop` and later `snapshot`; its note now names the budgets,
+    and each run's `extra` records `verify_wall_s`. The three rule changes: **a `verify_timeout` is a dead
+    end only with enough CPU time** (the verify budget is wall time, and a machine that slept through a
+    verification would retire a program at every tier); **a row stopped as `interrupted` adds no failure
+    penalty**; and **a sequence with a `rejected` review is not drawn** (a win for it is refused a review,
+    so an unattended loop could only spend the run, again and again). Three adversarial reviewers
+    (correctness of the stop path, the selection rules, the tests by mutation), then a re-check
+    (`slice1.md` does not record one: it ends at 22 of 22 mutants killed, and the set is 29 today). They
+    found, and all were fixed: **a bug**, a stop pending after the last PARI program (or with none to
+    run) still started the model stage, so `attempt_sequence` now asks once more after the loop and
+    `codegen.generate_and_verify` takes `should_stop` and records no skip for a stage cut short; **a
+    wrong rule**, the CPU share had been taken of the old run's own wall time, which let two sequences
+    that had failed with 288 s and 474 s of CPU back into the 60 s pool, so `is_dead_end` now asks for
+    CPU time of at least 0.8 of the verify budget asked now; a line could be processed after the harness
+    had halted, so that a run stopped during verification was recorded as verified (`Harness.on_line`
+    now reads nothing once a stop is set, which also closes the same hole for `verify_timeout`); the
+    Pick map could name an interrupted run, and could not name a rejected review, as why a sequence
+    left; `db.INTERRUPTED` was missing from `rules_fingerprint`; and 11 surviving mutants and 12 weak
+    tests, answered with 12 tests added and 4 strengthened.
+
+    **B. Slice 2: the writers' lock** (`slice2.md`, and the head of `slice3.md`). `oeisbot/lock.py`: an
+    operating-system lock on `data/writer.lock`, taken by `cli.main` around `run`, `attempt`, `sync`,
+    `recheck`, `fetch-bfiles` and `setup`, and by the daemon for its whole window; the second to arrive
+    is refused with a message naming the first. The reasons are that the 1 request/s limit is a
+    per-process global, that `recheck` races a session's own retry, and that `sync` and `setup` rewrite
+    what a session is using. One reviewer ran several hundred multi-process experiments: no overlapping
+    holders, and the lock free within 10 ms of every kind of kill. Found and fixed, with the module
+    rewritten: a first-creation race that raised a raw `PermissionError` (the locked byte is now far past
+    the end of the file and nothing is written there); `held()` answering yes when two probes collided;
+    a stale owner name surviving a failed write; the lock file unreadable while held; `held()` creating
+    files; and `snapshot` added to the locked commands.
+
+    **C. Slice 3: the daemon** (`slice3.md`). `oeisbot/daemon.py`, the `daemon` subcommand,
+    `oeisbot/schedule.py`, the dashboard's `/api/daemon` and its line. Three adversarial reviewers: the
+    loop over weeks of nights (simulated against the live database), the process (signals, threads,
+    kills and clock changes, by experiment in an isolated home), and the tests (255 mutants). **The
+    daemon was reworked in one pass from all three and its tests rewritten.** The findings that changed
+    the design: **the cooldown defeated the ladder** (a 60 s timeout judged at 600 s was "no progress",
+    holding 128 of 131 recently attempted candidates at `verify600`), so a row now cools only at budgets
+    no larger than its own; **a session that raised ended the night unlogged, every night at the same
+    pick**, so it is caught, logged with its traceback, and the pick gets a `daemon_error` skip; **a
+    stalled `git` would have held the lock past the window** on the first fetch in two months, so git
+    has a time limit and is ended with its helpers; **a character outside cp1252 in a log line killed
+    the daemon when stdout was redirected**; the first start gate idled 36% of every `long` night, so
+    the gate is now three verify budgets plus 300 s and the window interrupts an extension; an exhausted
+    tier cost three empty session rows a night (about 1,100 a year), so the pool is looked at before a
+    session is started; a machine hovering at the threshold made 4,818 empty sessions in a simulated
+    night, so one pause is unconditional; the breaker counted rows per session and now counts picks
+    since the start; and a hung main thread held the lock with nothing showing it, so the heartbeat has
+    `progress_at` beside `at` and the watcher ends the process 20 minutes after an unobeyed stop. The
+    table in `slice3.md` has 22 rows. **A fourth reviewer then re-checked the rework** under strict rules
+    (no commands; experiments only in an isolated home with stubbed sessions), verified the 22 rows
+    as fixed in the code, and found 8 more things, all fixed. The one that mattered most was **a bug in
+    the rework**: a session that raised was charged to the sequence named in the heartbeat, which still
+    named the pick that had just finished, so an innocent, finished sequence got the `daemon_error` row
+    and 14 days' cooldown; the pick in hand is now its own variable (`Daemon.in_hand`). The others: a
+    reset ended by the time limit left the mirror half rewritten and the night ran on it (now put back,
+    or `MirrorUnusable` and no sessions); a fetch ended by the limit can leave `shallow.lock` (git lock
+    files at least 5 minutes old are removed before a timed sync); `--stop` during a sync met a 30-minute
+    limit against a 20-minute grace (the limit is now 600 s, and the last resort ends git first);
+    anything raised outside the session `try` ended the night with a traceback nobody sees; the second
+    Ctrl-C's exit code never left the process; a win cut short by the window was unsaid; and a test
+    could still write a stop request into the real `data/daemon/`.
+
+    **D. The incident, 2026-11-22.** One reviewer's mutant made `oeisbot daemon --status` fall through
+    into a real night, from inside a test, at 22:46, which is inside the default window. The test's
+    fixture had moved `config.DATA` and nothing else, and `db.connect`'s default path is bound when the
+    module loads, so the daemon opened the **real database** read-write and ran a real **`git fetch`**
+    on the mirror. The reviewer's 60 s timeout then killed the `reset`, leaving a 0-byte
+    `data/oeisdata/.git/index.lock`. By the build's account (`slice3.md`): the database was not changed
+    (280 attempts, 12 sessions and `synced_at` verified unchanged), no git process was left running,
+    that one lock file was removed, and the mirror is at `9566689` with a clean tree; a new pack and a
+    `FETCH_HEAD` from that fetch remain in `.git`, harmless, for the next sync to use. Re-checked for
+    this page on 2026-11-23: 280 attempts, 12 sessions, `synced_at` `2026-09-17T18:31:41+00:00`, `HEAD`
+    `9566689`, and no `*.lock` in the mirror's `.git`. **Fixed at the root, not in that one test**:
+    `tests/conftest.py` now has an autouse wall that makes `db.connect()` of the real database
+    (read-write), `oeisdata._git` and `bfile.http_get` raise `ReachedTheRealProject` unless a test
+    replaces them, and it moves the writers' lock and the daemon's directory away from the real `data/`.
+    All 821 tests of that moment passed under it unchanged. `tests/test_isolation.py` tests the wall,
+    including a replay of the incident.
+
+    *(Section F, the safeguards built the same day, follows section E below.)*
+
+    **E. The final audit, 2026-11-23** (`data/item58/final_audit.md`). A fifth reviewer, read-only and
+    under the re-check's rules, gave the two pieces nobody had reviewed their first review (the
+    scheduled task and the dashboard line), audited across the slices, and read `daemon.py` and
+    `lock.py` line by line. It found no defect in the lock, the session loop's control flow or the test
+    wall, and 14 other things, each changed in the code: **a start that found the writers' lock held
+    exited silently**, and the task fires once a day, so the night was lost, and it now logs the refusal
+    and tries again every 60 s while the window is open; a database that cannot be opened was an
+    unlogged traceback; **under `pythonw` every console child (git, `taskkill`, the version probes) got
+    a visible window**, and closing git's kills git mid-reset, so they are started with
+    `CREATE_NO_WINDOW`; the definition declares UTF-16 but only PowerShell 5.1's `>` writes it, so
+    `--task-xml FILE` writes the file itself; the task's command path was not quoted; a start outside
+    the window overwrote last night's heartbeat and its warnings; **`sync --no-pull` moves `synced_at`,
+    which the daemon read to decide whether the mirror is stale**, so a sync that pulled now writes
+    `meta.pulled_at` and the daemon reads that; the dashboard line kept the last answer when the
+    request failed and never looked at the heartbeat's own age; a live region would re-announce the
+    ticking line every minute; the "no step" threshold of 4 h left about 16 minutes over the longest
+    honest pick and is now 4.5 h; the line pushed the tabs down when it first arrived; Ctrl-C's handler
+    could raise from inside `print`; the plan's nightly line counting the reviews that wait had not
+    been built and now is; and `slice2.md` still named `writer.owner.json`. These landed in the working
+    tree while this page was being written (between about 00:55 and 01:10), so everything said here
+    about them was read from the code after they landed.
+
+    **F. The safeguards, 2026-11-23** (`data/item58/safeguards.md`). The user, the same morning:
+    **"Update the functionality to have safeguard to avoid incidents like this again. Also update
+    documentation so I can clear context without losing progress."** The wall of section D was a fix
+    in the test suite; this section puts the refusal in the product, and makes the daemon need a
+    person's say-so.
+
+    *The incidents, told plainly.* There were three touches of the real project in two days, all by
+    tests of this item, each found by looking and none changing a database row. **First, 2026-11-22**
+    (section D): a mutant started a real night from a test; a real `git fetch` ran and a stale
+    `index.lock` was left and removed. **Second, 2026-11-23, while the new guard itself was being
+    mutation-tested**: the first `tests/test_guard.py` aimed at the real paths and promised to stub
+    every dangerous step first; one test did not do that for the daemon's file writes, so a mutant
+    with a guard call removed wrote a real **`data/daemon/stop`**, and by the order of the mutants a
+    real **`data/daemon/armed`** was written and then deleted by the next mutant. The file and the
+    directory were removed, and the database, the mirror and the lock were verified unchanged (by the
+    build's note: 280 attempts, 12 sessions, `synced_at` 2026-09-17, no lock files, no scheduled
+    task). **Third, the same morning, while fixing the second**: the first draft of the rewritten
+    test declared a temporary directory "real" and then called `db.connect()` with no path, which is
+    the true database and which the guard, as told, no longer refused. The real database was opened
+    for writing once; `connect` ran its schema script (`CREATE ... IF NOT EXISTS`, an `INSERT OR
+    IGNORE` of a key that exists). By the build's note the main file's size and time, the row counts,
+    the five `meta` rows and `PRAGMA integrity_check` were then verified. Re-checked for this page at
+    11:38, read-only: `data/oeisbot.sqlite3` is 6,791,168 bytes dated 2026-10-13 21:30, its `-wal` was
+    0 bytes then (and gone by 11:46, after `recheck_numbers.py` had opened and closed the database),
+    280 attempts, 12 sessions, 3 reviews (#1 `new`), 456 predictions, 1 snapshot of 3,357
+    rows, `synced_at` `2026-09-17T18:31:41+00:00` and no `pulled_at`; no `data/daemon/`, no
+    `data/writer.lock`, no `*.lock` in the mirror's `.git`, the mirror at `9566689`, and `schtasks`
+    finds no task. The second and third incidents themselves are known only from the build's note and
+    the comments in `test_guard.py`; what this page could check is that nothing of them remains.
+
+    *What each changed.* **Arming** (after the first, for the general case): `oeisbot daemon` runs a
+    night only where `data/daemon/armed` exists, and only `oeisbot daemon --arm` writes it
+    (`daemon.arm`, `disarm`, `is_armed`). An unarmed start, by the scheduled task, a script, an agent
+    or a test, logs `daemon: not started: not armed. ...` and exits with code 2 before the lock, the
+    database or the heartbeat is touched. `--status`, `--stop` and `--task-xml` need none; nothing the
+    daemon does removes it; `--status` and the dashboard line say when it is not armed
+    (`daemon.status()['armed']`, `daemonline.ts`). **Arming is the user's step alone.** **The
+    product's own guard** (after the first: the wall is replaced functions in one process, and a
+    child process walks past it): `oeisbot/guard.py`. Under a test (`PYTEST_CURRENT_TEST`, or
+    `OEISBOT_UNDER_TEST` set to anything but nothing or `0`) a write inside this installation's own
+    `data/` or `artifacts/`, and any request through `bfile.http_get`, raises `RealProjectRefused`.
+    "Real" is decided from where the package is, never from `config`. Reading is never refused.
+    **After the second**: `test_guard.py` was rewritten so that no test in it aims at the real
+    project (a temporary directory is declared real and each function pointed there), and
+    `mutate.py` gained its own check of the real project, before the first mutant and after
+    each. **After the third**: the test always gives `real_connect` a path, the one bare call has
+    `sqlite3.connect` stubbed, and the harness's check reads row counts and the `-wal` file, since a write
+    can sit there with the main file unchanged.
+
+    *The safeguards' own review.* A reviewer, read-only, was asked how a third incident could happen,
+    and by the build's note found twelve holes; the note's table has nine rows, and each fix in it was
+    read in the code for this page: the guard tests re-aimed as above; a killed mutation run now
+    leaves `MUTANT_IN_TREE.json` and a `.orig` copy, and while the marker exists `mutate.py`, the
+    test suite (`conftest.py`) and `oeisbot daemon` (all but `--status`) refuse; `Daemon.run` itself
+    raises `NotArmed`, so a script that builds a `Daemon` is refused as the command is;
+    `conftest.py` sets `OEISBOT_UNDER_TEST=1` before importing `oeisbot`, because pytest's variable
+    exists only while a test runs; the writes that had no guard got one (the daemon's log and
+    heartbeat, the scratch sweep, the mirror update before it removes lock files, a pending win, the
+    run-log directory, an artifact folder: 15 guarded calls in all, `grep "guard\.refuse" oeisbot`);
+    `is_real` sees through Windows' `\\?\` and `\\.\` prefixes and takes an unresolvable path as
+    real, and `under_test` no longer needs the exact string `1`; the harness's check was widened; `mutate.py`
+    no longer runs `taskkill /IM pytest.exe`, which ended every pytest on the machine; and
+    `daemon.describe` reads a status answer without `armed` as not armed. **The new guard found one
+    more thing by itself**: `tests/test_bounds.py::test_only_the_predicate_form_is_offered_a_bound`
+    (item 57) had been creating the directory `data/runs` in the real project on every run, with no
+    file written; it now moves `config.DATA`.
+
+    *Found by the documentation pass, in the code as it stood at 11:38, and what became of each.*
+    **One, fixed.** A start whose arming was taken away between the command's check and the night
+    was caught by the handler for a night's faults: "ended by a fault (NotArmed: ...)", a `stopped`
+    heartbeat, exit code 1, where the build's note said "logs it and returns 2". `daemon.command`
+    now catches `NotArmed` and `RealProjectRefused` from the night before that handler: `daemon: not
+    started: ...` in the log, no heartbeat, exit code 2, with a test
+    (`test_a_refusal_at_the_last_moment_is_a_refusal_not_a_fault`) and a mutant of its own. **Two,
+    done.** `mutation_slice4.txt` was then the run of the set's first 27 mutants; the set grew to 44
+    and was run (below). **Three, stands.** The first half of `safeguards.md` describes the first
+    version ("six guarded functions" where it lists seven, "895 Python tests"), and its last lines
+    still say 902 tests and 42 mutants, from before the last four changes: the counts on this page
+    are the ones to use. **Four.** The code changed under that pass four times between 11:26 and
+    11:33, and four more small things after it (the fix above, the marker check as a function of its
+    own that the harness's test runs are exempt from, the order of one test in `test_guard.py`, two
+    more mutants); every statement in the docs was read again against the code as it stood at 12:35.
+
+    *Checks.* **903 Python tests collected** (`pytest --collect-only -q`, 12:35): 886 before the
+    section, plus `tests/test_guard.py` (12) and five more in `tests/test_daemon.py` (81 → 86
+    functions, 96 → 101 collected: the unarmed start, arming and disarming, arming outliving a night,
+    the mutant marker, the last-moment refusal); `test_isolation.py`, `test_bounds.py`,
+    `test_attempt.py` and `test_dashboard.py` changed without changing their counts. **The whole
+    suite was run by this pass after the docs: 903 passed, the 3 documentation guards included.**
+    Node tests 91 → 92 by count (`test/daemonline.test.ts` 11 → 12, the not-armed line); not run by
+    this pass. **Mutation**: `slice4` is 44 mutants in `mutants4.py` (`len` of the imported list): 14
+    of `guard.py`, 17 doors (each guarded call opened, a read-only connection refused, a clone not
+    seen), 13 of arming and the marker (10, 2, and 1 for the last-moment refusal). **All four sets
+    were run once on 2026-11-23 under the harness as it now is, the marker and the real-project check
+    after every mutant included: 29, 16, 107 and 44, 196 mutants, none surviving**, each of
+    `mutation_slice1.txt` to `mutation_slice4.txt` ending `... 0 not killed; the real project is as
+    it was` (the last line of each read and its `killed` lines counted for this page, which did not
+    make the runs).
+
+    *What the safeguards do not cover* is listed in
+    [known limitations](known-limitations.md#the-safeguards-against-reaching-the-real-project). In
+    short: arming is a file and guards only the daemon; the guard knows only what the environment
+    says, so a script that is neither pytest nor sets `OEISBOT_UNDER_TEST` is real use to it; it
+    guards 15 calls and not a direct `sqlite3`, `urllib` or file call, the b-file cache or `tools/`;
+    `data/scratch` is real in tests by design; the harness's check reports a change after it
+    happened; and a marker left by a killed run stops the suite, the harness and the daemon but not
+    `oeisbot run` or `sync`. **Recommended by the reviewer and left to the user**: a project
+    `.claude/settings.json` setting `OEISBOT_UNDER_TEST=1` for every command an agent runs here.
+
+    **Measured** (all read-only, `data/item58/measure_pool.py` through the real `attempt.session_pool`
+    on the live database; re-run for this page on 2026-11-23). The pool at each tier, before and after
+    the rule changes: `base` 60 s / 1,800 s **3,334 → 3,336**, `verify600` 600 s / 1,800 s 3,546 → 3,548,
+    `long` 600 s / 3 h 3,569 → 3,571, and the default 60 s / 3 h **3,357 → 3,359**, left out 1,954
+    (1430 `no_supported_program`, 383 `verify_out_of_reach`, 141 `all_programs_dead_ends`). The model
+    pool is 26,745 with 16 left out (11 `too_few_known_terms`, 5 `conjectural_program`); it was 18
+    (11 / 7). Of the 163 `verify_timeout` rows, 5 on 4 sequences have under 0.8 of their own wall time
+    on the CPU; under the corrected rule A217380 and A101569 return at the 60 s tiers and A272621 and
+    A101722 at the 600 s tiers. `no_supported_program` falls by 2 at every tier because A162762 and
+    A162764 are now dropped as rejected reviews before that check; they were not in the pool before
+    either. The rules fingerprint moved `af16ba7ce8d3` → `260fee4c701e` (it was `c58c64fc4ef1` after
+    slice 1 and moved again in slice 3, where `offline_known_terms` was factored out of `Runnable`). No attempt row has
+    `failure_mode = 'interrupted'` or `extra.verify_wall_s` yet.
+
+    **Checks** (sections A to E; section F's are in that section and take the total to 903).
+    Python tests: **703 → 886 collected** on 2026-11-23 (the slice notes record 718 and 742
+    during slice 1 and 821 at slice 3's build; the final audit records 876 passing before its changes
+    and **883 passing after them, plus the 3 documentation guards**, which failed by design until the docs
+    carried the new counts: 883 + 3 is the 886; **the whole suite was then run once by the audit of these
+    docs, 2026-11-23: 886 passed, the guards included**). New files `tests/test_daemon.py` (81 functions, 96
+    collected), `tests/test_lock.py` (18, 29), `tests/test_schedule.py` (5) and `tests/test_isolation.py`
+    (5); more functions in `test_attempt.py` (75 → 99), `test_ingest.py` (15 → 23), `test_verify.py`
+    (30 → 36), `test_db.py` (21 → 25), `test_codegen.py` (46 → 48), `test_dashboard.py` (22 → 24) and
+    `test_pickmap.py` (99 → 101). Node tests 80 → 91 (the 11 of `test/daemonline.test.ts`; the final
+    audit records the 91 passing; counted, not run, for this page). **Mutation sets** in
+    `data/item58/mutate.py` and `mutants3.py`, with their runs in `mutation_slice1.txt`,
+    `mutation_slice2.txt` and `mutation_slice3.txt`: **29, 16 and 107 mutants, none surviving** (the
+    sets counted from the two files, the results read from the three outputs, 2026-11-23). Slices 1 and
+    2 are single runs (`29 mutants, 0 not killed`, `16 mutants, 0 not killed`), and so is slice 3
+    (`107 mutants, 0 not killed`): its file is one clean run of all 107, made on 2026-11-23 after the
+    last fix. The run before it was 106 with 2 not killed -- one whose test the wrong call could
+    satisfy, one whose text had come to occur three times in `daemon.py` and so was not applied; the
+    test was tightened, that mutant's text made specific and a 107th added before the clean run.
+    They mutate the working tree itself, so nothing else may read or run the code while
+    they run. **The documentation pass that wrote this entry was not allowed to run the suite or any
+    `oeisbot` command**: it ran `pytest --collect-only`, `tests/test_docs.py` (which skips on anything
+    but a full collection, so its three checks were also applied by hand to a full `--collect-only`,
+    and held), `measure_pool.py`, `recheck_numbers.py` and `check_docs.py`, read the code, and queried
+    the database read-only. An independent audit of the docs followed the same day, with the same limits
+    except that it ran the whole suite once at its end; it corrected this entry where the code or the
+    records had moved on (the mutation results, the mirror-repair rule, the code comments below) and
+    where they did not support it.
+
+    **Recorded, not changed.** In [known limitations](known-limitations.md#the-daemon-and-the-writers-lock):
+    only `--stop`, the window's end and Ctrl-C are graceful, and a kill leaves the run in hand without a
+    row; a win's re-check can overrun the window by about nine minutes; pending re-checks and a sync in
+    hand are not interruptible; `--window always` syncs once and never goes back down a tier; a window
+    ending inside the hour the clocks change is an hour off that night; the first night's snapshot is at
+    other budgets than snapshot #1; a stop between two programs of one pick writes no `interrupted` row;
+    a machine hovering at the threshold writes an empty session row per pause; a skip that recurs after
+    every sync is retried every night; a `harness_error` and a starved `verify_timeout` still count in
+    the failure penalty; a program that waits rather than computes is never retired; nothing returns a
+    sequence with a review to the draw; scripts that call the library directly bypass the lock, and a
+    `git` child of a killed sync can outlive it. From the final audit: the task definition was checked
+    against the schema by reading only, and whether `schtasks` accepts it, the account string resolves
+    and the task wakes a locked machine are unverified; with nobody logged on the task does not run; the
+    Pick map's budgets will flip between the base tier and the defaults; a recovered session's note is
+    long; and `--stop` in the first milliseconds of a start can answer that no daemon is running. The
+    plan's rule holding a closed review's sequence out until the mirror shows its terms was not built:
+    no closed status other than `rejected` exists until Part B.
+
+    **Not done.**
+    - **The daemon has never been run against the real project, and it is not armed** (section F):
+      `oeisbot daemon --arm` is the user's step and has not been taken. `data/daemon/` and `data/writer.lock`
+      do not exist. Every claim about it comes from the code, its tests and reviewers' experiments in
+      isolated homes.
+    - **`oeisbot sync` has not been run since 2026-09-17.** It should be run once by hand before the
+      first unattended night: by `slice3.md` the fetch-and-reset has never run on this mirror, and a
+      person should see the first one. With a pull, not `--no-pull`: until a pull writes
+      `meta.pulled_at`, a `--no-pull` sync would make the old mirror look fresh to the daemon.
+    - **The scheduled task has not been imported.** The user does that; nothing in the project
+      registers a task. The sandbox has not been run under Task Scheduler either.
+    - **The dashboard's line has not been seen in a browser.** The dashboard server is the user's to
+      start, and the one on port 8765 predates `/api/daemon`.
+    - **Part B is not built**: the "To submit" page.
+    - **The user has no OEIS account name yet.**
+    - **One dated comment left in code**: `oeisbot/attempt.py` (in `Runnable._why_not`) gives the
+      conjectural gate's cost as 7 sequences of 26,752 "measured 2026-09-26", which is 5 of 26,745
+      today. The three other comments the documentation pass listed here as stale were corrected in the
+      code afterwards and read on 2026-11-23: the one above `REPEATS_IN_STAGE` in
+      `oeisbot/strategies/codegen.py`, `oeisbot/schedule.py`'s module docstring (it gives the
+      `--task-xml FILE` form) and `oeisbot/daemon.py`'s (step 1 describes waiting for the lock). The
+      comment above `daemon.TIERS` called `base` "the setting sessions 7 to 12 actually ran at", which
+      the documentation audit found to be true of the 30-minute extension only; it was corrected the
+      same day and now says sessions 8 to 12, and that session 7 alone verified at 600 s.
+    - **Nothing is committed.** Items 57 and 58 wait for their own requests.
+
+    **No database row was written** and no schema changed: `recheck_numbers.py` finds the database's
+    counts as they were. No pipeline ran and nothing was submitted; review #1 is untouched
+    (`updated_at` `2026-09-21T01:42:11+00:00`). Files: new `oeisbot/daemon.py`, `oeisbot/lock.py`,
+    `oeisbot/schedule.py`, `oeisbot/guard.py`, `dashboard/src/daemonline.ts`, `dashboard/test/daemonline.test.ts`,
+    `tests/test_daemon.py`, `tests/test_lock.py`, `tests/test_schedule.py`, `tests/test_isolation.py`,
+    `tests/test_guard.py`, `docs/daemon.md`; changed `oeisbot/artifact.py` and `ingest/bfile.py` (section F), `oeisbot/attempt.py`, `cli.py`, `db.py`, `select.py`, `verify.py`,
+    `setup_tools.py`, `ingest/oeisdata.py`, `strategies/codegen.py`, `dashboard/app.py`,
+    `dashboard/src/main.tsx`, `dashboard/src/styles.css`, `tests/conftest.py`, seven existing test files
+    and the docs. Evidence in the gitignored `data/item58/`.
+
 ## Open offers and next steps
+
+**Open on 2026-11-23, after history item 58.** No offer waits for an answer and no decision is open, but
+for the first time since item 57 **a build is open**, and several things wait on the user. **The
+ordered list, with the exact command and a good result for each, is at the top of this page:
+[the user's next steps, in order](#the-users-next-steps-in-order), and Part B's decisions are in
+[what comes next in the build](#what-comes-next-in-the-build-part-b-the-to-submit-page).** The bullets
+below are the same things in short.
+
+- **Part B of item 58: the dashboard's "To submit" page. Decided 2026-11-19, not built.** It lists the
+  reviews at `new` or `reviewing` whose new terms are not already on OEIS, from a stored live check and
+  never from a request on each poll; a card per result with its flags, the program to read, copy
+  buttons for the DATA, `%E` and `%H` lines and a b-file download, behind two boxes the page never ticks
+  for the user ("I have read and understand the program", "independent check done"); a Submit button
+  that **only opens oeis.org's own pages** beside those copy buttons; narrow writes for review status,
+  note and the live-check result; and the user, never the page, closing a review. It needs a closed
+  status that is not `rejected`, by one of two routes the plan leaves to the build's critic. The whole
+  plan is `data/item58/plan.md`, Part B. **Do not start it unasked**: the user asked for the parts one
+  at a time, each reviewed by adversarial agents, and the plan's own order is that review #1 is
+  submitted by hand before Part B is trusted for a second win. Nothing in it may send anything to
+  oeis.org. Unsettled inside it: the b-file's line endings, to be decided by what the real upload form
+  accepts.
+- **The user's, before the first unattended night**: run `oeisbot sync` once by hand (with a pull);
+  **arm the daemon with `oeisbot daemon --arm`** (since section F of item 58 a start does nothing
+  until this is done, and it is the user's alone: an agent never arms); then
+  run the daemon once in the foreground and stop it; restart the dashboard server and look at the
+  daemon's line; write the task definition with `oeisbot daemon --task-xml FILE`, import it with
+  `schtasks`, and check "Allow wake timers". The list is in
+  [daemon](daemon.md#before-the-first-night). An agent does none of these on its own initiative.
+- **The user's: an OEIS account name.** They have none yet; Part B's `%E` and `%H` lines carry a
+  placeholder until it is set.
+- **The user's: review #1 (A385331), steps 8 and 9**, as below. One thing item 58 changed about step 9:
+  recording the review as `rejected` no longer returns A385331 to the draw; `submitted` and `rejected`
+  both keep it out.
+- **Items 57 and 58's requests to commit.** Both are uncommitted in one working tree and share files.
+- Carried over, small and optional: the tap rule under a real finger (item 57). The restart of the
+  dashboard server on port 8765 is now needed for item 58's line as well as item 57's fields.
+
+The paragraphs below are the list as it stood before item 58, kept as written.
 
 **No offer waits for an answer (2026-09-30).** Offer (b), recording the gp version, was **taken** —
 built as history item 43. Offer (a) was **recounted and decided on 2026-09-30** (history item 51): the
@@ -3982,11 +4938,23 @@ the user chose the **backfill** of `program_sha` (46 of 47 rows map to exactly o
 scheduled after session 12 because it changes the pool and so the draw; see item 52 for whether it has
 run. The paragraph below is the offer as it stood.
 
-**Built 2026-11-17 and 18, uncommitted: history item 56, the dashboard defect sweep.** What it leaves is
-**its own request to commit** (the user, 2026-11-18: "The sweep can stay uncommitted"); the whole suite has
-passed with it in the tree (634) and item 55's commit is pushed. Smaller, and optional: look at the Pick map on a touch screen and measure a resize
-(two suspicions of the audit that nobody checked), arrow-key movement between tabs, and a label for a
-refused win on the Attempts tab, which today would read "review rejected".
+**Built 2026-11-18, uncommitted: history item 57, the tie-up of what this list still held.** It built the
+`@T` identity check, three of the bound extractor's five recall gaps (and measured the other two as not
+worth building), `oeisbot recheck --release`, the arrow keys along the tabs, the refused-win label, the
+three-way trust filter and the two-tap rule on a touch screen; it measured a resize as cheap. **What is
+left on this page after it, and none of it is a decision or a build:**
+
+- **Review #1 (A385331), steps 8 and 9**: the user's alone, as below.
+- ~~Next step (vi)~~: **decided 2026-11-18, leave it** (the user: "Okay leave it"). 6 of the 15
+  predicates beside a lister are the real test and 9 are helpers, which the gate catches at one quick pick
+  each. Not an open item. Unmeasured, should it ever come back: how many entries have a lister and no
+  predicate at all.
+- ~~Wolfram Engine~~: **struck by the user on 2026-11-18**, to keep the project lean. Not an open item.
+- **Item 57's own request to commit.**
+- Small and optional, from item 57's "not done": the tap rule under a real finger, and a restart of the
+  dashboard server on port 8765.
+
+**History item 56, the dashboard defect sweep, is committed and pushed (`31d5b7e`, 2026-11-18).**
 
 **History item 55, the Pick map's loose ends, is committed and pushed (`a6ae951`).** What it left was two things,
 neither a decision: **a browser pass** and **its own request to commit**. **The browser pass was done on
@@ -4026,8 +4994,8 @@ Two related findings from item 41's audit were deferred *with the critic's agree
 decision: `oeisbot_blk /= 2` staying exact division rather than GP's integer division (the invariant is
 written down, and a fraction would make the line unparseable, so the failure mode is "no frontier"
 rather than a wrong one), and applying the `k - start + 1 == tested` identity to `@T` lines as well —
-whose natural home was the resume item, now decided against (item 42), so it needs a home of its own if
-it is ever wanted.
+whose natural home was the resume item, now decided against (item 42). **Built 2026-11-18 (item 57)**,
+as a `protocol` stop in `verify.Harness.on_line`.
 
 **This list has been renumbered several times, so cite items by name, not by number.** References
 elsewhere in this page to "next step N" mean the numbering *at the time that text was written*; each one
@@ -4055,6 +5023,7 @@ has a concrete candidate for something they could be wired to.
 its "trusted projections only" filter treats a sound cost fit withdrawn by the rate drift as untrusted.
 Showing `fit_trustworthy` there means `dashboard/src/views.tsx`, `oeisbot/dashboard/app.py` and an
 `npm run build` (output not committed). Left out deliberately (the user, 2026-09-21: "Leave it, note it").
+**Built 2026-11-18 (item 57)**, when the user chose the dashboard bits: the filter has three positions.
 
 **One thing is waiting on the user, and it is not a code change.** A385331 has an open `reviews` row
 (status `new`) for 18 new terms. **The checkable part of the review is done** (item 44, 2026-09-23):
@@ -4191,7 +5160,10 @@ did (how many pool blocks have the shape, how many are misreads) before it is wo
   and how many of *their* predicates are the real one. Recommended: measure, then decide.
   **Measured 2026-09-30 (item 51, `data/measure0930/shapes.txt`): 235 blocks define a drivable
   predicate beside another def (133 in the pool), 15 of them a list printer.** Which predicates are the
-  real one still needs reading; the 15 are the first sample. **Decision owed** once read.
+  real one still needs reading; the 15 are the first sample. **Read 2026-11-18 (item 57,
+  `data/item57/lista15.txt`): 6 are the real test, 9 are helpers.** A blanket refusal would be wrong 6
+  times in 15. **Decided 2026-11-18 by the user: leave it** ("Okay leave it"); the alternative, also
+  offering the lister's own loop, was set out and not taken. Do not re-open without new evidence.
 - **(vii) A print loop that starts above the offset shifts every index.** A290024's `for(n=1, 7, ...)`
   prints a(1) onward while `%O` is 0; the emitter numbers from `known.first_index` (`pari.py:466, 613`),
   so a correct program ended `wrong_term` at index 1 and is retired under this sha. Two fixes, neither
@@ -4224,7 +5196,9 @@ Suggested next steps, roughly by value:
      blocks: A279795 needs ~1,900 s and A015766 ~9,817 s to pass their published bounds. Still worth
      doing if the frontier is ever wanted: spend it as a **rate estimate** for `_bound_exhausted`
      instead of as a resume point (item 42's "left on the table").
-   - **Fix the extractor's remaining recall gaps. Measured as near-empty (item 41) — deprioritised.**
+   - **~~Fix the extractor's remaining recall gaps~~ — done 2026-11-18 (item 57): three built, two measured
+     as not worth building, one sequence with a consumer gained (A119748).** As it stood: measured as
+     near-empty (item 41) and deprioritised.
      Of the 767 predicate candidates with no applicable bound, 253 have no `%C` lines, 122 are stale and
      8 wrong-index (correct rejections), leaving 384 where recall could matter; the documented gap
      shapes reach about 18 of them and most are index or exponent limits, not value bounds — the
@@ -4269,6 +5243,7 @@ Suggested next steps, roughly by value:
    test, both) changes the outcome of **exactly one run, A385331 — +1,068 s and no term gained or
    lost**; the other flips are `extend_budget` runs, unchanged. The wider name test newly flags 9 pool
    sequences (0.17% of the draw → 0.11%). **Recommendation: leave it**; nothing on the record gains.
+   **Closed 2026-11-18 (item 57): left as it is**, by the user ("Leave it, close the item").
 5. **(Done 2026-09-30, history item 51 — both halves, with item 46's `_DEF` fix first.)** `_ANAME_USE`
    captures the whole identifier and `undefined_a_numbers` compares it; definitions are read with
    balanced parentheses. Measured as a candidate diff: 40 statements reclassified, 31 sequences gain a
@@ -4335,15 +5310,20 @@ Suggested next steps, roughly by value:
    look on its own. **Looked at 2026-09-30 (item 51): already closed by item 46's 40-digit field cap,
    with `OverflowError` caught beside `ValueError` and two tests; and the reader thread is now guarded
    anyway.** The `infeasible` time-vs-memory keying in this bundle is **done** (item 51,
-   `extra.infeasible_on`); the manual release for a drifted win, the `sequences.difficulty` reader and
-   the three design-intent mismatches remain as written.
-9. Decide on Wolfram Engine: 5,282 candidates have Mathematica but no PARI program. **Scoped
+   `extra.infeasible_on`). **The manual release became a checked command on 2026-11-18 (item 57,
+   `oeisbot recheck --release`)**; the `sequences.difficulty` reader was already decided against in item
+   34 (the column is for a person's queries) and the three design-intent mismatches remain documentation.
+9. **(Struck 2026-11-18 by the user: no Wolfram Engine, the project stays lean. Do not re-open unless
+   asked.)** As it stood: decide on Wolfram Engine: 5,282 candidates have Mathematica but no PARI program. **Scoped
    2026-09-30 (item 51, `data/measure0930/wolfram_scoping.md`)**: what a strategy needs (a runtime the
    AppContainer can start without network, a Mathematica builder of the PARI builder's size, drivers,
    grants, tests, docs — three to five items), an honest yield expectation (lower per run than PARI's),
    and the go/no-go experiment: one afternoon to install, activate, relocate the licence and run one
    block in the container. **Decided 2026-09-30 (item 53): deferred**, the note attached; neither run nor
-   struck.
+   struck. **2026-11-18 (item 57)**: the user asked what it would do and why not to strike it. The shapes
+   of the 5,282 programs were counted (80% definitions, `Select`s over a range or search loops; 1.2% bare
+   generators), which removes the note's reason to expect little. **Struck the same day** all the same: the
+   user does not need it and wants the project lean.
 10. **The estimator's risk flags are not wired to anything that stops a run.** Session 8's A194099
    produced the project's **first *optimistic* trusted projection**: a(29) projected at 22.3 s with
    `trustworthy`, `fit_trustworthy` and `feasible` all 1, against a term that is not reachable at all
@@ -4407,4 +5387,12 @@ where item 49's audit found a week of drift. Its siblings in that folder are `po
 through the real `select.candidates`), `gate_check.py`, `step7.py` (a review's step 7 through
 `attempt.recheck`), `check_bfile.py` (a b-file against every SubmitB.html rule) and `build_package.py`.
 It is a checklist with arithmetic, not a test: **update its expectations when the docs legitimately
-change**, or it will start reporting the truth as a failure.
+change**, or it will start reporting the truth as a failure. (Re-baselined 2026-11-23 for item 58: the
+test total and the two `queue` lines. It runs `oeisbot queue` twice, which takes no lock and reads only.)
+
+**`data/item58/measure_pool.py`** (item 58) prints the pool at each of the daemon's three tiers and at
+the default budgets, with what each leaves out, the rules fingerprint, and the `verify_timeout` rows by
+CPU share. Read-only: it opens the database as the dashboard does and contacts nothing. Re-run it, do
+not copy its numbers, after any change to a selection rule. **`data/item58/mutate.py`** runs that
+item's mutation sets and **changes the working tree while it runs**; see
+[development](development.md#mutation-sets-for-item-58) before starting it.

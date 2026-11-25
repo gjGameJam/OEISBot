@@ -14,7 +14,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .. import config
+from .. import config, guard
 from ..terms import KnownTerms
 from .seqfile import Entry
 
@@ -39,6 +39,7 @@ class UnexpectedResponse(RuntimeError):
 
 def http_get(url: str, timeout: float = 60) -> bytes | None:
     """GET with the global 1 request/second limit. Returns None on 404."""
+    guard.refuse_network(f"a request for {url}")                # never from a test (oeisbot.guard)
     _throttle()
     req = urllib.request.Request(url, headers={"User-Agent": config.USER_AGENT})
     try:

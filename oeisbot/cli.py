@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import random
 import sys
 from collections import Counter
@@ -9,6 +10,15 @@ from dataclasses import replace
 
 from . import config, db
 from .config import GiB
+
+
+# The commands that run programs, rewrite the mirror or the runtimes, or contact oeis.org: one of them at
+# a time (oeisbot.lock says why, command by command). `main` takes the writers' lock around each and
+# refuses a second with a message naming the first. `snapshot` is among them although it runs nothing: it
+# builds the pool from the mirror and *stores* it, and a pool read while `sync` is half way through
+# rewriting the mirror would be kept. Everything else only reads, or writes one row to a database that
+# serves concurrent writers already (`review set`), and is never refused. `daemon` takes the lock itself.
+LOCKED = frozenset({"run", "attempt", "sync", "recheck", "fetch-bfiles", "setup", "snapshot"})
 
 
 def _budgets(args) -> config.Budgets:
@@ -156,8 +166,14 @@ def cmd_run(args):
 
 
 def cmd_recheck(args):
-    from .attempt import retry_pending_rechecks
+    from .attempt import ReleaseRefused, release_pending, retry_pending_rechecks
     conn = db.connect()
+    if args.release is not None:
+        try:
+            release_pending(conn, args.release)
+        except ReleaseRefused as e:
+            raise SystemExit(f"not released: {e}")
+        return
     if not db.pending_rechecks(conn):
         print("no wins are waiting for a re-check")
         return
@@ -260,6 +276,18 @@ def cmd_dashboard(args):
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 
+def daemon_window_default() -> str:
+    from .daemon import DEFAULT_WINDOW
+    return DEFAULT_WINDOW
+
+
+def cmd_daemon(args):
+    """Not in LOCKED: the daemon takes the writers' lock itself, under its own name and for its whole
+    window, and `--stop` / `--status` must work while it holds it."""
+    from . import daemon
+    return daemon.command(args)
+
+
 def review_block(r) -> str:
     """The three-line identity of a review, the same facts the dashboard inbox shows (item 51):
     what sequence, what the addition is and where it came from, then status bookkeeping."""
@@ -330,7 +358,11 @@ def main(argv: list[str] | None = None) -> int:
     _add_budget_args(s)
     s.set_defaults(fn=cmd_run)
 
-    sub.add_parser("recheck", help="retry the oeis.org re-check of wins left as recheck_pending").set_defaults(fn=cmd_recheck)
+    s = sub.add_parser("recheck", help="retry the oeis.org re-check of wins left as recheck_pending")
+    s.add_argument("--release", type=int, metavar="ATTEMPT_ID",
+                   help="give up on one pending win whose saved result can no longer be read, so its sequence "
+                        "can be attempted again; refused while the saved result still loads")
+    s.set_defaults(fn=cmd_recheck)
 
     sub.add_parser("model-check", help="check the local model server").set_defaults(fn=cmd_model_check)
 
@@ -349,6 +381,22 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--port", type=int, default=8765)
     s.set_defaults(fn=cmd_dashboard)
 
+    s = sub.add_parser("daemon", help="run sessions back to back, unattended, inside a nightly window")
+    s.add_argument("--window", default=daemon_window_default(),
+                   help="local hours it may run in, HH:MM-HH:MM (default %(default)s), or `always`")
+    s.add_argument("--no-sync", action="store_true", help="do not pull the mirror before the first session")
+    s.add_argument("--stop", action="store_true",
+                   help="ask the running daemon to stop: it interrupts the run in hand, retiring nothing")
+    s.add_argument("--status", action="store_true", help="say whether a daemon is running and what it is doing")
+    s.add_argument("--arm", action="store_true",
+                   help="allow the daemon to run nights here. Until this is done, by a person, a start does nothing")
+    s.add_argument("--disarm", action="store_true", help="take that back: the next start does nothing")
+    s.add_argument("--task-xml", nargs="?", const="-", metavar="FILE",
+                   help="write a Task Scheduler definition to FILE (UTF-16, as it declares) that starts the daemon "
+                        "when the window opens and wakes the machine for it; without FILE, print it. You import it "
+                        "yourself (docs/daemon.md)")
+    s.set_defaults(fn=cmd_daemon)
+
     s = sub.add_parser("review", help="review inbox")
     rs = s.add_subparsers(dest="action", required=True)
     rs.add_parser("list")
@@ -359,7 +407,20 @@ def main(argv: list[str] | None = None) -> int:
     s.set_defaults(fn=cmd_review)
 
     args = p.parse_args(argv)
-    args.fn(args)
+    if args.cmd not in LOCKED:
+        return args.fn(args) or 0       # `daemon` says how it ended (130: ended at once; 1: a fault)
+    from . import lock
+    # entered apart from the body, so that only a failure to *take* the lock is turned into a message:
+    # an OSError the command itself raises must stay what it is
+    with contextlib.ExitStack() as held:
+        try:
+            held.enter_context(lock.writer(args.cmd))
+        except lock.Held as e:
+            raise SystemExit(str(e))
+        except OSError as e:
+            raise SystemExit(f"`oeisbot {args.cmd}` not started: could not open the writers' lock "
+                             f"{lock.lock_path()} ({type(e).__name__}: {e})")
+        args.fn(args)
     return 0
 
 

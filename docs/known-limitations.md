@@ -93,7 +93,8 @@ with `--model` the model stage runs next and is told the entry's program is corr
   (`infeasible_on`, `below_bound`; history item 51) with `data/pending/` verified empty first, so no
   saved win was invalidated; a pending file from before that date would now fail the field check.
   What remains: a *changed meaning* of a field that keeps its name still reloads without complaint, and a
-  win whose classes have drifted still needs the manual release documented in operations. Rebuilding the
+  win whose classes have drifted can only be given up: since item 57 by `oeisbot recheck --release <id>`
+  (which refuses a win whose saved result still loads) instead of by SQL typed by hand. Rebuilding the
   artifact from the run log instead was the other option and was not chosen: the log holds terms only —
   no program, no sandbox result, no budgets — so an artifact cannot be written from it.
 - **(Fixed 2026-09-20) A program that errored but exited 0 was recorded as `incomplete` with its cause
@@ -138,7 +139,8 @@ with `--model` the model stage runs next and is told the entry's program is corr
   **Retrying for ever is deliberate**, and was chosen over giving up after a fixed number of tries: a
   pending win is unpublished new terms, an error that looks permanent can be a long outage, and the
   sequence stays blocked either way, so stopping the retries would only move the work to a human without
-  releasing anything. The manual release above is still the only exit.
+  releasing anything. `oeisbot recheck --release <id>` is the only exit, it is never run by the pipeline,
+  and it refuses while the saved result can still be read.
 - **A session's `wins` count misses late re-checks.** `sessions.wins` is computed when the session ends,
   so a `recheck_pending` win resolved later is not added to the session that found it, and a win whose
   review is rejected later is not taken off it (session 9's stored 2 are reviews #2 and #3). The dashboard
@@ -474,11 +476,33 @@ candidates whose bound is beyond a real run's reach, so these are measured limit
   also discards roughly twenty corpus-wide bounds of the shape "no more terms **with k** < X" (A036415,
   A046035, A082813, A176932, A240842 and others). None is in today's deployable set, but they matter for
   any future widening of the patterns.
-- **Recall is about 85%, measured.** Phrasings still missed include number words beyond
-  million/billion/trillion, `Checked up to X`, `the only terms known up to X`, `none was found up to X`
-  and primorial or factorial notation (`no other terms found up to 23#`). 1,135 pool entries have `%C`
-  lines that no sampling frame has covered, so this figure is an upper bound on what is known, not on
-  what exists.
+- **Recall is about 85%, measured (2026-09-23), and the gaps that were listed here are now each built or
+  measured as not worth building (item 57, 2026-11-18; `data/item57/bound_gaps.txt`, every hit read).**
+  Built: number words from `thousand` to `decillion` (no bound claim in the corpus uses one past
+  `trillion`; the reading is there for the day one does), factorial notation (`No other elements < 31!`
+  was read as 31), and `are the only terms [known] up to X`. Over all 42,222 `%C` lines of the 26,814
+  sequences the reading of **seven** lines changed (`data/item57/bound_diff.txt`), and the applicable
+  bound of five sequences, of which **one has a predicate candidate** and so a consumer: A119748, 10^10.
+  **Measured and deliberately not built:**
+  - `checked / tested / verified / searched up to X`: 106 lines, 14 on sequences with a predicate
+    candidate. Of the eight that would be live, three are not a bound on the next term (A019279 speaks of
+    odd terms only, A272032 of one parameter range, A301776 counts primes, not values) and two more leave
+    it unsaid what `n` or `k` is. The true bounds given up with them are few (A306723's `Tested up to
+    3*10^10` is the clearest). A missed skip costs time; a wrong one cannot be undone within a session.
+  - `none was found up to X`: two lines, both about a side question and neither about the sequence
+    (A299118, A384255).
+  - Primorial notation: three lines, one of them a bound claim (A057230, `No other terms found up to
+    23#`), which writes `n#` for the product of the first n primes and speaks of the products searched,
+    not of the terms; its entry states a far larger bound in the ordinary way.
+  - The strict `only terms` form refuses the same words without their verb (`the only terms below 2*10^9
+    are 0, 2, 4, 8` is about a variant of A339449) and with anything but `known` after `terms`
+    (`the only terms p <= 10^9`, A398494).
+  - **A factorial is read only directly after a whole number, and a number followed by a sentence's
+    exclamation mark would be read as one.** No corpus line does this. A factorial over `10000!` is not
+    read at all (A227644's `11750!` and `20000!` now yield no bound where they yielded 11,750 and 20,000,
+    both far too small to matter and neither on a predicate candidate).
+  1,135 pool entries have `%C` lines that no sampling frame has covered, so the 85% is an upper bound on
+  what is known, not on what exists.
 - **The loose `searched to X` phrasing is deliberately not a pattern.** It produced A088783's false
   positive, where a per-candidate *exponent* limit read as a term bound while the entry says its next
   term may be 185. No deployable candidate needs it.
@@ -513,7 +537,11 @@ candidates whose bound is beyond a real run's reach, so these are measured limit
   live pool when this was measured on 2026-09-26. **That "3" is now 5**: item 49 closed reviews #2 and
   #3 on 2026-09-28, so A162762 and A162764 re-enter `select.candidates` and are excluded by this check
   rather than by their open reviews — which is exactly the `no_supported_program` 1,418 → 1,420 move.
-  The check's live cost was understated by the close, not by the measurement. What it does **not** catch:
+  The check's live cost was understated by the close, not by the measurement. **And since history item
+  58 it is 3 again by this check's own count**: a sequence with a `rejected` review is no longer drawn
+  at all (`select.candidates`), so A162762 and A162764 are dropped before this check and counted under
+  no reason (`no_supported_program` 1,432 → 1,430; the model pool's `conjectural_program` 7 → 5;
+  measured 2026-11-23). What it does **not** catch:
   - **A program that is conjectural and says so nowhere.** Nothing can detect this class statically, and
     its size is unknown and unmeasurable from the text. This is the honest limit of the whole idea.
   - **Scope caveats phrased differently.** Measured over the live pool (2026-09-26), 12 sequences carry a
@@ -618,7 +646,11 @@ candidates whose bound is beyond a real run's reach, so these are measured limit
     not close it without replacing the trade. **Item 49's audit found the sharp edge this leaves:**
     with the rows `rejected` rather than `new`, that targeted command is no longer stopped by
     `attempt_sequence`'s `open_review` skip either, and `db._insert_review` would let it open a fresh
-    review for the same conjectural values. See next-step (v) in [status](status.md).
+    review for the same conjectural values. See next-step (v) in [status](status.md). **Both halves have
+    moved since.** Item 51 (2026-09-30) made `db._insert_review` refuse a review for a sequence with a
+    rejected one, which closed that edge. And item 58 (2026-11-22) stopped the draw from landing on a
+    sequence with a rejected review at all, so the gate above now leaves out 5 sequences, not 7: the
+    two with rejected reviews never reach it. The targeted `oeisbot attempt` still runs them.
 
 - **PARI list printers and vector builders are unsupported** (`lista(nn)`, `first(n)`, triangle
   `row(n)`): 434 candidates have only a list printer, 892 have nothing usable. A **fourth** shape joined
@@ -729,7 +761,9 @@ candidates whose bound is beyond a real run's reach, so these are measured limit
   recurs in the model stage whatever CPU share the run had: a program that ran out of time only because
   the machine was busy is not run again in that stage, which costs the stage a generation. The 16 model
   timeouts so far had 97% CPU or more, but 5 of the 58 PARI ones had less than 80% (jobs run at
-  below-normal priority), so it can happen.
+  below-normal priority), so it can happen. (History item 58 gave `db.is_dead_end`'s `verify_timeout`
+  rule a CPU condition, for PARI programs across attempts; this in-stage rule was left as it is. Of the
+  163 `verify_timeout` rows on 2026-11-23, 5 are under 0.8.)
 - **The strategy does not say which contract ran.** Both are `python:model`, which the AI-generated
   warnings depend on; the origin (`...; members(work), numbered by the runner`) and the notes in
   `attempts.extra` record it. The answer to the list question and the repeats that were not run appear
@@ -743,8 +777,10 @@ candidates whose bound is beyond a real run's reach, so these are measured limit
 
 ### Operations
 
-- **One job at a time.** Sessions are sequential; there is no parallelism across CPU cores.
-- **No pruning.** `data/runs/` and `data/bfiles/` grow without limit. (The pick snapshots are the one thing
+- **One job at a time.** Sessions are sequential; there is no parallelism across CPU cores. Since
+  history item 58 that is enforced between processes too, for the commands that run, sync or fetch
+  (the writers' lock; its two gaps are [below](#the-daemon-and-the-writers-lock)).
+- **No pruning.** `data/runs/`, `data/bfiles/` and the daemon's logs in `data/daemon/` grow without limit. (The pick snapshots are the one thing
   that is pruned: [below](#the-pick-map).)
 - **No schema migrations.** Schema changes need manual `ALTER TABLE` or a fresh database. A table that is
   only *added*, as the two pick-snapshot tables were (history item 54), needs neither: the writable
@@ -964,7 +1000,218 @@ these is a way it can be read too strongly.
   compares formatted dates and grouped numbers with exact strings, which come from the ICU data in the Node
   that runs it (checked on Node 24.19); it normalises the one difference known between ICU releases, the kind
   of space before "PM". And `src/scale.ts`, `src/format.ts` and `src/treemap.ts` must stay free of imports,
-  or node cannot load them.
+  or node cannot load them (so must `src/tabs.ts` since item 57 and `src/daemonline.ts` since item 58).
+
+### The daemon and the writers' lock
+
+History item 58 (2026-11-22 and 23). The reference is [daemon](daemon.md). **First, what has not been
+done at all**: the daemon has never been run against the real project and is not armed (a start does
+nothing until the user runs `oeisbot daemon --arm`), the scheduled task has never been imported, the sandbox has never been run under Task Scheduler, and the dashboard's line has never
+been seen in a browser. Everything below is known from the code, its tests and reviewers' experiments
+in isolated homes.
+
+**Stopping and being killed**
+
+- **Only `--stop`, the window's end and Ctrl-C are graceful.** Closing the console window, logging off,
+  Task Scheduler's "End" and `taskkill` end the process with no handler run. The run in hand then has
+  **no attempt row** (a run is recorded after it ends; its accepted terms are in its `data/runs/` log),
+  its session row stays open and its scratch directory stays on disk until the next start of the
+  daemon inside its window. `oeisbot run` never performs that recovery.
+- **The window can be overrun by a win's re-check.** A run interrupted after it had found new terms is
+  still re-checked before the stop takes effect: up to three tries of two requests, each with a 60 s
+  timeout, and waits of 30 s and 120 s between them (`RECHECK_RETRY_WAITS_S`), about nine minutes in
+  the worst case.
+- **Pending re-checks are not interruptible.** `run_session` retries them at each session's start, one
+  try each, before it asks `should_stop` or `may_start` about anything.
+- **A sync in hand does not see a stop.** Each of its git commands (the fetch, the reset, a repair) runs
+  up to `SYNC_TIMEOUT_S` (600 s), and the
+  reading of the mirror that follows is not interruptible either. If the main thread has not come back
+  1,200 s after a stop the process ends itself, which is a kill like any other.
+- **A win cut short by the window opens its review with fewer terms than a full extension might have
+  found**, and the sequence is then out of the draw until the user decides. The heartbeat carries a
+  warning naming it. This is the price of letting the window interrupt an extension rather than
+  refusing to start a pick whose extension might not fit (`daemon.start_gate_s`).
+- **A stop that lands between two programs of one pick writes no `interrupted` row.** The attempt's
+  only rows are then those of the programs that ran, so if the first ended in a stop that retires
+  nothing, the cooldown holds the sequence for 14 days although its other programs were never started.
+- **A `should_stop` that raises** inside a run makes that run a `harness_error`, which is a `failed`
+  row; raised between picks it ends the session (its row is still closed).
+
+**Selection**
+
+- **Nothing returns a sequence with a review to the draw.** Since item 58 a `rejected` review blocks the
+  draw as the open statuses always did, so every status a review row can have keeps its sequence out,
+  and no command deletes a review row. Rejecting a win because the run was wrong therefore gives up the
+  sequence for sessions (a targeted `oeisbot attempt` still runs it, and its win would open no review).
+  Recording review #1 as `rejected` would remove A385331 from the draw for good, where before it would
+  have been re-run.
+- **The rule that holds a closed review's sequence out until the mirror shows its terms is not built.**
+  The plan had it for a review closed as accepted; no such status exists until Part B. Today the
+  rejected-review block covers every closed review, more bluntly.
+- **A `harness_error` and a `verify_timeout` on a starved machine still count in the failure penalty.**
+  Both are `failed` rows with a stop other than `interrupted`. Neither is a dead end; each doubles the
+  sequence's difficulty for later draws.
+- **A program that waits rather than computes is never retired.** A `verify_timeout` whose CPU time is
+  under 80% of the verify budget is not a dead end, whatever the reason the CPU was not used: a program
+  that sleeps or blocks is indistinguishable from one the machine starved. It is damped only by the
+  failure penalty and, under the daemon, the cooldown.
+- **The budget-aware cooldown works only for rows written since item 58.** A row with no
+  `extra.verify_wall_s` is taken as having had any budget, so an older 60 s timeout would hold its
+  sequence at `verify600` too. All 280 rows in the live database on 2026-11-23 are such rows; none is
+  within the 14 days (the newest is from 2026-09-30), so it has no effect today. (A reviewer's replay as
+  of 2026-10-01 had 124 recently attempted candidates held at `verify600` by this.)
+- **A skip that recurs after every sync is retried every night.** A skip cools its sequence only until
+  the next successful sync, and the daemon syncs every night. No such row exists today.
+- **The re-check compares only the new terms with the live entry**, not the known ones (true before
+  item 58, and it matters more unattended): a known term corrected on OEIS is noticed only at the next
+  sync.
+
+**The loop**
+
+- **`--window always` syncs once and never goes back down the ladder.** The sync is per start, and the
+  tier only climbs within a start. A long `always` run ends at the top tier on data as old as its start.
+- **A machine hovering at the disk or RAM threshold writes one empty session row per pause.** A session
+  is started when the machine looks fine, its first pick's check fails, and the row is closed with no
+  attempts; the daemon then pauses 10 minutes. At most 60 such rows in a ten-hour window.
+- **A window whose end falls inside the hour the clocks skip or repeat ends an hour off** by the wall
+  clock on that night. The default `22:00-08:00` does not. Stated in `Window.ends_at`; not tested.
+- **The first night's Pick-map snapshot is at other budgets than snapshot #1** (60 s / 1,800 s against
+  60 s / 10,800 s, read from `pick_snapshots.budgets`), so the map shows its budget-change notice once.
+  And because the daemon's cooldown is not part of any snapshot, the map's chances are those of the
+  whole pool, not exactly the ones the daemon draws with.
+- **A first clone would run under the sync's 600 s per git command**, which is not sized for 2.3 GB.
+  The mirror exists here; on a new machine run `oeisbot sync` by hand first.
+- **The heartbeat's `session` field is always null**: it is written but never set to a session id. Its
+  `synced_at` appears only once a pick has started, and holds the mirror's last pull, not
+  `meta.synced_at`, wherever the two differ.
+- **The daemon's log files are never pruned.**
+- **A daemon waiting for the writers' lock cannot be seen or stopped as a daemon.** While another
+  command holds the lock at the window's opening, the daemon retries every 60 s and writes no
+  heartbeat: `--status` and the dashboard report no daemon, naming the other command, and `--stop`
+  finds nothing to stop. Its log says it is waiting.
+- **Until a sync pulls, the stale-mirror rule goes by `meta.synced_at`**, which `sync --no-pull` also
+  moves: the `pulled_at` key that tells the two apart is written from the first pull after item 58.
+  A `--no-pull` sync before then would make a two-month-old mirror look fresh to the daemon.
+- **The task definition is untested against Task Scheduler.** `--task-xml FILE` writes it as UTF-16
+  with a byte-order mark, as it declares; `schtasks` has never been run on it. Printed and redirected
+  instead, the bytes are the shell's code page under a UTF-16 declaration, except from Windows
+  PowerShell 5.1. By the final audit (`data/item58/final_audit.md`) the definition was checked only by
+  reading it against the schema's element order. Not verified, because each needs this machine's own
+  state: that `schtasks /create /xml` accepts it, that the account string resolves, and that the task
+  runs in a locked session and wakes the machine.
+- **With nobody logged on, the task does not run** (`InteractiveToken`). That is the price of running
+  in the user's own session, where the sandbox's grants are known to work.
+- **The Pick map's budgets will flip nightly.** The dashboard builds its live pool under the newest
+  snapshot's budgets. After a daemon night that is the base tier (60 s / 1,800 s; 3,336 candidates on
+  2026-11-23), while `oeisbot queue` uses the defaults (3,359); a hand-run `oeisbot run` or
+  `oeisbot snapshot` at the defaults flips it back, with a budget-change notice each time. The
+  mechanism is old (any `run --extend-s 1800` did it); the daemon makes it nightly.
+- **A recovered session's note is long**: with ` (closed by recovery: its process ended mid-session)`
+  appended it can reach 163 characters (the final audit's figure), more than the dashboard's Settings
+  column shows on one line.
+- **`--stop` in the first milliseconds of a start can answer "no daemon is running"**: before the lock's
+  description is written, with last night's `stopped` heartbeat still in place, `daemon.status` has
+  nothing to tell the new daemon by.
+
+**The lock**
+
+- **The lock is taken by the commands, not by the library.** A script that calls
+  `attempt.run_session`, `verify.run_attempt` or `bfile.fetch` directly runs beside a daemon unrefused,
+  and can break the 1 request per second limit or race a re-check. `scripts/model_smoke.py` (it runs
+  programs in the sandbox) and `data/item49/step7.py` (it makes the re-check's requests) are two that
+  do; do not run them while the daemon is running.
+- **It covers the process, not its children.** A `git` started by a `sync` that is then killed can
+  outlive it for a moment while the next command starts. A timed sync removes git lock files only when
+  they are 5 minutes old, so a sync started within 5 minutes of such a kill can fail. For the daemon a
+  failed fetch (a young `shallow.lock`) is a warning, and the night goes on with the mirror as it is.
+- **An `index.lock` that is not the daemon's own costs the night.** When the sync's reset is refused by
+  git (a young `index.lock` left in place, or another git using the mirror: a person's, or an orphan's),
+  `oeisdata.update` does not remove the lock: it removes one only after its own reset was ended by the
+  time limit. The repair then fails on the same lock, `MirrorUnusable` is raised, and the daemon runs
+  no sessions that night although the working tree may be untouched. Deliberate: something else may be
+  rewriting the mirror. `oeisbot sync` at a console removes no lock file at all.
+- **`review set` is not locked**, deliberately (one row, in a database that serves concurrent writers).
+
+### The safeguards against reaching the real project
+
+History item 58, section F (2026-11-23): arming ([daemon](daemon.md#arming)), the product's own guard
+and the test wall ([development](development.md#the-products-own-guard)), and the mutation harness's
+check. They exist because the real project was reached three times in two days by tests of this very
+work. Each line below was checked against the code on 2026-11-23; the starting list is
+`data/item58/safeguards.md`'s, whose first half describes a version the code has since moved past.
+
+**Arming**
+
+- **It is a file, not a lock.** Anything that can write `data/daemon/armed` arms the daemon, and
+  anything that can delete it disarms it. It guards against accident, not against intent. That an
+  agent never arms is a rule in `CLAUDE.md`, enforced by nothing.
+- **It guards the daemon only.** `oeisbot run`, `attempt`, `sync`, `recheck`, `fetch-bfiles` and
+  `snapshot` start as they always did. It is checked in `daemon.command` and in `Daemon.run`; a script
+  that calls `Daemon.recover`, `sync_mirror` or `run_session` itself, without `run`, meets neither.
+- **An unarmed start is not literally nothing.** It creates `data/daemon/` if needed and appends one
+  line to that day's log, every night for an imported task, and nothing prunes those files.
+- **Exit code 2 is not unique to it.** argparse exits with 2 for a command line it cannot read, so a
+  task whose last result is 2 is unarmed only if the log has the line.
+- **On the dashboard, not armed hides more than it should.** While it is not armed the line's tone is
+  idle even when last night left warnings, and a last run that did not finish is not said at all.
+  While a daemon is running, neither the line nor `--status` says whether it is armed.
+- **It is per data directory.** With `OEISBOT_HOME` set, the file asked for is that home's.
+
+**The product's own guard**
+
+- **It knows only what the environment says.** A script that is neither run by pytest nor has
+  `OEISBOT_UNDER_TEST` set is, to the guard, real use: an experiment that imports `oeisbot` and calls
+  `db.connect()`, `run_session` or `daemon.arm()` against the real project is not refused. Arming
+  still stops a night; nothing stops the rest.
+- **It guards 15 calls and no others** (the table in
+  [development](development.md#the-products-own-guard)). Outside it: a direct `sqlite3.connect`,
+  `urllib` or `subprocess` call; the b-file cache (`bfile.fetch` writes under `data/bfiles/`, reached
+  under a test only if `http_get` was replaced and `config.DATA` was not moved); the files
+  `oeisbot recheck` removes or renames in `data/pending/` (only saving one is guarded);
+  `schedule.write_task`, which writes wherever it is told; `oeisbot setup`'s downloads and everything
+  under `tools/`, which is not one of the two real directories; and the local model server.
+- **`data/scratch` is real in tests, by design.** The sandbox's grants are path-based, so sandbox
+  tests make and delete their run directories in the real `data/scratch`
+  (`sandbox.new_scratch_dir` is not guarded; only the daemon's sweep of old ones is).
+- **Reading is never refused**, so a test can still depend on what the real database or mirror holds.
+- **"Real" is this copy of the package's own `data/` and `artifacts/`.** A second checkout pointed at
+  this project's data through `OEISBOT_HOME` judges by its own location and refuses nothing here.
+- **git is judged by its working directory** (or, with none, by `config.OEISDATA`), not by its
+  arguments: a `git clone <url> <path into the real data>` run with `config.OEISDATA` moved elsewhere
+  would not be seen. In the suite the wall refuses every git call anyway.
+- **A test can switch it off**: deleting both variables from its environment, or replacing
+  `guard.REAL_DIRS`, as `tests/test_guard.py` must do to test it. The third touch of the real
+  database, on 2026-11-23, was exactly that: a stand-in declared real, then one call left pointing at
+  the true database. Outside that file, do neither.
+- **A shell that still has `OEISBOT_UNDER_TEST` set refuses real commands**, with `refused under a
+  test: ...`. Any value but empty or `0` counts.
+- **What its mutation set shows, and what it does not.** `data/item58/mutants4.py` holds 44 mutants,
+  one for each of the 15 guarded calls among them, and `mutation_slice4.txt` is one run of all 44 on
+  2026-11-23 with none surviving. That pins the calls that exist; it says nothing about a write that
+  has no guard call at all (the list above).
+
+**The test wall** covers the test's own process, during a test, and three functions plus two
+directories: a child process, import and collection time, and everything else are the guard's or
+nobody's ([development](development.md#invariants), invariant 13).
+
+**The mutation harness**
+
+- **Its check reports, it does not prevent.** The harness's snapshot of the real project is compared after each mutant, so a write
+  is found one mutant late at most, and the run stops; what was written still has to be undone by
+  hand. It does not see `predictions` or pick-snapshot rows changing without a new snapshot, the
+  b-file cache, anything below the top level of `artifacts/`, `tools/`, or a network request.
+- **It changes the working tree while it runs.** Nothing else may read, run or edit the code
+  meanwhile. A killed run leaves a mutant in the code and a marker, `MUTANT_IN_TREE.json`, that stops
+  the suite, the harness and the daemon until a person restores the file; the other commands
+  (`oeisbot run`, `sync`, the dashboard) do not look for the marker and would run the mutated code.
+- **The marker and the `.orig` copy are not in `.gitignore`**, and nothing removes them but the
+  harness's own clean exit.
+
+**Recommended and not done**, because it is a change to the user's own settings: a project
+`.claude/settings.json` with `"env": {"OEISBOT_UNDER_TEST": "1"}`, so that every command a coding
+agent runs here is under the guard and a real run needs a visible `OEISBOT_UNDER_TEST=0`
+(`data/item58/safeguards.md`). Until the user decides, an agent's experiment is guarded only if the
+agent sets the variable itself.
 
 ## Observations from real runs
 

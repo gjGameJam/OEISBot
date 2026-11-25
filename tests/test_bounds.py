@@ -7,7 +7,10 @@ controlled times, as CLAUDE.md requires, because real sub-second timings on this
 from __future__ import annotations
 
 import json
+import math
 import re
+
+import pytest
 
 from oeisbot import bounds, config, db, verify
 from oeisbot.bounds import _INDEXED, Bound, applicable, bounds_in, parse_number
@@ -130,6 +133,113 @@ def test_the_loose_searched_to_pattern_is_not_used():
     limits, while the entry says its next term may be 185. Measured over the deployable pool, no entry
     needs this phrasing, so it is not a pattern -- it only ever added false positives."""
     assert bounds_in(["1000 is corresponding to a number already searched to (2^24-1)/3."], "A088783") == []
+
+
+# ------------------------------------------------------------------ item 57: three more readings
+
+def test_a_factorial_is_read_as_a_factorial():
+    """A025494's `No other elements < 31!` was read as 31, and A363212's `a(15) > 40!` as 40."""
+    assert parse_number("31!. - Paul") == math.factorial(31)
+    assert parse_number("40! if it exists") == math.factorial(40)
+    assert parse_number("31 !") == math.factorial(31)
+    assert bounds_in(["No other elements < 31!. - Paul.Jobling"], "A025494")[0].value == math.factorial(31)
+
+
+def test_a_factorial_is_only_the_mark_directly_after_the_number():
+    assert parse_number("31 != 32") == 31                    # an inequality, not a factorial
+    assert parse_number("929. 929!-1 is semiprime") == 929    # A098594: the bound is the first literal
+    assert parse_number("6 * 10^11 + 18!") == 6 * 10 ** 11    # A376332: a power is read first, as before
+    assert parse_number("2.5!") is None                       # not a whole number: no reading at all
+    assert parse_number("10!! if it exists") == 10            # a double factorial is 3,840, not 3,628,800
+    assert parse_number("20!/2") == 20                        # divided afterwards: the bare number, too low
+    assert parse_number("20! / 2") == 20
+
+
+def test_a_factorial_mark_does_not_end_the_sentence_for_the_borrowed_guard():
+    """The audit's finding: `!` ended the sentence, so the A-number after it was out of `_borrowed`'s
+    sight and another entry's search limit was read as this one's. The same lines with a power were
+    always rejected."""
+    assert bounds_in(["No more terms < 20! (the search limit of A001220)."], "A000001") == []
+    assert bounds_in(["No more terms < 10^18 (the search limit of A001220)."], "A000001") == []
+    assert bounds_in(["a(9) > 25! (A001220 was searched that far)."], "A000001") == []
+    # and a real sentence end after a factorial still ends it: the next sentence's A-number is not this claim's
+    assert bounds_in(["No more terms < 20!. See A001220 for the method."], "A000001")[0].value == math.factorial(20)
+
+
+def test_an_absurd_factorial_is_refused_rather_than_built():
+    assert parse_number(f"{bounds.MAX_EXPONENT}!") == math.factorial(bounds.MAX_EXPONENT)
+    assert parse_number(f"{bounds.MAX_EXPONENT + 1}!") is None
+    assert parse_number("20,000!") is None                    # A227644, and the comma is not what refuses it
+    assert parse_number("1,000!") == math.factorial(1000)
+
+
+@pytest.mark.parametrize("word, power", [("thousand", 3), ("million", 6), ("billion", 9), ("trillion", 12),
+                                         ("quadrillion", 15), ("quintillion", 18), ("sextillion", 21),
+                                         ("septillion", 24), ("octillion", 27), ("nonillion", 30),
+                                         ("decillion", 33)])
+def test_every_number_word_is_a_scale(word, power):
+    assert parse_number(f"150 {word}") == 150 * 10 ** power
+    assert parse_number(f"1.5 {word.upper()}.") == 15 * 10 ** (power - 1)
+    assert parse_number(f"150 {word}s") == 150               # a longer word is not the scale
+
+
+def test_these_are_the_only_terms_up_to_is_a_bound():
+    """A119748 and A064384, the two lines in the corpus that say it this way."""
+    line = "James Van Buskirk and John Robertson report that these are the only terms known up to 10^10."
+    assert bounds_in([line], "A119748")[0] == Bound(10 ** 10, line, None)
+    line = "Michael Mossinghoff has calculated that 2, 5, 13, 37, 463 are the only terms up to 150 million."
+    assert bounds_in([line], "A064384")[0].value == 150_000_000
+    assert bounds_in(["These are the only terms below 10^9."], "A000001")[0].value == 10 ** 9
+    assert bounds_in(["It is the only term < 10^9."], "A000001") == []          # one term: `is`, not `are`
+    assert bounds_in(["2 and 3 are the only terms <= 1.5*10^9; see the link."], "A000001")[0].value == 1_500_000_000
+    assert bounds_in(["2 and 3 are the only terms<10^9."], "A000001")[0].value == 10 ** 9
+    # a comma ends the clause as a full stop does, and the comma inside a number does not
+    assert bounds_in(["2 and 3 are the only terms up to 10^9, by exhaustive search."], "A000001")[0].value == 10 ** 9
+    assert bounds_in(["2 and 3 are the only terms up to 4,292,000,000, by search."], "A000001")[0].value == 4_292_000_000
+
+
+@pytest.mark.parametrize("a_number, line", [
+    # no verb: the words open a sub-case, here a variant of the sequence
+    ("A339449", "For the case 0=right, 1=up, 2=down, 3=left, the only terms below 2*10^9 are 0, 2, 4, 8."),
+    # a word between `terms` and the connective narrows the claim
+    ("A398494", "For m = 4, the only terms p <= 10^9 are 41 and 6977; in this case d is necessarily prime."),
+    ("A000001", "These are the only terms p <= 10^9."),
+    ("A000001", "These are the only terms of that form below 10^9."),
+    ("A125246", "The only terms not of the form b(k), below 10^13, are {110, 884, 18632}."),
+    # another entry's bound, by the guard every pattern shares
+    ("A000001", "By A001220 these are the only terms up to 10^9."),
+    # narrowed AFTER the number, where no other guard looks (the audit's finding)
+    ("A000001", "1, 2, 4 are the only terms below 10^8 which are squares."),
+    ("A000001", "These are the only terms up to 10^9 in base 3."),
+    ("A000001", "If p is prime, 2 and 3 are the only terms known below 10^12 with p | n."),
+    # no number in the clause: the next sentence's is not this claim's
+    ("A000001", "These are the only terms known up to now. a(7) = 100000000000."),
+    # the words run together
+    ("A000001", "These are the only termsup to 10^9."),
+    ("A000001", "These are the only terms knownup to 10^9."),
+])
+def test_the_only_terms_reading_is_the_strict_form_alone(a_number, line):
+    assert bounds_in([line], a_number) == []
+
+
+@pytest.mark.parametrize("a_number, line", [
+    ("A019279", "Hunsucker and Pomerance checked that there are no odd ones below 7 * 10^24."),
+    ("A272032", "They seem to be extremely rare. I checked them for {q,r}<=15 and n < 10^5."),
+    ("A301776", "Conjecture verified up to first 10^5 primes."),
+    ("A306723", "Tested up to 3*10^10. - _Giovanni Resta_, Mar 06 2019"),
+    ("A212311", "Checked up to n = 1053627."),
+    ("A384255", "None have been found for m < k <= 10^8."),
+    ("A299118", "There may be no square s such that prime(s) + 1 is square (none was found up to 10^9)."),
+    ("A057230", "No other terms found up to 23#. - _Michel Marcus_, Feb 21 2016"),
+])
+def test_the_measured_false_positive_shapes_stay_unread(a_number, line):
+    """Item 57 measured `checked up to`, `none found up to` and primorial notation before building them
+    (`data/item57/bound_gaps.txt`): the first three lines here would each have been a live bound that is
+    not a bound on the next term. A306723 and A212311 are true bounds given up with them -- a missed skip
+    costs time, a wrong one cannot be undone within a session. A057230's line is read as 23, as it always
+    was, which its last term has long passed; its `23#` is the product of the first 23 primes."""
+    read = bounds_in([line], a_number)
+    assert read == [] or (a_number == "A057230" and [b.value for b in read] == [23])
 
 
 # ------------------------------------------------------------------ the check at the boundary
@@ -291,7 +401,7 @@ def test_the_strongest_live_bound_wins():
     assert applicable(list(reversed(comments)), "A000001", 1254, 9).value == 10 ** 12
 
 
-def test_only_the_predicate_form_is_offered_a_bound(tmp_path):
+def test_only_the_predicate_form_is_offered_a_bound(tmp_path, monkeypatch):
     """The semantic gate. For a(n) and print-loop the loop variable need not be the term value, and for a
     model program `work` is whatever that program counts -- so a bound must never reach any of them. The
     harness's `work > 0` test is a backstop for the two PARI drivers only; it cannot catch the model
@@ -299,6 +409,9 @@ def test_only_the_predicate_form_is_offered_a_bound(tmp_path):
     import pytest
     from oeisbot import attempt as attempt_mod
     from oeisbot.ingest import seqfile
+    # `_Attempter.run` makes `config.DATA / "runs"` before it runs anything. Until item 58's guard refused
+    # it, this test did that in the real project (no file was written: the run itself is stubbed below).
+    monkeypatch.setattr(config, "DATA", tmp_path / "data")
 
     entry = seqfile.parse("\n".join([
         "%I A999999", "%S A999999 10,20,30", "%N A999999 Test sequence.",

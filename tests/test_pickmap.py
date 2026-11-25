@@ -696,7 +696,10 @@ def test_the_reasons_are_listed_largest_share_first(pm):
     assert reasons[0]["share"] > reasons[1]["share"]
 
 
-def test_only_an_open_review_explains_a_departure(pm):
+def test_a_review_that_keeps_a_sequence_out_explains_its_departure(pm):
+    """An open review always did. Since item 58 a rejected one does too (select.candidates no longer
+    draws such a sequence), so it is the reason whatever an attempt recorded afterwards -- until then
+    this test pinned the opposite, because a rejected sequence went back to the draw."""
     client, conn, state = pm
     names = ("A000001", "A000002", "A000003", "A000004")
     db.upsert_sequences(conn, [db.SequenceRow(a, f"seq {a}", 0, "nonn,more", 20, 3, "pari", 0, False) for a in names])
@@ -707,8 +710,42 @@ def test_only_an_open_review_explains_a_departure(pm):
     db.record_skip(conn, "A000001", "pari:x", "verify_timeout", outcome="failed")
     state["pari"] = {"A000099": 1.0}
     why = {t["a"]: t["reason"] for t in get(client)["gone"]["top"]}
-    assert why == {"A000001": "attempted: failed (verify_timeout)", "A000002": "review submitted",
+    assert why == {"A000001": "review rejected", "A000002": "review submitted",
                    "A000003": "review reviewing", "A000004": "unexplained"}
+
+
+def test_an_interrupted_run_is_never_named_as_why_a_sequence_left(pm):
+    """Item 58. A run its caller stopped takes nothing out of the pool, and the daemon records such rows
+    every night; the newest attempt would otherwise be blamed for whatever happened next."""
+    client, conn, state = pm
+    names = ("A000001", "A000002", "A000003")
+    db.upsert_sequences(conn, [db.SequenceRow(a, f"seq {a}", 0, "nonn,more", 20, 3, "pari", 0, False) for a in names])
+    db.record_pick_snapshot(conn, "pari", [*((a, 1.0) for a in names), ("A000099", 1.0)])
+    db.record_skip(conn, "A000001", "pari:x", "interrupted", outcome="failed")          # then it left `more`
+    db.record_skip(conn, "A000002", "pari:x", "wrong_term", outcome="failed")           # a real reason ...
+    db.record_skip(conn, "A000002", "pari:x", "interrupted", outcome="failed")          # ... not hidden by a later stop
+    db.record_skip(conn, "A000003", "pari:x", "interrupted", outcome="verified")        # and nothing else known
+    with conn:
+        conn.execute("UPDATE sequences SET in_more = 0 WHERE a_number = 'A000001'")
+    state["pari"] = {"A000099": 1.0}
+    why = {t["a"]: t["reason"] for t in get(client)["gone"]["top"]}
+    assert why == {"A000001": "left the 'more' list", "A000002": "attempted: failed (wrong_term)",
+                   "A000003": "unexplained"}
+
+
+def test_an_interrupted_run_that_found_terms_is_still_the_reason(pm):
+    """The other half: a run stopped after it had found new terms is a win, pending or recorded, and
+    that does take its sequence out of the pool. Only the fruitless interrupted run is passed over."""
+    client, conn, state = pm
+    names = ("A000001", "A000002")
+    db.upsert_sequences(conn, [db.SequenceRow(a, f"seq {a}", 0, "nonn,more", 20, 3, "pari", 0, False) for a in names])
+    db.record_pick_snapshot(conn, "pari", [*((a, 1.0) for a in names), ("A000099", 1.0)])
+    db.record_skip(conn, "A000001", "pari:x", "wrong_term", outcome="failed")           # older, and not the reason
+    db.record_skip(conn, "A000001", "pari:x", "interrupted", outcome="recheck_pending")
+    db.record_skip(conn, "A000002", "pari:x", "interrupted", outcome="extended")        # a win no review was opened for
+    state["pari"] = {"A000099": 1.0}
+    why = {t["a"]: t["reason"] for t in get(client)["gone"]["top"]}
+    assert why == {"A000001": "win waiting for its re-check", "A000002": "attempted: extended (interrupted)"}
 
 
 def test_an_attempt_made_before_the_snapshot_does_not_explain_a_later_departure(pm):

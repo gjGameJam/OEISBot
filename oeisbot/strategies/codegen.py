@@ -253,8 +253,10 @@ DEFINITION_GUIDANCE = ("Re-read the sequence definition and the first known term
 REPEAT_GUIDANCE = ("It was not run again: it would fail the same way every time. Change the program where the "
                    "failure points.")
 # failures that recur if the same program runs again in one model stage: the deterministic ones, and a
-# verify_timeout, since every generation of a stage runs under the same verify budget (db.is_dead_end
-# treats a verify_timeout the same way across attempts, for verify budgets up to the time it ran)
+# verify_timeout, since every generation of a stage runs under the same verify budget. (Across attempts
+# db.is_dead_end is stricter since item 58: there a verify_timeout counts only if the run also had 80% of
+# the budget on the CPU. Inside one stage the machine is the same from one generation to the next, so the
+# same program would time out again either way.)
 REPEATS_IN_STAGE = (*db.DETERMINISTIC_FAILURES, Stop.VERIFY_TIMEOUT.value)
 
 
@@ -272,6 +274,8 @@ class CodegenOutcome:
     attempts: list[AttemptResult] = field(default_factory=list)
     rejected: list[str] = field(default_factory=list)    # static-check or extraction failures
     skipped: str | None = None
+    # the caller asked to stop during the stage (item 58): it ended early, and what it holds is not a verdict
+    stopped: bool = False
 
     @property
     def success(self) -> AttemptResult | None:
@@ -533,6 +537,12 @@ def retry_guidance(stop: Stop | None) -> str:
     if stop is Stop.HARNESS_ERROR:      # our own callback raised (item 51): the program is not at fault
         return ("The run was stopped by a fault in the harness that reads your output, not by your program. "
                 "Send the same program again, unchanged.")
+    if stop is Stop.INTERRUPTED:
+        # Unreachable from generate_and_verify, which ends the stage on an interrupted run instead of
+        # retrying (item 58). Classified anyway, so that if that ever changes the model is not told to
+        # re-read a definition it may have read correctly
+        return ("The run was stopped by the operator of this machine, not by your program. Send the same "
+                "program again, unchanged.")
     if stop is Stop.DISK_CAP:
         return ("The run used too much disk. Generated programs must not write files at all: keep state in "
                 "memory and keep it small.")
@@ -546,10 +556,14 @@ def generate_and_verify(entry: Entry, known: KnownTerms, model: ModelClient,
                         runner: Callable[[Program], AttemptResult], *,
                         log: Callable[[str], None] = print,
                         max_generations: int = config.CODEGEN_ATTEMPTS,
-                        verified_elsewhere: VerifiedRun | None = None) -> CodegenOutcome:
+                        verified_elsewhere: VerifiedRun | None = None,
+                        should_stop: Callable[[], bool] | None = None) -> CodegenOutcome:
     """runner(program) runs one program through the verification harness (and records it).
     `verified_elsewhere`: a run of the entry's own program that reproduced every known term but found no new
-    one. The model is told so, and each generated program carries it as a note for the reviewer."""
+    one. The model is told so, and each generated program carries it as a note for the reviewer.
+    `should_stop`, when given, is asked before every model call but the first (the caller asks before
+    starting the stage) and before each run (item 58: a local model takes minutes over a reply); True
+    ends the stage with `out.stopped` set."""
     if known.count < config.CODEGEN_MIN_KNOWN_TERMS:
         raise ValueError(f"{known.a_number}: {known.count} known terms; at least {config.CODEGEN_MIN_KNOWN_TERMS} "
                          f"are needed to hold {config.CODEGEN_HELD_OUT_MIN} out from the model")
@@ -561,6 +575,9 @@ def generate_and_verify(entry: Entry, known: KnownTerms, model: ModelClient,
     log(f"model plan: {plan.approach}: {plan.reason}")
     if plan.approach == "skip":
         out.skipped = f"model judged infeasible: {plan.reason}"
+        return out
+    if should_stop is not None and should_stop():
+        out.stopped = True
         return out
     if strictly_increasing(known):
         plan.form = parse_form(model.chat([{"role": "system", "content": SYSTEM},
@@ -584,6 +601,9 @@ def generate_and_verify(entry: Entry, known: KnownTerms, model: ModelClient,
     # cannot help
     failed_before: dict[str, tuple[int, AttemptResult]] = {}
     for gen in range(1, max_generations + 1):
+        if should_stop is not None and should_stop():
+            out.stopped = True
+            break
         # retries at the same low temperature tend to repeat the same mistake
         reply = model.chat(messages, temperature=min(0.2 + 0.3 * (gen - 1), 0.9), max_tokens=2048)
         code = extract_code(reply, contract.function)
@@ -623,10 +643,18 @@ def generate_and_verify(entry: Entry, known: KnownTerms, model: ModelClient,
         prog = Program("python", code, origin=f"model {model.name}, generation {gen} (AI-generated{how})",
                        strategy="python:model", notes=notes,
                        script=code + MEMBERS_DRIVER.format(first=first) if contract is MEMBERS else None)
+        if should_stop is not None and should_stop():      # the reply took a while: ask again before running it
+            out.stopped = True
+            break
         result = runner(prog)
         out.attempts.append(result)
         log(f"generation {gen}: {result.outcome}: {result.stop.value} ({brief_detail(result.detail)})")
         if result.verified:
+            break
+        if result.stop is Stop.INTERRUPTED:
+            # the caller is stopping (item 58): no retry, and nothing about this run goes to the model --
+            # it failed for no reason of the program's
+            out.stopped = True
             break
         if result.stop.value in REPEATS_IN_STAGE:
             failed_before.setdefault(shape, (gen, result))

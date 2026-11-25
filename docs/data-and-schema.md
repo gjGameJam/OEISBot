@@ -15,13 +15,23 @@ its own `oeisbot setup`. None of these directories is committed (see `.gitignore
 | `data/runs/<same stem>.py` | orchestrator | every Python (model-generated) program that ran, as it ran: for a `members(work)` program, with the driver that numbers its members (so its sha256 prefix is the attempt's `program_sha`) |
 | `data/scratch/<A>-<lang>-<hex>/` | harness | a run's sandbox working directory; deleted after the run |
 | `data/pending/attempt-<id>.json` | orchestrator | the full in-memory result of a win whose re-check could not reach oeis.org (outcome `recheck_pending`), as indented JSON with a `format` version; deleted once a later re-check resolves it |
+| `data/writer.lock` | `oeisbot.lock` (the commands in `cli.LOCKED`, and `oeisbot daemon`) | the writers' lock (history item 58). An operating-system lock held on it while a command runs; its contents are only a description of the holder, `{"pid", "command", "started_at"}` (local time), emptied when the command ends, and possibly stale or empty. Nothing decides anything from the contents. Created by the first locked command; does not exist on 2026-11-23, since none has run since the lock was built. Safe to delete while no command is running. See [daemon](daemon.md#the-writers-lock) |
+| `data/daemon/heartbeat.json` | `oeisbot daemon` | the last state a daemon wrote, rewritten at least every 30 s through `heartbeat.part`; fields in [daemon](daemon.md#the-heartbeat-file-and---status). Not evidence that one is running |
+| `data/daemon/stop` | `oeisbot daemon --stop` | the stop request: a file holding the UTC time it was made. Deleted by the daemon that honours it, and by the next start's recovery when older than that start |
+| `data/daemon/daemon-YYYYMMDD.log` | `oeisbot daemon` | the daemon's log and its sessions' output, one file per local day, UTF-8, each line prefixed `HH:MM:SS`. Never pruned. An unarmed start writes its one `not started: not armed` line here and nothing anywhere else |
+| `data/daemon/armed` | `oeisbot daemon --arm` (`daemon.arm`); deleted only by `--disarm` | the user's standing permission for unattended nights (history item 58, section F): the daemon runs a night only while this file exists. It holds the local time it was written, e.g. `2026-11-23 21:05:12 (local time)`, which nothing reads; only its existence is asked (`daemon.is_armed`). Nothing the daemon does removes it. **Does not exist on 2026-11-23: the daemon is not armed, and creating it is the user's step, never an agent's.** Deleting it by hand is the same as `--disarm`. See [daemon](daemon.md#arming) |
 | `tools/python/` | `oeisbot setup` | embeddable CPython 3.11.9 with gmpy2 and sympy (about 110 MB) |
 | `tools/pari/gp.exe` | `oeisbot setup` | standalone PARI/GP 2.17.4 |
 | `tools/downloads/` | `oeisbot setup` | the downloaded Python zip |
 | `artifacts/<A>/attempt-<id>/` | orchestrator | review folders for wins |
 | `oeisbot/dashboard/static/` | `npm run build` | built dashboard frontend |
 
-Nothing cleans up `data/runs/` or `data/bfiles/`; they grow with use.
+Nothing cleans up `data/runs/`, `data/bfiles/` or `data/daemon/`; they grow with use. `data/daemon/`
+does not exist until a daemon is first started, armed or not, or `--arm` is run (neither has happened,
+as of 2026-11-23: `ls`). A run directory in
+`data/scratch` that a killed process left behind is removed by `oeisbot daemon` at its next start, once
+it is 6 hours old and only if its name is one the harness gives a run
+([daemon](daemon.md#recovery)); nothing else removes one.
 
 ### Run log lines (`data/runs/*.jsonl`)
 
@@ -104,11 +114,19 @@ the schema and one altered in place have the same column order.
 
 ### `sessions`
 
-One row per `oeisbot run`: `id`, `started_at`, `finished_at` (NULL while running or if the process was
+One row per `oeisbot run`, and one per session `oeisbot daemon` runs: `id`, `started_at`, `finished_at` (NULL while running or if the process was
 killed), `attempts` (all attempt rows in the session, skips included), `wins` (rows with outcome
 `extended`), `machine_s` (sum of `attempts.runtime_s`), `note` (count, alpha, seed, model, and since
 2026-09-23 a short `gp=2.17.4/GMP-6.1.2` token). The counts are computed once, when the session ends, so
 a `recheck_pending` win resolved later is not added to its session's `wins`.
+
+**The note's format since history item 58** (`attempt.run_session`):
+`count=<n> alpha=<a> seed=<s> model=<name or None> verify_s=<seconds> extend_s=<seconds> gp=<token>`,
+followed for a daemon's session by ` daemon=1 tier=<base|verify600|long>`. The two budgets are new: the
+12 session rows written before it (ids 1 to 12) do not carry them, and their budgets are only in their
+attempt rows' `extra`. A session row left open by a killed process and later closed by the daemon's
+recovery has ` (closed by recovery: its process ended mid-session)` appended, and its `finished_at` is
+the time of its last attempt row, not the time of the recovery ([daemon](daemon.md#recovery)).
 
 The gp token is the half of the runtime provenance that **lasts**: the `meta` rows above are overwritten
 the next time gp changes, so after an upgrade they describe no historical row at all, while `note` is
@@ -123,27 +141,30 @@ verbatim as the Settings column.
 | `id` | attempt id (also the artifact folder suffix) |
 | `session_id` | NULL for `oeisbot attempt` |
 | `a_number` | sequence |
-| `strategy` | `pari:a(n)`, `pari:predicate`, `pari:print-loop`, `python:model`; skip rows use `pari`, except the model-stage skips (`too_few_known_terms`, `model_skip`, `model_no_runnable_code`), which use `python:model` |
+| `strategy` | `pari:a(n)`, `pari:predicate`, `pari:print-loop`, `python:model`; skip rows use `pari`, except the model-stage skips (`too_few_known_terms`, `model_skip`, `model_no_runnable_code`), which use `python:model`, and the daemon's own `daemon_error` skip, which uses `daemon` |
 | `program_origin` | e.g. `A123456 %o (PARI) block 2`, `model qwen2.5-coder:14b, generation 1 (AI-generated)`. **Not unique per (sequence, block)** since 2026-09-25: one `%o` block can yield both a function form and its own print loop, which share this label and are told apart by `strategy` and `program_sha` |
 | `program_sha` | first 16 hex digits of the sha256 of the executed script |
 | `started_at`, `finished_at` | UTC ISO timestamps |
 | `verified` | 1 if every known term was reproduced |
 | `known_terms`, `known_source` | count and source (`bfile` or `data`) of known terms |
 | `reproduced`, `new_terms` | counts |
-| `runtime_s`, `cpu_s` | sandbox wall time and job CPU time (for a `verify_timeout` row, `runtime_s` is what the dead-end check compares with the next run's `verify_wall_s`) |
+| `runtime_s`, `cpu_s` | sandbox wall time and job CPU time (for a `verify_timeout` row, `runtime_s` is what the dead-end check compares with the next run's `verify_wall_s`, and since history item 58 `cpu_s` must also be at least 80% of that `verify_wall_s`; a row with no `cpu_s` is never such a dead end) |
 | `peak_mem_bytes` | clamped job peak (Python) or largest reported stack figure (gp) |
 | `cost_unit` | `work` or `cpu` |
 | `projected_next_s_low/high`, `projected_next_mem` | the last projection made in the run |
 | `outcome` | `extended`, `verified`, `failed`, `superseded`, `recheck_pending` (new terms found, re-check not finished), `skipped` |
-| `failure_mode` | why it stopped: a [stop reason](verification-and-estimation.md#stop-reasons) for runs, or a skip reason (below) |
+| `failure_mode` | why it stopped: a [stop reason](verification-and-estimation.md#stop-reasons) for runs, or a skip reason (below). `interrupted` (since history item 58) is the stop of a run its caller asked to stop; it is on a `failed` or `verified` row, or on a win's row when the run had found new terms first, and it never makes a dead end or a failure penalty |
 | `detail` | human-readable detail |
-| `extra` | JSON: `log` (run log path; **absent when no term was accepted**, because a term is logged only once it has passed its checks, so a run whose first term was wrong logs none — rows written before 2026-09-20 name it anyway, and that file was never created), `program` (the kept copy of a Python program as it ran, `<run log stem>.py`; Python only, and written whatever the run then does, so it is there even when `log` is not), `form` (`a(n)`, `predicate`, `print-loop`, `model`), `rewrites` (program notes), `weak_verification`, `extend_wall_s` and `mem_bytes` (the budgets the run asked for) and `mem_cap_bytes` (the memory cap the feasibility check was judged against, `min(mem_bytes, free physical RAM − reserve)` as the harness read it — zero or negative when free RAM was below the reserve, which simply never matches a dead end; the `infeasible` dead end keys on this one, so a run squeezed by a busy machine is not retired — added 2026-09-20, absent on earlier rows, which therefore never count as `infeasible` dead ends; `extend_wall_s` and `mem_bytes` absent on rows older than 2026-09-18, which never count as `extend_budget` dead ends; `mem_bytes` itself is now recorded but no longer read by anything), `attempt_call` (a key shared by every row of one `attempt_sequence` call, so the selection's failure penalty counts attempts, not rows: a random hex string, or `legacy-<first row id of the attempt>` on the 108 run rows written before 2026-09-19, set once from their grouping; skips have no `extra`), `recheck` (only when new terms were found: the re-check note; while `recheck_pending`, `not done yet` or, after a failed re-check, `not done: <ErrorType>: <message>`) and `recheck_failures` (how many times in a row the win has failed to resolve with that same note; reset when the error changes, and left in place once the win finally resolves), and the searched-bound keys added 2026-09-22: `searched_bound` (the published bound as a **string** — entries reach 10^5000, which no SQLite integer holds — written on every `pari:predicate` run that has an applicable bound, whether or not the check fired), `searched_bound_quote` (the `%C` line it was read from) and `searched_bound_margin` (`config.SEARCHED_BOUND_MARGIN` as it was at the time); and, only on a run the check actually stopped, `measured_rate`, `rate_window_s` and `rate_work` (the rate the decision was made with and how thin the window behind it was) plus `verified_scan_to` — the largest value this run's own scan actually covered, which unlike the bound is measured rather than claimed; and the progress-heartbeat keys added 2026-09-23, written on every `pari:predicate` run whose scan crossed at least one block: `scan_reached` (the frontier the driver reported, as a **string** — a long scan passes 2^63; convert it in Python before comparing, and never order or compare it in SQL, where SQLite compares text lexicographically and `'9000000'` beats `'10000000'`), `heartbeats` (how many were accepted) and, only when something was dropped, `heartbeats_ignored` and `first_bad_heartbeat` (truncated), so a driver mangling every line shows as a number rather than as silence. A short scan that finished inside its first block records none of these. Three things are named apart on purpose and rank in this order: `verified_scan_to` is ours and **witnessed** (the harness watched the known terms arrive from that range), `scan_reached` is ours and **reported** (cross-checked against the work claimed for it and the fastest rate any predicate can be tested at, but still the program's own word), and `searched_bound` is an unverified **human claim**. Two keys added 2026-09-30 (history item 51): `infeasible_on` (only on `infeasible` rows: `time`, `memory` or `time+memory`, the budget the projection exceeded; `is_dead_end` compares that budget alone, and rows without the key need both as before) and `below_published_bound` (only when a new term landed at or below the entry's searched bound: `{"bound", "quote", "indices"}`; the README and the inbox show it); `review_refused` (`{"prior_review", "reason"}`, only on a win whose review was refused because the sequence has a `rejected` one); and `program_sha_backfilled` (`{"from", "on", "item"}`, on the 48 rows whose `program_sha` item 52's backfill rewrote to the sha today's builder produces for the same block and form, `from` being the old sha) |
+| `extra` | JSON: `log` (run log path; **absent when no term was accepted**, because a term is logged only once it has passed its checks, so a run whose first term was wrong logs none — rows written before 2026-09-20 name it anyway, and that file was never created), `program` (the kept copy of a Python program as it ran, `<run log stem>.py`; Python only, and written whatever the run then does, so it is there even when `log` is not), `form` (`a(n)`, `predicate`, `print-loop`, `model`), `rewrites` (program notes), `weak_verification`, `verify_wall_s` (the verify budget the run was given; written since history item 58, absent on the 280 rows before it; the dead-end rules do not read it, the daemon's cooldown does, taking a row without it as having had any budget), `extend_wall_s` and `mem_bytes` (the budgets the run asked for) and `mem_cap_bytes` (the memory cap the feasibility check was judged against, `min(mem_bytes, free physical RAM − reserve)` as the harness read it — zero or negative when free RAM was below the reserve, which simply never matches a dead end; the `infeasible` dead end keys on this one, so a run squeezed by a busy machine is not retired — added 2026-09-20, absent on earlier rows, which therefore never count as `infeasible` dead ends; `extend_wall_s` and `mem_bytes` absent on rows older than 2026-09-18, which never count as `extend_budget` dead ends; `mem_bytes` itself is now recorded but no longer read by anything), `attempt_call` (a key shared by every row of one `attempt_sequence` call, so the selection's failure penalty counts attempts, not rows: a random hex string, or `legacy-<first row id of the attempt>` on the 108 run rows written before 2026-09-19, set once from their grouping; skips have no `extra`), `recheck` (only when new terms were found: the re-check note; while `recheck_pending`, `not done yet` or, after a failed re-check, `not done: <ErrorType>: <message>`) and `recheck_failures` (how many times in a row the win has failed to resolve with that same note; reset when the error changes, and left in place once the win finally resolves), and the searched-bound keys added 2026-09-22: `searched_bound` (the published bound as a **string** — entries reach 10^5000, which no SQLite integer holds — written on every `pari:predicate` run that has an applicable bound, whether or not the check fired), `searched_bound_quote` (the `%C` line it was read from) and `searched_bound_margin` (`config.SEARCHED_BOUND_MARGIN` as it was at the time); and, only on a run the check actually stopped, `measured_rate`, `rate_window_s` and `rate_work` (the rate the decision was made with and how thin the window behind it was) plus `verified_scan_to` — the largest value this run's own scan actually covered, which unlike the bound is measured rather than claimed; and the progress-heartbeat keys added 2026-09-23, written on every `pari:predicate` run whose scan crossed at least one block: `scan_reached` (the frontier the driver reported, as a **string** — a long scan passes 2^63; convert it in Python before comparing, and never order or compare it in SQL, where SQLite compares text lexicographically and `'9000000'` beats `'10000000'`), `heartbeats` (how many were accepted) and, only when something was dropped, `heartbeats_ignored` and `first_bad_heartbeat` (truncated), so a driver mangling every line shows as a number rather than as silence. A short scan that finished inside its first block records none of these. Three things are named apart on purpose and rank in this order: `verified_scan_to` is ours and **witnessed** (the harness watched the known terms arrive from that range), `scan_reached` is ours and **reported** (cross-checked against the work claimed for it and the fastest rate any predicate can be tested at, but still the program's own word), and `searched_bound` is an unverified **human claim**. Two keys added 2026-09-30 (history item 51): `infeasible_on` (only on `infeasible` rows: `time`, `memory` or `time+memory`, the budget the projection exceeded; `is_dead_end` compares that budget alone, and rows without the key need both as before) and `below_published_bound` (only when a new term landed at or below the entry's searched bound: `{"bound", "quote", "indices"}`; the README and the inbox show it); `review_refused` (`{"prior_review", "reason"}`, only on a win whose review was refused because the sequence has a `rejected` one); and `program_sha_backfilled` (`{"from", "on", "item"}`, on the 48 rows whose `program_sha` item 52's backfill rewrote to the sha today's builder produces for the same block and form, `from` being the old sha) |
 | `artifact_path` | set for wins, relative to the project root |
 
 Skip reasons: `not_in_oeisdata`, `no_more_keyword`, `open_review`, `recheck_pending`, `bfile_error`,
 `inconsistent_known_terms`, `no_supported_program`, `all_programs_dead_ends`, `verify_out_of_reach` (every
 PARI program is a predicate search too long for the verify budget; since 2026-09-18), `too_few_known_terms`,
-`model_skip`, `model_no_runnable_code`. Sessions no longer pick sequences that would get one of
+`model_skip`, `model_no_runnable_code`, and `daemon_error` (since history item 58: written by
+`oeisbot daemon`, not by an attempt, for the pick in hand when a session raised; `strategy` is `daemon`,
+`session_id` is NULL and `detail` holds the exception; the daemon's cooldown then holds the sequence
+back for 14 days). Sessions no longer pick sequences that would get one of
 `no_supported_program`, `all_programs_dead_ends` or `verify_out_of_reach` when that can be decided offline
 (see [pipeline](pipeline.md#2-selection-oeisbot-run--n-n---alpha-a---seed-s---model)), so these mostly
 come from `oeisbot attempt`. Skip rows leave the run columns NULL, except `verified` and
@@ -245,6 +266,9 @@ downstream reads differently — but "what `trustworthy` was decided from" is li
 
 - A review in `new`, `reviewing` or `submitted` blocks that sequence from being picked or attempted. So
   does an attempt with outcome `recheck_pending`.
+- A review in `rejected` blocks its sequence from being **picked** (since history item 58,
+  `select.candidates`), though not from a targeted `oeisbot attempt`. So every status a row can have
+  now keeps its sequence out of the draw, and no command deletes a review row.
 - `db.set_review_status` refuses to mark a review `submitted` when another review for the same A-number
   is already `submitted`.
 - `db._insert_review` refuses (`db.ReviewRefused`) to open a review for an A-number that has a
@@ -257,13 +281,26 @@ downstream reads differently — but "what `trustworthy` was decided from" is li
 - **There is exactly one row** as of 2026-09-21: `#1 A385331 a(25)..a(42) new`, from session 7, the
   project's first win (status history item 35). It is waiting on the user, and while it sits in `new`
   A385331 is blocked from every session — which is correct, but means the row should not be left
-  indefinitely. Note that A385331 is *not* a dead end (`is_dead_end` needs `new_terms = 0`), so closing
-  the review makes it pickable again and it would be re-run from a(1).
+  indefinitely. (Reviews #2 and #3 were added by session 10 and are `rejected`.) A385331 is *not* a
+  dead end (`is_dead_end` needs `new_terms = 0`), and until history item 58 closing the review as
+  `rejected` made it pickable again, to be re-run from a(1). **That is no longer so**: `submitted` and
+  `rejected` both keep it out of the draw, and only a targeted `oeisbot attempt A385331` after a
+  `rejected` close would run it.
 
 ### `meta`
 
-`schema_version`, `oeisdata_commit`, `synced_at`, and since 2026-09-23 (history item 43) the two
-**runtime versions**:
+`schema_version`, `oeisdata_commit`, `synced_at`, since history item 58 `pulled_at`, and since
+2026-09-23 (history item 43) the two runtime versions below.
+
+`synced_at` is written by every sync, `oeisbot sync --no-pull` included, so it says when the candidate
+table was last rebuilt, not how old the mirror's data is. **`pulled_at`** is written only by a sync that
+pulled (`oeisdata.sync` with `pull=True`: `oeisbot sync` without `--no-pull`, and the daemon's nightly
+sync). `oeisbot daemon` decides from it whether the mirror is too stale to climb to longer budgets, and
+whether a skip has been followed by a pull (`daemon.pulled_at`); where the key is absent it falls back
+to `synced_at`. The live database has no `pulled_at` row on 2026-11-23: no sync has pulled since the key
+was added.
+
+The **runtime versions**:
 
 | key | example |
 |---|---|

@@ -126,15 +126,25 @@ def candidates(conn: sqlite3.Connection, *, alpha: float = 1.0, require_langs: s
     """Eligible 'more' sequences with effective difficulty (features x failure history). `keep`, if given,
     is asked last about each row that passed every other check (attempt.Runnable is the one sessions use)."""
     # one per attempt, however many programs it ran: the rows of one attempt_sequence call share
-    # extra.attempt_call. A row without the key, or with an unreadable extra, counts on its own
+    # extra.attempt_call. A row without the key, or with an unreadable extra, counts on its own.
+    # A run its caller interrupted (db.INTERRUPTED, item 58) is not counted: it was stopped for the
+    # machine's reasons, and counting it would make every sequence a stop happened to land on twice as
+    # hard to pick. An attempt with another failed or verified row beside the interrupted one still counts
     failures = {r["a_number"]: r["c"] for r in conn.execute("""
         SELECT a_number, COUNT(DISTINCT CASE WHEN json_valid(extra)
                                              THEN COALESCE(json_extract(extra, '$.attempt_call'), 'row:' || id)
                                              ELSE 'row:' || id END) AS c
-        FROM attempts WHERE outcome IN ('failed', 'verified') GROUP BY a_number""")}
+        FROM attempts WHERE outcome IN ('failed', 'verified') AND COALESCE(failure_mode, '') != ?
+        GROUP BY a_number""", (db.INTERRUPTED,))}
+    # Not drawn: a sequence with an open review (a human is deciding), and since item 58 one with a
+    # `rejected` review. A win for such a sequence is refused a review (db.ReviewRefused), so drawing it
+    # can only spend the run and write an artifact folder nobody is shown; an unattended loop would do
+    # that again every time the draw landed on it. Only the draw is blocked, as for a conjectural program
+    # (attempt.Runnable): a targeted `oeisbot attempt` still runs it. It stays out for as long as the
+    # rejected row stands, which is a person's to change
     blocked = {r["a_number"] for r in conn.execute(
-        f"SELECT DISTINCT a_number FROM reviews WHERE status IN ({','.join('?' * len(db.OPEN_REVIEW_STATUSES))})",
-        db.OPEN_REVIEW_STATUSES)}
+        f"SELECT DISTINCT a_number FROM reviews WHERE status IN ({','.join('?' * (len(db.OPEN_REVIEW_STATUSES) + 1))})",
+        (*db.OPEN_REVIEW_STATUSES, "rejected"))}
     blocked |= {r["a_number"] for r in db.pending_rechecks(conn)}
     out = []
     for row in conn.execute("SELECT * FROM sequences WHERE in_more = 1"):

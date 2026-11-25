@@ -34,7 +34,7 @@ uv venv .venv --python 3.11
 uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
 .venv\Scripts\oeisbot setup        # sandbox runtimes in tools/, AppContainer grants, database
 .venv\Scripts\oeisbot sync         # clone oeisdata (about 2.3 GB) and build the candidate table
-.venv\Scripts\python -m pytest     # 634 tests; proves the sandbox works on this machine
+.venv\Scripts\python -m pytest     # 903 tests; proves the sandbox works on this machine
 .venv\Scripts\oeisbot run -n 5     # pick and attempt 5 sequences that have PARI programs
 .venv\Scripts\oeisbot review list  # anything found
 ```
@@ -49,9 +49,15 @@ With the local model (Ollama installed, `ollama pull qwen2.5-coder:14b`):
 Dashboard: `cd dashboard && npm install && npm run build`, then `.venv\Scripts\oeisbot dashboard`
 (http://127.0.0.1:8765).
 
+Unattended: `.venv\Scripts\oeisbot daemon` runs sessions back to back inside a nightly window
+(22:00 to 08:00 by default) and exits; `oeisbot daemon --stop` and `--status` stop and check it. It
+submits nothing, and it does nothing at all until you have run `oeisbot daemon --arm` once on the
+machine (`--disarm` takes that back). Read [the daemon page](docs/daemon.md) first: as of 2026-11-23
+it is built and tested but has not yet been run on real data, and is not armed.
+
 ## Status
 
-- All eight build steps from the [design spec](docs/design-spec.md) are implemented, and 634 tests pass.
+- All eight build steps from the [design spec](docs/design-spec.md) are implemented, and 903 tests pass.
 - The sandbox runs on Windows only. A Linux `setrlimit` backend exists but has never run, and the rest
   of the project assumes Windows.
 - Real runs so far: 207 sequences, 277 program runs, about 18.6 machine-hours, and **one win** —
@@ -68,6 +74,7 @@ Dashboard: `cd dashboard && npm install && npm run build`, then `.venv\Scripts\o
 |---|---|
 | [Status and handoff](docs/status.md) | current state on the development machine, decisions, open items, next steps |
 | [Operations guide](docs/operations.md) | install, commands, budgets, reading results, reviewing and submitting, troubleshooting |
+| [The daemon](docs/daemon.md) | `oeisbot daemon`: running sessions unattended in a nightly window, stopping, recovery, the writers' lock, the scheduled task |
 | [Pipeline](docs/pipeline.md) | the end-to-end flow, stage by stage, with the functions that implement each |
 | [Sandbox and safety model](docs/sandbox.md) | what the sandbox guarantees, how, the tests proving it, and its gaps |
 | [Verification and estimation](docs/verification-and-estimation.md) | the term protocol, the checks on each term, stop reasons, feasibility math |

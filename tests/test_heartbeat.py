@@ -136,6 +136,58 @@ def test_the_first_bad_line_is_kept_and_counted():
     assert h.heartbeats_ignored == 2 and h.first_bad_heartbeat == "@P bad first"
 
 
+# ------------------------------------------------------------------ the same identity on a term line
+
+def term(n: int, value: int, work: int | None = None, start: int = 1) -> str:
+    """A predicate driver's term line: the term is the k just tested and `work` counts every k from
+    `start`, so `work` defaults to the count that agrees with the value."""
+    return f"@T {n} {value} 1000 {value - start + 1 if work is None else work} 8000000"
+
+
+def test_a_term_line_that_keeps_the_identity_is_a_term():
+    h = harness()
+    assert h.on_line(term(1, 10), 1.0) is None
+    assert h.stop is None and h.reproduced == 1 and h.records[0].work == 10
+
+
+@pytest.mark.parametrize("work", [9, 11, 0])
+def test_a_term_line_that_breaks_the_identity_is_not_ours(work):
+    """The value is right and the index is right, so nothing else would refuse this line: only the work
+    count says the driver we built did not print it. It is a protocol stop, and the detail carries no
+    digit at all: nothing shows it to the model today, and it is kept that way because a forged line's
+    value could be a held-out term."""
+    h = harness()
+    said = h.on_line(term(1, 10, work=work), 1.0)
+    assert h.stop is not None and h.stop.value == "protocol" and said.startswith("protocol: ")
+    assert h.records == [] and h.reproduced == 0
+    assert not any(ch.isdigit() for ch in h.detail)
+
+
+def test_the_term_identity_is_measured_from_the_scan_start():
+    """`start` is not always 1: a sequence whose first term is 0 is scanned from 0."""
+    h = harness(ScanTracking(0, MAX_RATE))
+    assert h.on_line(term(1, 10, start=0), 1.0) is None and h.reproduced == 1      # work 11
+    h2 = harness(ScanTracking(0, MAX_RATE))
+    h2.on_line(term(1, 10), 1.0)                                                    # work 10: start 1's count
+    assert h2.stop is not None and h2.stop.value == "protocol"
+
+
+def test_the_term_identity_is_broken_before_the_value_is_compared():
+    """A forged line is refused as forged, not as a wrong term: nothing in it is worth comparing, and a
+    `wrong_term` detail would print the value it carries."""
+    h = harness()
+    h.on_line(term(1, 11, work=3), 1.0)        # the wrong value AND the wrong count
+    assert h.stop.value == "protocol"
+
+
+def test_without_the_caller_gate_a_term_line_is_not_checked():
+    """The a(n) and print-loop drivers hard-code `work` to 0 and a Python program counts its own work,
+    so the identity means nothing there and must not be applied."""
+    h = harness(scan=None)
+    assert h.on_line("@T 1 10 1000 0 8000000", 1.0) is None
+    assert h.stop is None and h.reproduced == 1
+
+
 # ------------------------------------------------------------------ the real driver
 
 pytestmark_sandbox = pytest.mark.skipif(bool(sandbox.runtime_problems()),

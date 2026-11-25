@@ -1,7 +1,8 @@
 import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
-import { fmtInt, useApi } from "./lib";
+import { daemonLine, type DaemonReport } from "./daemonline";
+import { fmtInt, tabKeys, useApi } from "./lib";
 import { PickMapView } from "./pickmap";
 import { AttemptsView, EstimatorView, HistoryView, QueueView, ReviewsView } from "./views";
 
@@ -20,6 +21,27 @@ interface Summary {
 }
 
 const plural = (n: number, word: string) => `${fmtInt(n)} ${word}${n === 1 ? "" : "s"}`;
+
+/** One line under the header, on every tab: whether `oeisbot daemon` is running and what it is doing
+ *  (daemonline.ts decides the words). Polled like everything else. Before the first answer an empty line of
+ *  the same height holds its place, so the tabs do not jump when it arrives. */
+function DaemonStrip() {
+  const { data, error } = useApi<DaemonReport>("/api/daemon");
+  // `useApi` keeps the last answer when a request fails. For this line that would be "Daemon running ..."
+  // left on screen by a server that has gone away, so a failure is said instead of shown as current.
+  if (error) return <div className="daemon idle"><span className="dot" aria-hidden="true" /><span>Daemon status unavailable ({error})</span></div>;
+  if (!data) return <div className="daemon idle" aria-hidden="true"><span className="dot" /><span>&nbsp;</span></div>;
+  const line = daemonLine(data, Date.now());
+  // Not a live region: the text carries a ticking "N min ago", and a screen reader would read the line
+  // out again every minute of every pick.
+  return (
+    <div className={`daemon ${line.tone}`}>
+      <span className="dot" aria-hidden="true" />
+      <span>{line.text}</span>
+      {line.notes.map((n) => <span className="note" key={n}>{n}</span>)}
+    </div>
+  );
+}
 
 function App() {
   const fromHash = () => TABS.find((t) => `#${t.id}` === window.location.hash)?.id ?? "estimator";
@@ -59,10 +81,13 @@ function App() {
             (data.synced_at && !isNaN(new Date(data.synced_at).getTime()) ? `, synced ${new Date(data.synced_at).toLocaleString()}` : "") : ""}
         </span>
       </div>
-      <nav className="tabs" role="tablist" aria-label="Views">
+      <DaemonStrip />
+      {/* One stop for the Tab key, on the selected tab; Left, Right, Home and End move the focus along the row
+          and Enter or Space opens the focused tab (tabs.tabAfter says why moving does not open). */}
+      <nav className="tabs" role="tablist" aria-label="Views" onKeyDown={tabKeys(TABS.map((t) => `tab-${t.id}`))}>
         {TABS.map((t) => (
           <button key={t.id} id={`tab-${t.id}`} role="tab" aria-selected={tab === t.id} aria-controls="tab-panel"
-                  onClick={() => choose(t.id)}>{t.label}</button>
+                  tabIndex={tab === t.id ? 0 : -1} onClick={() => choose(t.id)}>{t.label}</button>
         ))}
       </nav>
       <div id="tab-panel" role="tabpanel" aria-labelledby={`tab-${tab}`}>

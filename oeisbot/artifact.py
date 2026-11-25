@@ -22,7 +22,7 @@ import shutil
 from dataclasses import asdict
 from pathlib import Path
 
-from . import config
+from . import config, guard
 from .config import Budgets
 from .strategies import codegen
 from .terms import format_bfile
@@ -36,6 +36,7 @@ def write(result: AttemptResult, attempt_id: int, entry_name: str, budgets: Budg
           recheck_note: str, root: Path | None = None) -> Path:
     a = result.known.a_number
     folder = (root or config.ARTIFACTS) / a / f"attempt-{attempt_id}"
+    guard.refuse_if_real(folder, "writing an artifact folder")  # never from a test (oeisbot.guard)
     if (folder / INCOMPLETE).exists():
         shutil.rmtree(folder)
     folder.mkdir(parents=True, exist_ok=False)

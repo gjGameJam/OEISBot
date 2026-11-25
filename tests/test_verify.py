@@ -486,3 +486,153 @@ def test_gp_memory_is_judged_against_the_stack_ceiling_not_the_job_cap(tmp_path)
     n_gp, n_py = halted_at(gp), halted_at(py_run)
     assert n_gp < n_py
     assert gp.predictions[-1].mem_high > gp.stack_cap
+
+
+# ------------------------------------------------------------------ interrupted (item 58)
+
+def _fed(h: Harness, upto: int) -> Harness:
+    for n in range(upto):
+        h.on_line(f"@T {n} {fib(n)} {n * 1000} {n} 8000000", n * 0.01)
+    return h
+
+
+def test_a_stop_request_ends_the_run_as_interrupted_in_either_phase():
+    """Item 58, driven in memory: `should_stop` is asked on every tick. Before verification the run is a
+    `failed` row, after it a `verified` one -- and in both the stop is `interrupted`, which no dead-end
+    rule matches."""
+    stop = {"now": False}
+    h = _fed(Harness(FIB_OK, FIB_KNOWN, FAST, should_stop=lambda: stop["now"]), 5)
+    assert h.on_tick(1.0) is None                                   # not asked to stop: nothing happens
+    stop["now"] = True
+    assert h.on_tick(2.0).startswith("interrupted: stopped on request 2.0 s into the run, during verification")
+    r = h._result(RunResult(Status.STOPPED, 1, 2.1, 2.0, 0, 6 << 30, "stop", [], "noise on stderr\n"), None)
+    assert (r.stop, r.outcome, r.verified) == (Stop.INTERRUPTED, "failed", False)
+    assert "noise" not in r.detail and Stop.INTERRUPTED not in verify._TAIL_STOPS
+
+    stop["now"] = False
+    h = _fed(Harness(FIB_OK, FIB_KNOWN, replace(FAST, extend_wall_s=1000), should_stop=lambda: stop["now"]), 31)
+    assert h.verified_at is not None and h.on_tick(1.0) is None
+    stop["now"] = True
+    assert "during the extension" in h.on_tick(3.0)
+    r = h._result(RunResult(Status.STOPPED, 1, 3.1, 3.0, 0, 6 << 30, "stop"), None)
+    assert (r.stop, r.outcome, r.verified, r.new_terms) == (Stop.INTERRUPTED, "verified", True, [])
+
+
+def test_a_stop_request_wins_over_a_budget_that_ran_out_on_the_same_tick():
+    """The order inside `on_tick` is the safety property. A run that is both interrupted and past a
+    budget must be recorded as the stop that retires nothing: it may be past the budget only because
+    the machine slept, which is exactly when a stop is asked for."""
+    h = _fed(Harness(FIB_OK, FIB_KNOWN, FAST, should_stop=lambda: True), 5)
+    assert h.on_tick(FAST.verify_wall_s + 100).startswith("interrupted")          # not verify_timeout
+    assert h.stop is Stop.INTERRUPTED
+    h = _fed(Harness(FIB_OK, FIB_KNOWN, replace(FAST, extend_wall_s=1000), should_stop=lambda: True), 31)
+    assert h.on_tick(h.verified_at + 5000).startswith("interrupted")              # not extend_budget
+    assert h.stop is Stop.INTERRUPTED
+    # and without a request the budgets act exactly as before
+    h = _fed(Harness(FIB_OK, FIB_KNOWN, FAST, should_stop=lambda: False), 5)
+    assert h.on_tick(FAST.verify_wall_s + 100).startswith("verify_timeout")
+    h = _fed(Harness(FIB_OK, FIB_KNOWN, FAST), 5)                                 # the default: no callback
+    assert h.should_stop is None and h.on_tick(FAST.verify_wall_s + 100).startswith("verify_timeout")
+    # any true answer is a request, not only the object True
+    h = _fed(Harness(FIB_OK, FIB_KNOWN, FAST, should_stop=lambda: "the window closed"), 5)
+    assert h.on_tick(1.0).startswith("interrupted") and h.stop is Stop.INTERRUPTED
+
+
+def test_no_line_is_read_after_the_harness_has_halted():
+    """The sandbox ends the job only after the halting callback has returned, so the reader thread can
+    hand over one more line. Reading it let a run that was stopped during verification be recorded as
+    verified -- its last known term arriving a moment after the halt -- with a detail saying otherwise."""
+    h = _fed(Harness(FIB_OK, FIB_KNOWN, FAST, should_stop=lambda: True), 30)      # one known term short
+    assert h.on_tick(1.0).startswith("interrupted")
+    assert h.on_line(f"@T 30 {fib(30)} 30000 30 8000000", 1.01) is None           # the last known term, too late
+    assert h.on_line(f"@T 31 {fib(31)} 31000 31 8000000", 1.02) is None
+    r = h._result(RunResult(Status.STOPPED, 1, 1.1, 1.0, 0, 6 << 30, "stop"), None)
+    assert (r.stop, r.outcome, r.verified, r.reproduced, len(r.records)) == (Stop.INTERRUPTED, "failed", False, 30, 30)
+    assert h.verified_at is None and not h.predictions
+    # the same for a budget stop: a late line cannot turn a verify_timeout into a verified row
+    h = _fed(Harness(FIB_OK, FIB_KNOWN, FAST), 30)
+    assert h.on_tick(FAST.verify_wall_s + 1).startswith("verify_timeout")
+    h.on_line(f"@T 30 {fib(30)} 30000 30 8000000", FAST.verify_wall_s + 1.01)
+    r = h._result(RunResult(Status.STOPPED, 1, 21.1, 21.0, 0, 6 << 30, "stop"), None)
+    assert (r.stop, r.verified, r.reproduced) == (Stop.VERIFY_TIMEOUT, False, 30)
+    # One line is still acted on after a halt: the driver's contract error, which can only take terms away
+    h = _fed(Harness(FIB_OK, FIB_KNOWN, replace(FAST, extend_wall_s=1000)), 32)   # verified, one new term
+    assert h.on_tick(h.verified_at + 2000).startswith("extend_budget")
+    assert h.on_line("@ERR some other error", 9.0) is None and h.records[-1].kind == "new"
+    assert h.on_line(f"@ERR {verify.CONTRACT_ERROR}: members out of order", 9.1) is None
+    assert [r.kind for r in h.records[-2:]] == ["known", "void"]
+    r = h._result(RunResult(Status.STOPPED, 1, 9.2, 9.0, 0, 6 << 30, "stop"), None)
+    assert (r.stop, r.outcome, r.new_terms) == (Stop.EXTEND_BUDGET, "verified", [])   # the stop stands; no term does
+    # and a wrong term is final too: nothing after it is counted
+    h = _fed(Harness(FIB_OK, FIB_KNOWN, FAST), 5)
+    assert h.on_line("@T 5 999 5000 5 8000000", 0.05).startswith("wrong_term")
+    assert h.on_line(f"@T 5 {fib(5)} 5000 5 8000000", 0.06) is None and h.reproduced == 5
+
+
+def test_a_first_stop_is_not_overwritten_by_a_later_request():
+    """`_halt` keeps the first stop. A wrong term followed by a stop request is still a wrong term: the
+    program's own failure was established before anyone asked, and it must retire the program."""
+    stop = {"now": False}
+    h = _fed(Harness(FIB_OK, FIB_KNOWN, FAST, should_stop=lambda: stop["now"]), 5)
+    assert h.on_line("@T 5 999 5000 5 8000000", 0.05).startswith("wrong_term")
+    stop["now"] = True
+    h.on_tick(1.0)
+    assert h.stop is Stop.WRONG_TERM
+
+
+def test_a_real_run_is_interrupted_through_the_sandbox(monkeypatch):
+    """End to end: the request reaches a running program through the sandbox's tick, the job is ended,
+    and the terms that arrived first are kept as what they were."""
+    prog = py("""
+        import time
+        def terms(work):
+            a, b, n = 0, 1, 0
+            while True:
+                if n > 30:
+                    time.sleep(60)          # verified, then nothing new for a long time
+                yield n, a
+                a, b, n = b, a + b, n + 1
+    """)
+    r = run_attempt(prog, FIB_KNOWN, replace(FAST, extend_wall_s=120), should_stop=_once_verified(monkeypatch))
+    assert (r.stop, r.outcome, r.verified, r.reproduced) == (Stop.INTERRUPTED, "verified", True, 31)
+    assert r.run.status is Status.STOPPED and r.run.wall_s < 60, r.run
+
+
+def _once_verified(monkeypatch):
+    """A `should_stop` that is true once the run in hand has reproduced every known term."""
+    state = {"harness": None}
+    real = Harness.on_line
+
+    def spy(self, line, t):
+        state["harness"] = self
+        return real(self, line, t)
+
+    monkeypatch.setattr(Harness, "on_line", spy)
+    return lambda: state["harness"] is not None and state["harness"].verified_at is not None
+
+
+def test_a_should_stop_that_raises_in_a_run_is_a_harness_error(monkeypatch):
+    """The sandbox guards its callbacks: a raising `should_stop` ends the job and is recorded as our own
+    fault, never the program's -- outside every dead-end rule. (It is still a `failed` row, so it does
+    count in the failure penalty; `attempt_sequence` says so.)"""
+    from oeisbot import db
+    armed = _once_verified(monkeypatch)
+    prog = py("""
+        import time
+        def terms(work):
+            a, b, n = 0, 1, 0
+            while True:
+                if n > 30:
+                    time.sleep(60)
+                yield n, a
+                a, b, n = b, a + b, n + 1
+    """)
+
+    def broken() -> bool:
+        if armed():
+            raise RuntimeError("clock fault")
+        return False
+
+    r = run_attempt(prog, FIB_KNOWN, replace(FAST, extend_wall_s=120), should_stop=broken)
+    assert r.stop is Stop.HARNESS_ERROR and "on_tick raised RuntimeError: clock fault" in r.detail
+    assert r.stop.value not in db.DETERMINISTIC_FAILURES and r.run.wall_s < 60

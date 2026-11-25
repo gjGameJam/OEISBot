@@ -39,7 +39,14 @@ The stored column is informational; selection never reads it.
 
 At pick time: `× 2^k`, capped at `× 64`, where `k` counts earlier attempts on that sequence with at least
 one row whose outcome is `failed` or `verified` (skips, superseded runs, `recheck_pending` runs and wins
-do not count). An attempt is one `attempt_sequence` call (one sequence of an `oeisbot attempt` command,
+do not count). **A row whose stop is `interrupted` does not count either** (since history item 58,
+`db.INTERRUPTED`): the run was stopped by its caller, `oeisbot daemon`, for reasons of the machine or
+the clock, and counting it would make every sequence a stop happened to land on twice as hard to pick.
+An attempt that has another `failed` or `verified` row beside the interrupted one still counts once.
+Two kinds of row that are not the program's doing do still count, because they are `failed` rows with
+another stop: a `harness_error`, and a `verify_timeout` on a machine too busy to give the run its CPU
+(which is no longer a dead end, see [pipeline](pipeline.md#4a-the-entrys-own-pari-programs-always-first)).
+An attempt is one `attempt_sequence` call (one sequence of an `oeisbot attempt` command,
 or one pick of a session). It writes a row per program run, up to three PARI runs and three model
 generations, and all of them carry the same `extra.attempt_call`, so the attempt counts once. Until
 2026-09-19 (offer D) every row counted; the 108 run rows written before then were given their attempt's
@@ -55,6 +62,16 @@ probability.
 
 `pick` draws `k` distinct candidates with a sum tree (a binary tree of partial sums: `O(log n)` sampling
 and updates). After each draw that leaf's weight is set to 0. `--seed` fixes the random generator.
+
+**Not drawn at all** (`select.candidates`' blocked set): a sequence with a review at `new`, `reviewing`
+or `submitted`, one with a win waiting for its re-check, and, since history item 58, one with a
+`rejected` review. A win for a sequence with a rejected review is refused a review
+(`db.ReviewRefused`), so drawing it could only spend the run and write an artifact folder nobody is
+shown, and an unattended loop would do that every time the draw landed on it. Only the draw is blocked:
+`oeisbot attempt A...` still runs such a sequence. It stays out for as long as the rejected row stands.
+**No review status returns a sequence to the draw any more**: the four statuses a row can have (`new`,
+`reviewing`, `submitted`, `rejected`) all block it, and no command deletes a review row. Today the
+rejected ones are A162762 and A162764 (see [known limitations](known-limitations.md#the-daemon-and-the-writers-lock)).
 
 Before the draw, sessions (and `oeisbot queue` and `oeisbot pick`) leave out sequences an attempt could
 only skip: no supported PARI program, every program a known dead end, or every program out of reach of
@@ -370,7 +387,10 @@ as the skip reason `no_supported_program`.
   matches are **inert** — A107263 and A393125 already yield no candidate. The point is not the three:
   it is that **A162762 and A162764 stay out** now that their review rows are closed (`rejected`,
   2026-09-28, history item 49), instead of
-  returning at 2.32x and 1.56x the mean pick weight to repeat the whole thing.
+  returning at 2.32x and 1.56x the mean pick weight to repeat the whole thing. (Since history item 58
+  they are also out for a second reason: a sequence with a `rejected` review is not drawn at all, so
+  they no longer reach this check during selection and are not counted under `no_supported_program`
+  or `conjectural_program`.)
 - **It distinguishes the siblings, which nothing could before.** Of A162761–A162764, exactly one
   (A162761) is proved; its `%F` records "edited and proved by _M. F. Hasler_" and its `%o` carries no
   disclaimer, so it keeps its candidate while the other three lose theirs. Note that a check reading
@@ -512,7 +532,9 @@ cut at 10,000 characters in total.
    `verify_timeout`: every generation of a stage runs under the same verify budget, so the same program
    would run out of it again (the offer-C measurement reran such programs 7 times, 4 programs in all,
    and each time it ran out again, reproducing the same number of known terms). This is the in-stage
-   form of `db.is_dead_end`'s rule for a `verify_timeout`; `DETERMINISTIC_FAILURES` itself leaves it
+   form of `db.is_dead_end`'s rule for a `verify_timeout`, without the CPU condition that rule gained in
+   history item 58 (a timeout on a busy machine still makes a repeat here, costing one generation);
+   `DETERMINISTIC_FAILURES` itself leaves it
    out, so a later attempt with a `--verify-s` longer than the time a PARI program already ran still
    runs it. A repeat is listed among the rejections, uses up its generation (a repeat always follows a
    run, so the stage still has an attempt row), and the retry says
@@ -536,7 +558,13 @@ cut at 10,000 characters in total.
    and found no new term", which the artifact README and the dashboard's Review inbox show as **Compare
    with the entry's program**, so the reviewer checks the model's new terms against the search the entry's
    program already made (its run log is named in that attempt's `extra`).
-9. **Stop** at the first verified program, even if it found no new terms.
+9. **Stop** at the first verified program, even if it found no new terms. **Stop too when the caller
+   asks** (since history item 58): `generate_and_verify(should_stop=...)` asks after the classify step,
+   before each generation's model call and again before its run (a local model can take minutes over a
+   reply), and a run that itself ended `interrupted` is not retried and nothing about it is sent to the
+   model. In each case the stage ends with `CodegenOutcome.stopped` set, and `attempt_sequence` then
+   records no model-stage skip row for it. No caller passes `should_stop` together with a model today:
+   `oeisbot daemon` runs PARI sessions only.
 10. **Retry** after a failed run with a message holding the stop reason and detail, plus hints:
     - `bad_index`: the first index must be the offset, then consecutive. If the index the program emitted
       equals a held-out term that the prompt does not also show, either sign (a program that put a value

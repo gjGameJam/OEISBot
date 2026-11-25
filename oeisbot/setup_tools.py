@@ -109,6 +109,9 @@ def _probe_version(argv: list[str], *, stderr: bool, must_contain: str) -> str:
         res = subprocess.run(argv, capture_output=True, timeout=RUNTIME_PROBE_TIMEOUT_S,
                              stdin=subprocess.DEVNULL,        # gp is a REPL: never let it read a tty
                              encoding="utf-8", errors="replace",   # not the ANSI codepage subprocess defaults to
+                             # no console window: under `pythonw` (the scheduled daemon) each probe would
+                             # otherwise flash one on the desktop at every session start (item 58)
+                             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
                              check=False)
     except Exception:
         return UNKNOWN_VERSION

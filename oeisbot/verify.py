@@ -22,6 +22,7 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from importlib import resources
 from pathlib import Path
+from typing import Callable
 
 from . import config, estimate, sandbox
 from .config import Budgets
@@ -67,6 +68,10 @@ class Stop(str, Enum):
     OUTPUT_CAP = "output_cap"
     LAUNCH_ERROR = "launch_error"
     HARNESS_ERROR = "harness_error"      # our own callback raised (sandbox Status.CALLBACK_ERROR): never the program's fault
+    # The caller asked the run in hand to stop (the daemon's stop request, or the end of its window; item
+    # 58). It says nothing about the program: outside db.DETERMINISTIC_FAILURES and matched by no clause of
+    # db.is_dead_end, so it retires nothing, and select.candidates leaves it out of the failure penalty
+    INTERRUPTED = "interrupted"
     # extension-phase stops
     VERIFIED_ONLY = "verified_only"      # extension not requested
     SEARCHED_BOUND = "searched_bound"    # the entry publishes a bound the extension cannot reach
@@ -276,9 +281,11 @@ def brief_detail(detail: str) -> str:
 class Harness:
     def __init__(self, program: Program, known: KnownTerms, budgets: Budgets, *, name: str = "",
                  extend: bool = True, log_path: Path | None = None, searched_bound: "Bound | None" = None,
-                 scan: ScanTracking | None = None):
+                 scan: ScanTracking | None = None, should_stop: Callable[[], bool] | None = None):
         self.program, self.known, self.budgets, self.name = program, known, budgets, name
         self.extend = extend
+        # asked on every tick; True ends the run as `interrupted` (see Stop.INTERRUPTED)
+        self.should_stop = should_stop
         # the caller gate for progress heartbeats: predicate form only (see ScanTracking)
         self.scan = scan
         self.scan_reached: int | None = None
@@ -363,6 +370,20 @@ class Harness:
         self.scan_reached = k
 
     def on_line(self, line: str, t: float) -> str | None:
+        # Nothing after the first halt is read. The sandbox ends the job only after the callback that
+        # halted has returned and let go of the lock, so the output reader can get more lines in before
+        # it sees the stop -- and a run stopped "during verification" could then be recorded as
+        # verified, its last known term having arrived a moment later (item 58's review; the same held
+        # for a `verify_timeout`). The price is that a real new term arriving in that instant is not
+        # counted, as one arriving an instant later never was.
+        # One line is still acted on: the driver's contract error. It says the new terms may be
+        # misplaced, and voiding them can only take a result away, never grant one
+        if self.stop is not None:
+            if line.startswith("@ERR") and line[4:].strip().startswith(CONTRACT_ERROR + ":"):
+                for rec in self.records:
+                    if rec.kind == "new":
+                        rec.kind = "void"
+            return None
         if not line.startswith("@"):
             return None
         if line.startswith("@DONE"):
@@ -400,6 +421,19 @@ class Harness:
         # of the tuple above -- and a dead reader thread, which is a silent failure rather than a loud one.
         except (ValueError, OverflowError):
             return self._halt(Stop.PROTOCOL, f"malformed term line: {line[:200]!r}")
+
+        # The predicate driver's term line states one fact twice, as its heartbeats do (`ScanTracking`):
+        # the term IS the k just tested, and `work` counts every k from `start`. A line that breaks the
+        # identity was not printed by the driver we built -- the entry's own code wrote something that
+        # looks like a term -- and its `work` would go on to set the rate the searched-bound check and
+        # the cost fit reason with. Checked before the index and the value, because nothing in a line
+        # that is not ours is worth comparing. The detail carries no number. Nothing shows it to the
+        # model today (a PARI run reaches a prompt only once verified, through `slow_program_note`), and
+        # it is kept value-free so that no later path can: the value on such a line could be a held-out
+        # term.
+        if self.scan is not None and value - self.scan.start + 1 != work:
+            return self._halt(Stop.PROTOCOL, "a term line's work count does not match its value, which "
+                                             "the predicate driver's own lines always do")
 
         prev = self.records[-1] if self.records else None
         expected = prev.n + 1 if prev else self.known.first_index
@@ -493,6 +527,13 @@ class Harness:
                 f"can reach in {self.budgets.extend_wall_s:g} s at the rate measured while verifying")
 
     def on_tick(self, t: float) -> str | None:
+        # Asked first, so a tick on which the run is both interrupted and out of a budget is recorded as
+        # the stop that retires nothing: an interrupted run did not get the time its row would claim. If
+        # `should_stop` itself raises, the sandbox reports a callback error (`harness_error`), which
+        # retires nothing either
+        if self.should_stop is not None and self.should_stop():
+            phase = "verification" if self.verified_at is None else "the extension"
+            return self._halt(Stop.INTERRUPTED, f"stopped on request {t:.1f} s into the run, during {phase}")
         if self.verified_at is None:
             if t > self.budgets.verify_wall_s:
                 return self._halt(Stop.VERIFY_TIMEOUT, f"reproduced {self.reproduced} of {self.known.count} "
@@ -603,6 +644,7 @@ class Harness:
 
 def run_attempt(program: Program, known: KnownTerms, budgets: Budgets = config.DEFAULT_BUDGETS, *,
                 name: str = "", extend: bool = True, log_path: Path | None = None,
-                searched_bound: "Bound | None" = None, scan: ScanTracking | None = None) -> AttemptResult:
+                searched_bound: "Bound | None" = None, scan: ScanTracking | None = None,
+                should_stop: Callable[[], bool] | None = None) -> AttemptResult:
     return Harness(program, known, budgets, name=name, extend=extend, log_path=log_path,
-                   searched_bound=searched_bound, scan=scan).run()
+                   searched_bound=searched_bound, scan=scan, should_stop=should_stop).run()

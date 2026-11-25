@@ -1,11 +1,12 @@
-import { memo, useEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from "react";
 import { Tooltip, type TipRow, type TipState } from "./charts";
 import { describeError, fmtShare } from "./format";
-import { DataTable, OeisLink, Tile, fmtInt, fmtTime, useApi, useWidth, type Column } from "./lib";
+import { DataTable, OeisLink, Tile, fmtInt, fmtTime, tabKeys, useApi, useWidth, type Column } from "./lib";
 import {
   BIN_LABELS, CHANGE_BINS, LUMP, MAX_ALPHA, NEUTRAL_BIN, changeBin, failureReason, fmtChange, focusOrder, labelFits, layoutGroups,
   neighbour, parseAlpha, pickmapPath, undrawn, type Dir, type Leaf, type PlacedGroup, type PlacedLeaf, type Rect,
 } from "./treemap";
+import { tapActs } from "./tabs";
 
 // ============================================================================ pick map
 
@@ -160,6 +161,10 @@ function Canvas({ layout, rows, byId, bands, compared, headers, width, height, b
   const svgRef = useRef<SVGSVGElement>(null);
   const refocus = useRef(false);
   const dismissed = useRef<string | null>(null);   // the tile whose tooltip Escape closed, until the focus moves to a tile again
+  // What the last press came from, and the tile a touch has put a tooltip up for and may now open (tabs.tapActs).
+  const pointer = useRef<string | null>(null);
+  const armed = useRef<string | null>(null);
+  useEffect(() => { if (!shown) armed.current = null; }, [shown]);   // no tooltip on show, nothing to confirm
   const members = useMemo(() => {
     const m = new Map<string, string[]>();
     for (const g of layout) for (const l of g.leaves) if (l.members) m.set(l.id, l.members);
@@ -175,7 +180,7 @@ function Canvas({ layout, rows, byId, bands, compared, headers, width, height, b
   const focusIds = useMemo(() => new Set(order.map((i) => i.id)), [order]);
   const stopId = stop != null && focusIds.has(stop) ? stop : order[0]?.id ?? null;
 
-  const tipFor = (id: string, x: number, y: number): TipState => {
+  const tipFor = (id: string, x: number, y: number, touch = false): TipState => {
     const lump = members.get(id) ?? null;
     const look = lookOf(id, lump, byId, compared);
     const rowsOut: TipRow[] = [{ label: "Chance of being picked first", value: fmtShare(look.p) }];
@@ -189,12 +194,13 @@ function Canvas({ layout, rows, byId, bands, compared, headers, width, height, b
     if (lump) {
       const band = bandOfKey(id.slice(LUMP.length));
       rowsOut.push({ label: "Difficulty band", value: bandLabel(band) });
-      rowsOut.push({ label: "Click or Enter", value: headers ? "to open this band" : "to open the table view" });
+      rowsOut.push({ label: touch ? "Tap again" : "Click or Enter", value: headers ? "to open this band" : "to open the table view" });
       return { x, y, title: `${fmtInt(lump.length)} small tiles`, rows: rowsOut };
     }
     const r = byId.get(id)!;
     rowsOut.push({ label: "Difficulty", value: r.d.toFixed(3) });
     rowsOut.push({ label: "Band", value: bandLabel(r.band) });
+    if (touch) rowsOut.push({ label: "Tap again", value: "to open the entry on oeis.org" });
     return { x, y, title: `${r.a} ${r.name}`, rows: rowsOut };
   };
 
@@ -210,6 +216,7 @@ function Canvas({ layout, rows, byId, bands, compared, headers, width, height, b
   const showFor = (el: Element): boolean => {
     const id = el.getAttribute("data-id");
     if (id == null || !focusIds.has(id) || dismissed.current === id || !el.matches(":focus-visible")) return false;
+    if (id !== armed.current) armed.current = null;   // the tooltip about to show is another tile's: nothing is confirmed
     const box = el.getBoundingClientRect();
     setShown({ tip: tipFor(id, box.left + box.width / 2, box.top + box.height / 2), by: "focus" });
     return true;
@@ -246,7 +253,10 @@ function Canvas({ layout, rows, byId, bands, compared, headers, width, height, b
 
   const onMove = (e: MouseEvent<SVGSVGElement>) => {
     const id = (e.target as Element).closest?.("[data-id]")?.getAttribute("data-id");
-    const tip = id ? tipFor(id, e.clientX, e.clientY) : null;
+    // A touch makes up a mouse move just before its click. Over the armed tile it keeps the "tap again" line;
+    // over anything else the tile is disarmed, because its tooltip is no longer the one on show.
+    if (id !== armed.current) armed.current = null;
+    const tip = id ? tipFor(id, e.clientX, e.clientY, armed.current === id) : null;
     setShown((s) => (tip ? { tip, by: "mouse" } : s?.by === "mouse" ? null : s));   // over a header or a frame: only a mouse tooltip ends
   };
   const onClick = (e: MouseEvent<SVGSVGElement>) => {
@@ -255,8 +265,14 @@ function Canvas({ layout, rows, byId, bands, compared, headers, width, height, b
     const id = target.getAttribute("data-id");
     const key = target.getAttribute("data-band");
     if (key) onBand(bandOfKey(key));
-    else if (id) activate(id);
+    else if (id && tapActs(pointer.current, armed.current, id)) { armed.current = null; activate(id); }
+    else if (id) {
+      // a first tap: the tooltip, where the finger is, saying that a second tap opens it
+      setShown({ tip: tipFor(id, e.clientX, e.clientY, true), by: "mouse" });
+      armed.current = id;
+    }
   };
+  const onPointerDown = (e: PointerEvent<SVGSVGElement>) => { pointer.current = e.pointerType; };
   const onFocus = (e: FocusEvent<SVGSVGElement>) => {
     const id = idOf(e);
     if (id == null || !focusIds.has(id)) return;
@@ -285,7 +301,7 @@ function Canvas({ layout, rows, byId, bands, compared, headers, width, height, b
 
   return (
     <>
-      <svg ref={svgRef} width={width} height={height} role="group" onMouseMove={onMove} onClick={onClick}
+      <svg ref={svgRef} width={width} height={height} role="group" onMouseMove={onMove} onClick={onClick} onPointerDown={onPointerDown}
            onMouseLeave={() => setShown((s) => (s?.by === "mouse" ? null : s))} onFocus={onFocus} onBlur={onBlur} onKeyDown={onKeyDown}
            aria-label={`Treemap of ${fmtInt(rows.length)} sequences; area is pick chance${compared ? ", colour is the change since the earlier snapshot" : ""}. Arrow keys move between tiles, Enter opens one, Escape closes the tooltip. The table view below has the same data.`}>
         <defs>
@@ -516,10 +532,13 @@ export function PickMapView() {
               <p className="muted">The {pool === "model" ? "model" : "PARI"} pool is empty: no sequence is a candidate for it right now.</p>
             ) : (
               <>
-                <div className="subtabs" role="tablist" aria-label="Difficulty band">
-                  <button className="chip" role="tab" id="pm-tab-all" aria-controls="pm-panel" aria-selected={activeBand == null} onClick={() => setBand(null)}>All bands</button>
+                <div className="subtabs" role="tablist" aria-label="Difficulty band"
+                     onKeyDown={tabKeys(["pm-tab-all", ...shown.bands.map((b) => `pm-tab-${b.band}`)])}>
+                  <button className="chip" role="tab" id="pm-tab-all" aria-controls="pm-panel" aria-selected={activeBand == null}
+                          tabIndex={activeBand == null ? 0 : -1} onClick={() => setBand(null)}>All bands</button>
                   {shown.bands.map((b) => (
-                    <button key={b.band} id={`pm-tab-${b.band}`} className="chip" role="tab" aria-controls="pm-panel" aria-selected={activeBand === b.band} onClick={() => setBand(b.band)}
+                    <button key={b.band} id={`pm-tab-${b.band}`} className="chip" role="tab" aria-controls="pm-panel" aria-selected={activeBand === b.band}
+                            tabIndex={activeBand === b.band ? 0 : -1} onClick={() => setBand(b.band)}
                             title={`${fmtInt(b.n)} sequences holding ${fmtShare(b.share)} of the picks`}>
                       {b.label}{" "}<span className="muted">{fmtInt(b.n)} · {fmtShare(b.share)}</span>
                     </button>

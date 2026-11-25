@@ -225,3 +225,262 @@ def test_difficulty_features():
     assert select.difficulty(SequenceRow(**{**base, "keywords": "nonn,more,hard"})) > plain
     assert select.difficulty(SequenceRow(**{**base, "more_credits": 3})) > plain
     assert select.difficulty(SequenceRow(**{**base, "data_last_digits": 80})) > plain
+
+
+# ------------------------------------------------------------------ git with a time limit (item 58)
+
+_STALLED_GIT = """
+import subprocess, sys, time
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])   # git's network helper
+open(sys.argv[1], "w").write(str(child.pid))
+time.sleep(120)
+"""
+
+
+def _alive(pid: int) -> bool:
+    import subprocess
+    import sys
+    if sys.platform == "win32":
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout
+        return str(pid) in out
+    try:
+        import os
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def test_a_git_that_stalls_is_ended_with_the_helpers_it_started(real_git, monkeypatch, tmp_path):
+    """`oeisbot daemon` syncs with nobody watching. A fetch stalled behind the proxy used to wait for
+    ever, holding the writers' lock into the next day; and ending git alone leaves its helper holding
+    the connection and the pipes."""
+    import subprocess
+    import sys
+    import time as clock
+    pidfile = tmp_path / "helper.pid"
+    real_popen = subprocess.Popen
+    # only `git` is stood in for: `oeisdata.subprocess` is the one subprocess module, and the taskkill that
+    # ends the tree goes through the same Popen
+    monkeypatch.setattr(oeisdata.subprocess, "Popen", lambda argv, **kw: real_popen(
+        [sys.executable, "-c", _STALLED_GIT, str(pidfile)] if argv[0] == "git" else argv, **kw))
+    began = clock.monotonic()
+    with pytest.raises(oeisdata.GitTimeout, match=r"`git fetch --depth 1 origin` did not finish in 3 s and was ended"):
+        real_git("fetch", "--depth", "1", "origin", cwd=tmp_path, timeout=3)
+    assert clock.monotonic() - began < 60
+    helper = int(pidfile.read_text())
+    for _ in range(50):
+        if not _alive(helper):
+            break
+        clock.sleep(0.2)
+    assert not _alive(helper)
+
+
+def test_git_with_a_time_limit_still_returns_output_and_raises_on_failure(real_git, monkeypatch, tmp_path):
+    import subprocess
+    import sys
+    real_popen = subprocess.Popen
+
+    def fake(code):
+        monkeypatch.setattr(oeisdata.subprocess, "Popen", lambda argv, **kw: real_popen(
+            [sys.executable, "-c", code] if argv[0] == "git" else argv, **kw))
+
+    fake("print('  c0ffee1234  ')")
+    assert real_git("rev-parse", "HEAD", cwd=tmp_path, timeout=60) == "c0ffee1234"
+    fake("import sys; sys.stderr.write('fatal: not a git repository'); sys.exit(128)")
+    with pytest.raises(subprocess.CalledProcessError) as failed:
+        real_git("rev-parse", "HEAD", cwd=tmp_path, timeout=60)
+    assert failed.value.returncode == 128 and "not a git repository" in failed.value.stderr
+
+
+def _mirror(tmp_path, monkeypatch):
+    repo = tmp_path / "oeisdata"
+    (repo / ".git").mkdir(parents=True)
+    monkeypatch.setattr(config, "OEISDATA", repo)
+    return repo / ".git"
+
+
+def _aged(path, seconds):
+    import os
+    import time as clock
+    path.write_text("")
+    old = clock.time() - seconds
+    os.utime(path, (old, old))
+    return path
+
+
+def test_update_passes_the_time_limit_on_and_clears_only_old_lock_files(monkeypatch, tmp_path):
+    """A killed git leaves `index.lock` (a reset) or `shallow.lock` (a shallow fetch), and either makes
+    every later sync fail. Old ones are removed; a young one may belong to a git that is still running --
+    an orphan of a killed daemon, or a person's -- and is left for git itself to complain about."""
+    git = _mirror(tmp_path, monkeypatch)
+    old_index = _aged(git / "index.lock", oeisdata.STALE_GIT_LOCK_S + 60)
+    old_shallow = _aged(git / "shallow.lock", oeisdata.STALE_GIT_LOCK_S + 60)
+    young = _aged(git / "HEAD.lock", oeisdata.STALE_GIT_LOCK_S - 60)
+    other = _aged(git / "config.lock", 99999)                    # not one of git's that a sync can leave
+    calls: list = []
+    monkeypatch.setattr(oeisdata, "_git", lambda *a, **k: calls.append((a[:2], k.get("timeout"))) or "c0ffee")
+    lines: list[str] = []
+    assert oeisdata.update(lines.append, timeout=600) == "c0ffee"
+    assert calls == [(("fetch", "--depth"), 600), (("reset", "--hard"), 600), (("rev-parse", "HEAD"), 600)]
+    assert not old_index.exists() and not old_shallow.exists() and young.exists() and other.exists()
+    assert sum("left by a git command that was ended" in l for l in lines) == 2
+    assert oeisdata.STALE_GIT_LOCK_S == 300
+    # without a limit (a person at the console) nothing is removed for them: git's own message tells them
+    _aged(git / "index.lock", 99999)
+    calls.clear()
+    oeisdata.update(lambda m: None)
+    assert [c[1] for c in calls] == [None, None, None] and (git / "index.lock").exists()
+
+
+def test_a_reset_that_fails_is_undone_before_the_error_goes_on(monkeypatch, tmp_path):
+    """A reset ended half way leaves the tree part old, part new, with one file possibly cut short. The
+    night would then read entries from it: a truncated DATA line is a `wrong_term` for a correct program,
+    and that is a dead end for good. The tree is put back first (no network), and only then is the sync
+    reported as failed."""
+    git = _mirror(tmp_path, monkeypatch)
+    calls: list = []
+
+    def fake(*a, **k):
+        calls.append(a[:3])
+        if a[:3] == ("reset", "--hard", "FETCH_HEAD"):
+            (git / "index.lock").write_text("")                  # what the killed reset leaves
+            raise oeisdata.GitTimeout("`git reset --hard FETCH_HEAD` did not finish in 600 s and was ended")
+        return "c0ffee"
+
+    monkeypatch.setattr(oeisdata, "_git", fake)
+    lines: list[str] = []
+    with pytest.raises(oeisdata.GitTimeout):                     # the sync still failed, and says so
+        oeisdata.update(lines.append, timeout=600)
+    assert calls == [("fetch", "--depth", "1"), ("reset", "--hard", "FETCH_HEAD"), ("reset", "--hard", "HEAD")]
+    assert not (git / "index.lock").exists()                     # its own fresh lock is removed for the repair
+    assert any("putting the mirror back as it was" in l for l in lines)
+
+
+def test_a_mirror_that_cannot_be_put_back_is_unusable(monkeypatch, tmp_path):
+    _mirror(tmp_path, monkeypatch)
+
+    def fake(*a, **k):
+        if a[0] == "reset":
+            raise OSError("disk full") if a[2] == "HEAD" else oeisdata.GitTimeout("the reset stalled")
+        return "c0ffee"
+
+    monkeypatch.setattr(oeisdata, "_git", fake)
+    with pytest.raises(oeisdata.MirrorUnusable, match="the reset failed .GitTimeout: the reset stalled. and so did "
+                                                      "putting the mirror back .OSError: disk full."):
+        oeisdata.update(lambda m: None, timeout=600)
+    # A reset that git itself refused because another git holds the index: that lock is not ours to
+    # remove. (It was left alone a moment earlier for being young; the repair must not then delete it.)
+    git = config.OEISDATA / ".git"
+    theirs = git / "index.lock"
+    theirs.write_text("")
+
+    def refused(*a, **k):
+        if a[0] == "reset":
+            raise subprocess.CalledProcessError(128, ["git", *a], "", "fatal: Unable to create 'index.lock': File exists.")
+        return "c0ffee"
+
+    import subprocess
+    monkeypatch.setattr(oeisdata, "_git", refused)
+    with pytest.raises(oeisdata.MirrorUnusable):                 # someone is rewriting the mirror: no sessions tonight
+        oeisdata.update(lambda m: None, timeout=600)
+    assert theirs.exists()
+    # a person at the console is not second-guessed: the first error, no repair
+    calls: list = []
+
+    def console(*a, **k):
+        calls.append(a[:3])
+        if a[0] == "reset":
+            raise RuntimeError("git said no")
+        return "c0ffee"
+
+    monkeypatch.setattr(oeisdata, "_git", console)
+    with pytest.raises(RuntimeError, match="git said no"):
+        oeisdata.update(lambda m: None)
+    assert ("reset", "--hard", "HEAD") not in calls
+    # and a fetch that fails touches nothing: no repair is needed, none is tried
+    calls.clear()
+    monkeypatch.setattr(oeisdata, "_git", lambda *a, **k: (calls.append(a[0]), (_ for _ in ()).throw(RuntimeError("offline")))[1])
+    with pytest.raises(RuntimeError, match="offline"):
+        oeisdata.update(lambda m: None, timeout=600)
+    assert calls == ["fetch"]
+
+
+def test_a_git_in_hand_can_be_ended_from_another_thread(real_git, monkeypatch, tmp_path):
+    """What the daemon's last resort does before it ends the process: git is its child but in no job,
+    and would go on rewriting the mirror after the lock that protects it was gone."""
+    import subprocess
+    import sys
+    import threading
+    import time as clock
+    pidfile = tmp_path / "helper.pid"
+    real_popen = subprocess.Popen
+    monkeypatch.setattr(oeisdata.subprocess, "Popen", lambda argv, **kw: real_popen(
+        [sys.executable, "-c", _STALLED_GIT, str(pidfile)] if argv[0] == "git" else argv, **kw))
+    oeisdata.end_running_git()                                   # nothing in hand: a no-op, never an error
+    ended: list = []
+
+    def sync():
+        try:
+            real_git("fetch", cwd=tmp_path, timeout=300)
+        except Exception as e:      # noqa: BLE001
+            ended.append(e)
+
+    thread = threading.Thread(target=sync)
+    thread.start()
+    for _ in range(300):
+        if pidfile.exists() and pidfile.read_text():
+            break
+        clock.sleep(0.1)
+    helper = int(pidfile.read_text())
+    oeisdata.end_running_git()
+    thread.join(timeout=60)
+    assert not thread.is_alive() and len(ended) == 1             # the waiting call came back with an error
+    for _ in range(50):
+        if not _alive(helper):
+            break
+        clock.sleep(0.2)
+    assert not _alive(helper) and oeisdata._running is None
+
+
+def test_git_is_started_without_a_console_window(real_git, monkeypatch, tmp_path):
+    """Under `pythonw` (the scheduled daemon) Windows gives each console program a new, visible window.
+    A git window on the desktop for the length of a fetch gets closed, and closing it kills git mid-reset."""
+    import subprocess
+    import sys
+    seen: list = []
+    real_popen, real_run = subprocess.Popen, subprocess.run
+
+    def popen(argv, **kw):
+        seen.append(("Popen", kw.get("creationflags")))
+        return real_popen([sys.executable, "-c", "print('ok')"], **kw)
+
+    def run(argv, **kw):
+        seen.append(("run", kw.get("creationflags")))
+        return real_run([sys.executable, "-c", "print('ok')"], **{k: v for k, v in kw.items() if k != "check"})
+
+    monkeypatch.setattr(oeisdata.subprocess, "Popen", popen)
+    assert real_git("rev-parse", "HEAD", cwd=tmp_path, timeout=60) == "ok"
+    monkeypatch.setattr(oeisdata.subprocess, "run", run)
+    assert real_git("rev-parse", "HEAD", cwd=tmp_path) == "ok"
+    expected = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    assert oeisdata.NO_WINDOW == expected
+    # in the order they were made: the timed call's own Popen first (the untimed `run` makes one inside
+    # itself too, which would satisfy a looser check on its own)
+    assert seen[0] == ("Popen", expected) and ("run", expected) in seen[1:]
+
+
+def test_only_a_sync_that_pulled_says_the_mirror_was_pulled(monkeypatch, tmp_path):
+    root = tmp_path / "oeisdata"
+    (root / "seq").mkdir(parents=True)
+    monkeypatch.setattr(config, "OEISDATA", root)
+    monkeypatch.setattr(oeisdata, "_git", lambda *a, **k: "c0ffee1234")
+    monkeypatch.setattr(oeisdata, "update", lambda log, timeout=None: "c0ffee1234")
+    conn = db.connect(tmp_path / "t.sqlite3")
+    try:
+        oeisdata.sync(conn, lambda m: None, pull=False)
+        assert db.get_meta(conn, "synced_at") and db.get_meta(conn, "pulled_at") is None
+        oeisdata.sync(conn, lambda m: None, pull=True)
+        assert db.get_meta(conn, "pulled_at") is not None
+    finally:
+        conn.close()

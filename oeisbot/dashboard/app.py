@@ -140,6 +140,16 @@ def summary():
         conn.close()
 
 
+@app.get("/api/daemon")
+def daemon_status():
+    """Whether `oeisbot daemon` is running and what it last said it was doing (`daemon.status`), for the
+    line under the header. `running` is read from the writers' lock -- a probe that creates nothing and
+    writes nothing -- and the rest from the heartbeat file; the database is not opened at all, so this
+    answers even while `ro()` would refuse (no database yet)."""
+    from .. import daemon
+    return daemon.status()
+
+
 @app.get("/api/estimator")
 def estimator():
     """Predicted vs actual cost of every projected term. Censored points ran out of time before
@@ -149,7 +159,7 @@ def estimator():
         points = rows(conn.execute("""
             SELECT p.id, p.attempt_id, a.a_number, a.strategy, p.n, p.cost_unit, p.model, p.trustworthy,
                    p.feasible, p.value_dependent, p.predicted_s, p.predicted_s_low, p.predicted_s_high,
-                   p.actual_s, p.censored_s, a.started_at
+                   p.actual_s, p.censored_s, a.started_at, p.fit_trustworthy, p.rate_drift
             FROM predictions p JOIN attempts a ON a.id = p.attempt_id
             WHERE p.predicted_s IS NOT NULL AND p.predicted_s > 0
               AND (p.actual_s IS NOT NULL OR p.censored_s IS NOT NULL)
@@ -319,12 +329,20 @@ def _departures(conn, gone: list[tuple[str, float]], since: str, *, rules_change
     open_statuses = db.OPEN_REVIEW_STATUSES
     for chunk in _chunks(names):
         marks = ",".join("?" * len(chunk))
+        # not a run its caller interrupted without a result (item 58): that takes nothing out of the
+        # pool, and the daemon makes such rows every night, so it would be named as the reason for
+        # whatever really happened to the sequence afterwards. An interrupted run that had found new
+        # terms is another matter -- its outcome is a win, pending or recorded, and that is the reason
         for r in conn.execute(f"SELECT a_number, outcome, failure_mode FROM attempts WHERE a_number IN ({marks}) "
-                              f"AND started_at >= ? ORDER BY id", [*chunk, since]):
+                              f"AND started_at >= ? AND NOT (COALESCE(failure_mode, '') = ? "
+                              f"AND outcome IN ('failed', 'verified')) ORDER BY id",
+                              [*chunk, since, db.INTERRUPTED]):
             attempt[r["a_number"]] = (r["outcome"], r["failure_mode"])
+        # an open review, or since item 58 a rejected one: both keep a sequence out of the draw
+        # (select.candidates), and a rejection is the reason whatever the run that led to it recorded
         for r in conn.execute(f"SELECT a_number, status FROM reviews WHERE a_number IN ({marks}) "
-                              f"AND status IN ({','.join('?' * len(open_statuses))}) ORDER BY id",
-                              [*chunk, *open_statuses]):
+                              f"AND status IN ({','.join('?' * (len(open_statuses) + 1))}) ORDER BY id",
+                              [*chunk, *open_statuses, "rejected"]):
             review[r["a_number"]] = r["status"]
         for r in conn.execute(f"SELECT a_number, in_more FROM sequences WHERE a_number IN ({marks})", chunk):
             in_more[r["a_number"]] = bool(r["in_more"])
@@ -410,7 +428,9 @@ def attempts(failure_mode: str | None = None, outcome: str | None = None, strate
     """The newest `limit` attempts that match, with `total`, how many match in all, so that the page can say
     when it shows only some. A run with no stop reason is counted and filtered under `none` (a NULL key would
     reach the page as the string "null", which then filters on nothing). `win_rejected` marks an `extended`
-    row that is not a win (REJECTED_WIN)."""
+    row that is not a win (REJECTED_WIN). `review_refused` says which kind when no review was ever opened for
+    the run (db.record_win): the number of the rejected review that stood in the way, or true when the row
+    does not record one; null for a run whose own review was rejected, and for every other row."""
     conn = ro()
     try:
         where, params = [], []
@@ -425,7 +445,11 @@ def attempts(failure_mode: str | None = None, outcome: str | None = None, strate
             SELECT a.id, a.session_id, a.a_number, a.strategy, a.program_origin, a.started_at, a.verified, a.known_terms,
                    a.known_source, a.reproduced, a.new_terms, a.runtime_s, a.cpu_s, a.peak_mem_bytes, a.cost_unit,
                    a.projected_next_s_high, a.outcome, a.failure_mode, a.detail, a.artifact_path,
-                   {REJECTED_WIN} AS win_rejected
+                   {REJECTED_WIN} AS win_rejected,
+                   (CASE WHEN json_valid(a.extra) THEN json_extract(a.extra, '$.review_refused') END) IS NOT NULL AS refused,
+                   CASE WHEN json_valid(a.extra) THEN
+                     CASE WHEN json_type(a.extra, '$.review_refused.prior_review') = 'integer'
+                          THEN json_extract(a.extra, '$.review_refused.prior_review') END END AS refused_prior
             FROM attempts a {clause} ORDER BY a.id DESC LIMIT ?""", (*params, limit)))
         total = conn.execute(f"SELECT COUNT(*) FROM attempts a {clause}", params).fetchone()[0]
         failure_counts = dict(conn.execute(
@@ -438,6 +462,11 @@ def attempts(failure_mode: str | None = None, outcome: str | None = None, strate
         conn.close()
     for r in data:
         r["win_rejected"] = bool(r["win_rejected"])
+        refused, prior = r.pop("refused"), r.pop("refused_prior")
+        # `extra` is hand-editable JSON: only a JSON integer is passed on as a review's number (json_type, in
+        # the query, because json_extract hands a JSON `true` back as the integer 1)
+        r["review_refused"] = (None if not (refused and r["win_rejected"])
+                               else prior if type(prior) is int else True)
     return {"rows": data, "total": total, "failure_counts": failure_counts, "skip_counts": skip_counts,
             "outcome_counts": outcome_counts, "strategies": strategies}
 

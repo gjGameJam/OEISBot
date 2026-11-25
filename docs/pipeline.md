@@ -65,7 +65,9 @@ flowchart TD
    with `in_more = 1`; rows not seen this time get `in_more = 0`. Because those features come from the
    entry alone, a second pass (`db.refresh_difficulty`, one transaction) then recomputes the column from
    the stored rows, which carry the b-file facts a `fetch-bfiles` sweep left behind. The commit hash and
-   time are written to `meta`.
+   time are written to `meta` (`oeisdata_commit`, `synced_at`), and, when the sync pulled, `pulled_at`
+   as well (since history item 58: `--no-pull` moves `synced_at` but says nothing about how old the
+   mirror's data is, which is what `oeisbot daemon` asks before it climbs to longer budgets).
 5. **Snapshot the pool** (`attempt.snapshot_after_sync`, called by `cmd_sync` after `oeisdata.sync` has
    committed): builds the PARI pool as a session would and stores it as a Pick-map snapshot if it differs
    from the newest one, so the map can show what the sync changed. It is a record and cannot fail the sync;
@@ -82,7 +84,9 @@ The full sync takes about 70 seconds, and the snapshot about 6 more. The 2026-09
 then picks sequences with `select.candidates` and `select.pick`.
 
 - **Pool.** Rows with `in_more = 1`, minus any A-number that has a review in status `new`, `reviewing`
-  or `submitted`, or an attempt whose outcome is `recheck_pending`. Without `--model` the pool is limited
+  or `submitted`, a review in status `rejected` (since history item 58: a win for such a sequence is
+  refused a review, so drawing it could only spend the run; only the draw is blocked, and a targeted
+  `oeisbot attempt` still runs it), or an attempt whose outcome is `recheck_pending`. Without `--model` the pool is limited
   to sequences whose programs include PARI (a sequence with no PARI program could only be skipped). With
   `--model` every candidate is eligible except one with no PARI program and fewer than 3 known terms
   (`config.CODEGEN_MIN_KNOWN_TERMS`, counting the larger of `bfile_terms` and `data_terms`), which the
@@ -110,14 +114,21 @@ then picks sequences with `select.candidates` and `select.pick`.
   with `--model` it left out 10, all `too_few_known_terms`, until item 48 (2026-09-26) made
   `conjectural_program` a model-pool exclusion too — **the model pool is not exempt from the conjectural
   check**, and as of 2026-09-28 `--all` leaves out 16 (9 `too_few_known_terms`, 7
-  `conjectural_program`), taking that pool to 26,747. `oeisbot queue` and `oeisbot pick` apply the same check
+  `conjectural_program`), taking that pool to 26,747. **On 2026-11-23**, after item 58's three rule
+  changes, the PARI pool at the default budgets is 3,359 with 1,954 left out (1,430
+  `no_supported_program`, 383 `verify_out_of_reach`, 141 `all_programs_dead_ends`) and the `--all` pool is
+  26,745 with 16 left out (11 `too_few_known_terms`, 5 `conjectural_program`: A162762 and A162764, whose
+  reviews are `rejected`, are now dropped before this check and no longer counted by it). Both from the
+  real `attempt.session_pool` on the live database, read-only. `oeisbot queue` and `oeisbot pick` apply the same check
   with the default budgets (`--all` standing for the `--model` pool); `fetch-bfiles` and the dashboard's
   Queue tab do not.
 - **Difficulty.** Recomputed from the current row at pick time (so b-file facts gathered since the last
   sync count), then multiplied by a failure penalty of 2^k, capped at 64, where k is the number of earlier
   attempts on that sequence with a row whose outcome was `failed` or `verified`, each attempt (one
   `attempt_sequence` call) counted once however many programs it ran (see
-  [strategies](strategies.md#failure-penalty)).
+  [strategies](strategies.md#failure-penalty)). A row whose stop is `interrupted` is not counted (since
+  history item 58): the run was stopped for the caller's reasons. An attempt with another `failed` or
+  `verified` row beside the interrupted one still counts.
 - **Weight.** `difficulty ** -alpha` (α defaults to 1; 0 is uniform).
 - **Draw.** `min(N, 25)` distinct sequences, each draw proportional to weight, using a sum tree and
   setting a picked leaf's weight to zero. `--seed` makes the draw reproducible. When the cap
@@ -126,6 +137,31 @@ then picks sequences with `select.candidates` and `select.pick`.
 
 `oeisbot attempt A123456 ...` skips selection and runs stage 3 onward for the named sequences, outside
 any session.
+
+**Arguments for an unattended caller** (history item 58; `oeisbot daemon` is the only one, see
+[daemon](daemon.md)). `run_session` takes six more keyword arguments. Left at their defaults, as
+`oeisbot run` leaves them, they change nothing except that the session's note now names the budgets
+(`... verify_s=60 extend_s=10800 gp=...`):
+
+- `note`: text appended to the session's note (the daemon appends `daemon=1 tier=<name>`).
+- `keep(candidate)`: asked about every pool member; one it refuses is not drawn, and the log line says
+  how many were `held back by the caller`. The Pick-map snapshot is still the whole pool. Ignored when
+  the caller names its own picks.
+- `snapshot`: `False` stores no Pick-map snapshot for this session.
+- `before_attempt(a_number)`: called before each pick. What it raises is logged and ignored.
+- `may_start()`: asked before each pick; `False` ends the session with the remaining picks unrun.
+- `should_stop()`: asked before each pick (first, before `may_start`), and then through
+  `attempt_sequence` on every tick of every run, before each program, before the model stage and inside
+  it before each model call and each run. `True` ends the run in hand as `interrupted`
+  ([stage 5](#5-running-a-program-verifyrun_attempt)) and starts nothing further. It runs four times a
+  second on the sandbox's watchdog loop, so it must be cheap and must not block. If it raises inside a
+  run, the run is a `harness_error`.
+
+Neither `may_start` nor `should_stop` is asked during the session's own start-up (pending re-checks, the
+pool, the snapshot), nor during the per-sequence gates of stage 3. An attempt cut short this way
+records the runs that ran and **no skip row**: `SequenceReport.interrupted` is set, the log says
+`stopped on request; no further program was started`, and a pick stopped before any program ran has no
+row at all.
 
 See [strategies](strategies.md#difficulty-and-selection) for the difficulty factors.
 
@@ -205,9 +241,17 @@ programs that appear later in the entry go first. Details: [strategies](strategi
     ends a run this way), provided the job had the CPU for at least 80% of its wall time
     (`db.EXTEND_DEAD_END_MIN_CPU_SHARE`), so a run starved by a busy machine does not count. A larger
     `--extend-s` makes the program eligible again (since 2026-09-18); or
-  - stopped at `verify_timeout` after running at least the current `verify_wall_s` (its `runtime_s`).
-    Keyed on the measured runtime, so attempts from before this rule count too. A larger `--verify-s`
-    makes the program eligible again.
+  - stopped at `verify_timeout` after running at least the current `verify_wall_s` (its `runtime_s`)
+    **and** with CPU time (`cpu_s`) of at least 80% of the current `verify_wall_s`
+    (`db.EXTEND_DEAD_END_MIN_CPU_SHARE`; the CPU condition since history item 58). Keyed on the measured
+    runtime and CPU time, so attempts from before this rule count too; a row with no CPU figure never
+    counts. A larger `--verify-s` makes the program eligible again. The CPU condition is measured
+    against the budget asked now, not against the old run's own wall time: a run that took 600 s at
+    half speed had 300 s of CPU, which settles a 60 s budget and not a 600 s one. It exists because the
+    verify budget is wall time, and a machine that slept or was busy through a verification would
+    otherwise retire a program that never had its minute.
+
+  A run whose stop is `interrupted` matches none of these and is never a dead end.
 - **it is out of reach** (`pari.out_of_reach`): a predicate program's driver calls the predicate once
   for every k from its start (1, or the first known term when that is below 1) up to the last known
   term, so reproducing the known terms takes at least that many calls. When that exceeds
@@ -290,6 +334,16 @@ Every program, from either strategy, goes through the verification harness in th
   kills a term running far past a trusted projection (see
   [verification](verification-and-estimation.md#assessment-estimateassess)).
 - Generated Python programs are also saved next to the log as `<same stem>.py`.
+- When the caller passed `should_stop` (only `oeisbot daemon` does), it is asked first on every tick,
+  before any budget, and `True` halts the run with stop `interrupted`
+  (`verify.Stop.INTERRUPTED`; detail `stopped on request N s into the run, during verification` or
+  `during the extension`). The row is `failed` or `verified` as for any other stop; `interrupted`
+  retires nothing and adds no failure penalty. New terms the run had already found follow stage 7 as
+  usual.
+- Once a run has halted, for any reason, no further line of its output is read
+  (`verify.Harness.on_line`): the sandbox ends the job only after the halting callback has returned, so
+  lines can still arrive, and a run stopped during verification could otherwise be recorded as
+  verified. The one line still acted on is the driver's contract error, which can only void new terms.
 
 Full rules: [verification and estimation](verification-and-estimation.md).
 
@@ -299,7 +353,7 @@ Every run, successful or not, writes one `attempts` row (strategy, program origi
 count and source, reproduced count, new-term count, runtime, CPU, peak memory, cost unit, the last
 projection, outcome, stop reason, detail) and one `predictions` row per projected term. The `extra` JSON
 column holds the log path, the program form, rewrite notes, the weak-verification flag, the run's
-`extend_wall_s` and `mem_bytes` budgets and the `mem_cap_bytes` it actually got, the attempt's key
+`verify_wall_s` (since history item 58), `extend_wall_s` and `mem_bytes` budgets and the `mem_cap_bytes` it actually got, the attempt's key
 (`attempt_call`, shared by every row of one `attempt_sequence` call) and, whenever new terms were found,
 the re-check note.
 
@@ -380,6 +434,18 @@ attempt rows in the session, skips included), `wins` (rows with outcome `extende
 (sum of runtimes). A win still `recheck_pending` when the session ends is not counted, and is not added
 later when its re-check succeeds.
 
+A process that is killed runs no `finally`, so its session row stays open. Nothing closed such a row
+until history item 58: `oeisbot daemon` now closes every open session row when it starts
+([daemon](daemon.md#recovery)), dated at the row's last attempt. `oeisbot run` still does not.
+
+## One writer at a time
+
+Since history item 58, `run`, `attempt`, `sync`, `recheck`, `fetch-bfiles`, `setup` and `snapshot` take
+the writers' lock (`oeisbot/lock.py`, `cli.LOCKED`) for as long as they run, and `oeisbot daemon` takes
+it for its whole window. A second such command is refused at once with a message naming the first.
+The reading commands and the dashboard are never refused. See
+[daemon](daemon.md#the-writers-lock).
+
 ## 9. Human review
 
 Nothing leaves the machine. The review queue is read with `oeisbot review list` or the dashboard's
@@ -391,5 +457,7 @@ oeisbot review set <review id> reviewing|submitted|rejected [--note "..."]
 
 Marking a second review for the same A-number as `submitted` is refused. While a review is `new`,
 `reviewing` or `submitted`, that sequence is never picked or attempted again. The same holds while a
-win for it is `recheck_pending`. The review workflow is in
+win for it is `recheck_pending`. While a review is `rejected`, the sequence is not picked either (since
+history item 58), but a targeted `oeisbot attempt` still runs it, and a win from such a run opens no
+review ([operations](operations.md#reviewing-a-result)). The review workflow is in
 [operations](operations.md#reviewing-a-result).

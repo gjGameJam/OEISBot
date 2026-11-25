@@ -1483,3 +1483,532 @@ def test_a_sync_that_fails_takes_no_snapshot(mirror, monkeypatch):
     with pytest.raises(RuntimeError, match="git pull failed"):
         cli.main(["sync"])
     assert db.pick_snapshot_headers(conn, "pari") == []
+
+
+# ------------------------------------------------------------------ stopping on request (item 58)
+
+def stop_once_verified(monkeypatch):
+    """A `should_stop` that turns true once the run in hand has reproduced every known term, so a test
+    can interrupt an extension without racing the verification."""
+    from oeisbot import verify
+    seen: dict = {"harness": None, "asked": 0}
+    real = verify.Harness.on_line
+
+    def spy(self, line, t):
+        seen["harness"] = self
+        return real(self, line, t)
+
+    monkeypatch.setattr(verify.Harness, "on_line", spy)
+
+    def should_stop() -> bool:
+        seen["asked"] += 1
+        return seen["harness"] is not None and seen["harness"].verified_at is not None
+
+    return should_stop, seen
+
+
+LONG_SEARCH = replace(FAST, extend_wall_s=120)
+
+
+def test_an_interrupted_extension_is_recorded_and_retires_nothing(env, monkeypatch):
+    conn, state, _ = env
+    state["program"] = SEARCHES_FOREVER
+    should_stop, seen = stop_once_verified(monkeypatch)
+    rep = attempt.attempt_sequence(conn, "A999999", LONG_SEARCH, log=lambda m: None, should_stop=should_stop)
+    assert rep.interrupted and rep.skipped is None and rep.artifact is None
+    assert rows(conn) == [("pari:a(n)", "verified", "interrupted")], rep.lines
+    row = conn.execute("SELECT runtime_s, extra FROM attempts").fetchone()
+    assert row["runtime_s"] < 60                                 # ended by the request, not by a budget
+    extra = json.loads(row["extra"])
+    assert (extra["verify_wall_s"], extra["extend_wall_s"]) == (LONG_SEARCH.verify_wall_s, LONG_SEARCH.extend_wall_s)
+    assert "stopped on request; no further program was started" in rep.lines
+
+    # not a dead end at the very same budgets, in the plan and in the pool, and no failure penalty
+    entry = make_entry(SEARCHES_FOREVER)
+    plan = attempt.pari_plan(conn, entry, bfile.known_terms(entry, None), LONG_SEARCH)
+    assert len(plan.runnable) == 1 and not plan.dead_ends
+    add_row(conn)
+    names, keep = pool(conn, budgets=LONG_SEARCH)
+    assert names == ["A999999"] and not keep.left_out
+    [cand] = select.candidates(conn)
+    assert cand.difficulty == select.difficulty(conn.execute("SELECT * FROM sequences").fetchone())
+
+
+def test_a_stop_between_two_programs_starts_no_other_and_records_no_skip(env):
+    conn, state, _ = env
+    # block 2 runs first and fails at a(7); block 1 would then get its turn
+    state["program"] = ["a(n) = prime(n)", "a(n) = prime(n) + (n == 7)"]
+    asked = {"n": 0}
+
+    def after_the_first_run() -> bool:
+        return conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] >= 1
+
+    rep = attempt.attempt_sequence(conn, "A999999", FAST, log=lambda m: None, should_stop=after_the_first_run)
+    assert rep.interrupted and rep.skipped is None
+    assert rows(conn) == [("pari:a(n)", "failed", "wrong_term")]          # block 1 was never started
+    # asked to stop before anything ran: no row at all, not a skip saying there was nothing to run
+    with conn:
+        conn.execute("DELETE FROM attempts")
+    rep = attempt.attempt_sequence(conn, "A999999", FAST, log=lambda m: None, should_stop=lambda: True)
+    assert rep.interrupted and rep.skipped is None and rep.attempt_ids == [] and rows(conn) == []
+
+
+def test_a_stop_keeps_the_model_stage_from_starting(env, monkeypatch):
+    conn, state, _ = env
+    state["program"] = SEARCHES_FOREVER
+    should_stop, _ = stop_once_verified(monkeypatch)
+
+    class Model:
+        name = "must-not-be-asked"
+
+        def chat(self, *a, **k):
+            pytest.fail("the model was asked for a program while the caller was stopping")
+
+    rep = attempt.attempt_sequence(conn, "A999999", LONG_SEARCH, log=lambda m: None, model=Model(),
+                                   should_stop=should_stop)
+    assert rep.interrupted and rows(conn) == [("pari:a(n)", "verified", "interrupted")]
+
+
+class MustNotBeAsked:
+    name = "must-not-be-asked"
+
+    def chat(self, *a, **k):
+        raise AssertionError("the model was asked for a program while the caller was stopping")
+
+
+def test_a_stop_after_the_last_pari_program_keeps_the_model_away(env):
+    """Found by item 58's review, and it failed then: the stop was only asked for *before each PARI
+    program*, so when the last one ended by itself -- or there was none -- the model stage started with
+    a stop pending: a model call that can take minutes, then a run killed on its first tick."""
+    conn, state, _ = env
+    state["program"] = "a(n) = prime(n) + (n == 7)"          # the only PARI program fails by itself
+    rep = attempt.attempt_sequence(conn, "A999999", FAST, log=lambda m: None, model=MustNotBeAsked(),
+                                   should_stop=lambda: conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] >= 1)
+    assert rep.interrupted and rep.skipped is None
+    assert rows(conn) == [("pari:a(n)", "failed", "wrong_term")], rep.lines
+    assert "stopped on request; no further program was started" in rep.lines
+
+    # nothing to run at all, the usual case in the model's pool: no call, and no skip row saying so
+    with conn:
+        conn.execute("DELETE FROM attempts")
+    state["program"] = "lista(nn) = 0"
+    rep = attempt.attempt_sequence(conn, "A999999", FAST, log=lambda m: None, model=MustNotBeAsked(),
+                                   should_stop=lambda: True)
+    assert rep.interrupted and rep.skipped is None and rows(conn) == []
+
+
+def test_an_attempt_that_was_already_complete_is_not_called_interrupted(env):
+    """The question after the loop is only whether to hold the model stage back. With no model there is
+    nothing left to hold back: a stop that arrives after the last program has finished finds a complete
+    attempt, and it is recorded and reported as one."""
+    conn, state, _ = env
+    done = lambda: conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] >= 1      # noqa: E731
+    state["program"] = "a(n) = prime(n) + (n == 7)"
+    rep = attempt.attempt_sequence(conn, "A999999", FAST, log=lambda m: None, should_stop=done)
+    assert not rep.interrupted and rows(conn) == [("pari:a(n)", "failed", "wrong_term")]
+    assert not any("stopped on request" in line for line in rep.lines)
+    # a win found before the stop was asked for is a win, not an interruption
+    with conn:
+        conn.execute("DELETE FROM attempts")
+    state["program"] = "a(n) = prime(n)"
+    rep = attempt.attempt_sequence(conn, "A999999", FAST, log=lambda m: None, model=MustNotBeAsked(), should_stop=done)
+    assert rep.artifact and not rep.interrupted, rep.lines
+
+
+def test_a_model_that_goes_away_while_stopping_records_no_false_skip(env):
+    """The model server is often part of the same shutdown. `ModelUnavailable` with a stop pending is a
+    stage cut short, not a sequence with no model: no `no_supported_program` row."""
+    from oeisbot.model import ModelUnavailable
+    conn, state, _ = env
+    state["program"] = "lista(nn) = 0"
+    stop = {"now": False}
+
+    class Gone:
+        name = "gone"
+
+        def chat(self, *a, **k):
+            stop["now"] = True
+            raise ModelUnavailable("connection refused")
+
+    rep = attempt.attempt_sequence(conn, "A999999", FAST, log=lambda m: None, model=Gone(),
+                                   should_stop=lambda: stop["now"])
+    assert rep.interrupted and rep.skipped is None and rows(conn) == []
+    # without a stop it is what it always was: the model is simply not there
+    stop["now"] = False
+
+    class Down:
+        name = "down"
+
+        def chat(self, *a, **k):
+            raise ModelUnavailable("connection refused")
+
+    rep = attempt.attempt_sequence(conn, "A999999", FAST, log=lambda m: None, model=Down(), should_stop=lambda: False)
+    assert not rep.interrupted and rep.skipped == "no_supported_program"
+
+
+def test_a_stop_during_the_model_stage_records_no_skip(env):
+    """The stop arrives while the model is writing. Its reply is not run, and no row says the model
+    produced nothing runnable: the stage was cut short, which is not a verdict."""
+    conn, state, _ = env
+    state["program"] = "lista(nn) = 0"                       # nothing for PARI: straight to the model
+    stop = {"now": False}
+
+    class Model:
+        name = "slow-writer"
+        calls = 0
+
+        def chat(self, *a, **k):
+            Model.calls += 1
+            if Model.calls == 2:                             # the plan came back; the stop lands during the program
+                stop["now"] = True
+            return '{"approach": "brute_force", "reason": "small", "plan": "loop"}' if Model.calls == 1 else \
+                "```python\ndef terms(work):\n    yield 1, 2\n```"
+
+    rep = attempt.attempt_sequence(conn, "A999999", FAST, log=lambda m: None, model=Model(),
+                                   should_stop=lambda: stop["now"])
+    assert rep.interrupted and rep.skipped is None and rows(conn) == [] and Model.calls == 2
+    assert "stopped on request; no further program was started" in rep.lines
+
+
+def test_an_interrupted_run_starts_no_other_even_if_the_request_is_withdrawn(env, monkeypatch):
+    """`rep.interrupted` is what stops the loop, not a second look at the callback: a caller whose
+    request is true once (a window's edge, a flag another thread clears) must not see the entry's next
+    program start."""
+    from oeisbot import verify
+    conn, state, _ = env
+    # block 2 runs first and hangs at a(7), inside verification; block 1 would then get its turn
+    state["program"] = ["a(n) = prime(n)", "a(n) = if(n == 7, while(1, ), prime(n))"]
+    seen = {"harness": None, "fired": False}
+    real = verify.Harness.on_line
+
+    def spy(self, line, t):
+        seen["harness"] = self
+        return real(self, line, t)
+
+    monkeypatch.setattr(verify.Harness, "on_line", spy)
+
+    def once() -> bool:
+        if not seen["fired"] and seen["harness"] is not None and len(seen["harness"].records) >= 6:
+            seen["fired"] = True
+            return True
+        return False
+
+    rep = attempt.attempt_sequence(conn, "A999999", LONG_SEARCH, log=lambda m: None, should_stop=once)
+    assert rep.interrupted and rows(conn) == [("pari:a(n)", "failed", "interrupted")], rep.lines
+
+
+def test_new_terms_found_before_a_stop_are_still_a_win(env, monkeypatch):
+    """The request ends the run; it does not throw away what the run had already found. The terms go
+    through the re-check and open a review exactly as any others do."""
+    conn, state, _ = env
+    state["program"] = "a(n) = if(n <= 17, prime(n), my(s = 0); while(1, s++))"    # two new terms, then nothing
+    from oeisbot import verify
+    seen = {"harness": None}
+    real = verify.Harness.on_line
+
+    def spy(self, line, t):
+        seen["harness"] = self
+        return real(self, line, t)
+
+    monkeypatch.setattr(verify.Harness, "on_line", spy)
+    rep = attempt.attempt_sequence(
+        conn, "A999999", LONG_SEARCH, log=lambda m: None,
+        should_stop=lambda: seen["harness"] is not None and len(seen["harness"].records) >= 17)
+    assert rep.interrupted and rep.artifact, rep.lines
+    assert rows(conn) == [("pari:a(n)", "extended", "interrupted")]
+    review = db.open_review(conn, "A999999")
+    assert (review["first_new_index"], review["last_new_index"]) == (16, 17)
+
+
+def test_a_session_note_names_its_budgets_and_the_callers_note(env, monkeypatch):
+    conn, state, _ = env
+    state["program"] = "lista(nn) = 0"
+    add_row(conn)
+    plain = attempt.run_session(conn, 1, FAST, seed=1, log=lambda m: None)
+    tagged = attempt.run_session(conn, 1, replace(FAST, verify_wall_s=600, extend_wall_s=10800), seed=1,
+                                 log=lambda m: None, note="daemon=1 tier=verify600")
+    notes = {r["id"]: r["note"] for r in conn.execute("SELECT id, note FROM sessions")}
+    assert "verify_s=30 extend_s=5 " in notes[plain] and "daemon" not in notes[plain]
+    assert "verify_s=600 extend_s=10800 " in notes[tagged] and notes[tagged].endswith(" daemon=1 tier=verify600")
+    assert all(len(n) < 120 for n in notes.values())             # one dashboard column, as before
+
+
+def test_a_session_does_not_draw_what_the_caller_holds_back_but_stores_the_whole_pool(env, monkeypatch):
+    conn, state, _ = env
+    two_candidates(conn, monkeypatch)
+    lines: list[str] = []
+    sid = attempt.run_session(conn, 5, FAST, seed=1, log=lines.append, keep=lambda c: c.a_number != "A999997")
+    assert {r["a_number"] for r in conn.execute("SELECT a_number FROM attempts")} == {"A999999"}
+    assert "picked 1 of 1 candidates" in lines[0] and "1 more held back by the caller" in lines[0]
+    (h,) = db.pick_snapshot_headers(conn, "pari")                # the Pick map's record is the whole pool
+    assert (h["session_id"], h["n"]) == (sid, 2)
+    assert set(db.pick_snapshot_difficulties(conn, h["id"])) == {"A999999", "A999997"}
+    # with nothing held back the line is the one it always was
+    lines.clear()
+    with conn:                                                   # the win above opened a review: clear it
+        for table in ("reviews", "predictions", "attempts"):
+            conn.execute(f"DELETE FROM {table}")
+    attempt.run_session(conn, 0, FAST, seed=1, log=lines.append, keep=lambda c: True)
+    assert "held back" not in lines[0] and "picked 0 of 2 candidates" in lines[0]
+
+
+def test_a_session_asks_before_each_pick_and_stops_when_told(env, monkeypatch):
+    conn, state, _ = env
+    two_candidates(conn, monkeypatch)
+    started: list[str] = []
+    monkeypatch.setattr(attempt, "attempt_sequence",
+                        lambda conn_, a, *args, **kwargs: (started.append(a), attempt.SequenceReport(a))[1])
+
+    # may_start: the caller has no room for another pick
+    lines: list[str] = []
+    answers = iter([True, False])
+    sid = attempt.run_session(conn, 2, FAST, seed=1, log=lines.append, may_start=lambda: next(answers))
+    assert len(started) == 1
+    assert any("with 1 of 2 picks not started: the caller will not start another" in line for line in lines)
+    assert conn.execute("SELECT finished_at FROM sessions WHERE id = ?", (sid,)).fetchone()[0] is not None
+
+    # should_stop is asked before each pick too, and is handed on to the attempt
+    started.clear(), lines.clear()
+    handed: list = []
+    monkeypatch.setattr(attempt, "attempt_sequence", lambda conn_, a, *args, **kwargs: (
+        handed.append(kwargs.get("should_stop")), attempt.SequenceReport(a))[1])
+    stop = {"now": False}
+
+    def should_stop() -> bool:
+        return stop["now"]
+
+    def before(a):
+        stop["now"] = True                                       # the request arrives during the first pick
+
+    attempt.run_session(conn, 2, FAST, seed=1, log=lines.append, should_stop=should_stop, before_attempt=before)
+    assert handed == [should_stop]
+    assert any("with 1 of 2 picks not started: a stop was requested" in line for line in lines)
+
+    # an attempt that reports it was interrupted ends the session without being asked again
+    lines.clear()
+    monkeypatch.setattr(attempt, "attempt_sequence",
+                        lambda conn_, a, *args, **kwargs: attempt.SequenceReport(a, interrupted=True))
+    attempt.run_session(conn, 2, FAST, seed=1, log=lines.append)
+    assert sum("stopped during" in line for line in lines) == 1
+    assert any("with 1 of 2 picks not started" in line for line in lines)
+
+
+def test_a_progress_report_that_raises_costs_no_pick(env, monkeypatch):
+    conn, state, _ = env
+    two_candidates(conn, monkeypatch)
+    told: list[str] = []
+    started: list[str] = []
+    monkeypatch.setattr(attempt, "attempt_sequence",
+                        lambda conn_, a, *args, **kwargs: (started.append(a), attempt.SequenceReport(a))[1])
+
+    def before(a):
+        told.append(a)
+        raise OSError("the heartbeat file is locked")
+
+    lines: list[str] = []
+    attempt.run_session(conn, 2, FAST, seed=1, log=lines.append, before_attempt=before)
+    assert told == started and len(started) == 2                 # told first, both ran anyway
+    assert sum("before_attempt failed (OSError: the heartbeat file is locked); going on" in l for l in lines) == 2
+
+
+def test_a_stop_callback_that_raises_still_closes_the_session(env, monkeypatch):
+    conn, state, _ = env
+    two_candidates(conn, monkeypatch)
+
+    def broken() -> bool:
+        raise RuntimeError("clock fault")
+
+    with pytest.raises(RuntimeError, match="clock fault"):
+        attempt.run_session(conn, 2, FAST, seed=1, log=lambda m: None, may_start=broken)
+    row = conn.execute("SELECT finished_at, attempts FROM sessions ORDER BY id DESC LIMIT 1").fetchone()
+    assert row["finished_at"] is not None and row["attempts"] == 0
+
+
+def _stub_attempts(monkeypatch, started, interrupted_at=None):
+    monkeypatch.setattr(attempt, "attempt_sequence", lambda conn_, a, *args, **kw: (
+        started.append(a), attempt.SequenceReport(a, interrupted=(a == interrupted_at)))[1])
+
+
+def test_a_stopped_session_counts_the_picks_it_did_not_start(env, monkeypatch):
+    """Three picks and a stop at the third, then at the second: with two picks every plausible wrong
+    count gives the same number as the right one."""
+    conn, state, _ = env
+    picks = ["A000001", "A000002", "A000003"]
+    started: list[str] = []
+    lines: list[str] = []
+    _stub_attempts(monkeypatch, started)
+    answers = iter([True, True, False])
+    attempt.run_session(conn, 3, FAST, a_numbers=picks, log=lines.append, may_start=lambda: next(answers))
+    assert started == ["A000001", "A000002"]
+    assert any("stopping before A000003, with 1 of 3 picks not started: the caller will not start another" in l
+               for l in lines)
+    started.clear(), lines.clear()
+    answers = iter([True, False])
+    attempt.run_session(conn, 3, FAST, a_numbers=picks, log=lines.append, may_start=lambda: next(answers))
+    assert any("stopping before A000002, with 2 of 3 picks not started" in l for l in lines)
+    started.clear(), lines.clear()
+    _stub_attempts(monkeypatch, started, interrupted_at="A000002")
+    attempt.run_session(conn, 3, FAST, a_numbers=picks, log=lines.append)
+    assert started == ["A000001", "A000002"]
+    assert any("stopped during A000002, with 1 of 3 picks not started" in l for l in lines)
+    started.clear(), lines.clear()
+    _stub_attempts(monkeypatch, started, interrupted_at="A000001")
+    attempt.run_session(conn, 3, FAST, a_numbers=picks, log=lines.append)
+    assert any("stopped during A000001, with 2 of 3 picks not started" in l for l in lines)
+
+
+def test_progress_is_reported_before_each_pick_and_any_fault_in_it_is_survived(env, monkeypatch):
+    conn, state, _ = env
+    order: list[tuple[str, str]] = []
+    monkeypatch.setattr(attempt, "attempt_sequence", lambda conn_, a, *args, **kw: (
+        order.append(("run", a)), attempt.SequenceReport(a))[1])
+
+    def before(a):
+        order.append(("told", a))
+        raise ValueError("not an OSError")                   # any Exception, not one kind
+
+    attempt.run_session(conn, 2, FAST, a_numbers=["A000001", "A000002"], log=lambda m: None, before_attempt=before)
+    assert order == [("told", "A000001"), ("run", "A000001"), ("told", "A000002"), ("run", "A000002")]
+
+
+def test_ctrl_c_in_a_progress_report_is_not_swallowed(env, monkeypatch):
+    """`before_attempt` faults are ignored, but Ctrl-C is not a fault: a person stopping the daemon at
+    its console must not have the keypress eaten by the heartbeat."""
+    conn, state, _ = env
+    _stub_attempts(monkeypatch, [])
+
+    def before(a):
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        attempt.run_session(conn, 1, FAST, a_numbers=["A000001"], log=lambda m: None, before_attempt=before)
+    assert conn.execute("SELECT finished_at FROM sessions ORDER BY id DESC LIMIT 1").fetchone()[0] is not None
+
+
+def test_a_stop_is_asked_before_may_start_and_names_itself(env, monkeypatch):
+    conn, state, _ = env
+    started: list[str] = []
+    lines: list[str] = []
+    asked: list[int] = []
+    _stub_attempts(monkeypatch, started)
+    attempt.run_session(conn, 2, FAST, a_numbers=["A000001", "A000002"], log=lines.append,
+                        should_stop=lambda: True, may_start=lambda: asked.append(1) or False)
+    assert started == [] and asked == []                     # a stop is the reason given; the window is not asked
+    assert any("with 2 of 2 picks not started: a stop was requested" in l for l in lines)
+
+
+def test_a_should_stop_that_raises_between_picks_still_closes_the_session(env, monkeypatch):
+    conn, state, _ = env
+    _stub_attempts(monkeypatch, [])
+
+    def broken() -> bool:
+        raise RuntimeError("clock fault")
+
+    with pytest.raises(RuntimeError, match="clock fault"):
+        attempt.run_session(conn, 1, FAST, a_numbers=["A000001"], log=lambda m: None, should_stop=broken)
+    assert conn.execute("SELECT finished_at FROM sessions ORDER BY id DESC LIMIT 1").fetchone()[0] is not None
+
+
+def test_keep_is_not_asked_about_a_callers_own_list(env, monkeypatch):
+    conn, state, _ = env
+    started: list[str] = []
+    _stub_attempts(monkeypatch, started)
+    attempt.run_session(conn, 2, FAST, a_numbers=["A000001", "A000002"], log=lambda m: None,
+                        keep=lambda c: pytest.fail("keep was asked about a list the caller chose"))
+    assert started == ["A000001", "A000002"]
+
+
+def test_a_session_told_not_to_stores_no_snapshot(env, monkeypatch):
+    """The daemon runs several tiers a night and stores the pool for one of them, so the Pick map always
+    compares pools built under the same budgets."""
+    conn, state, _ = env
+    two_candidates(conn, monkeypatch)
+    attempt.run_session(conn, 0, FAST, seed=1, log=lambda m: None, snapshot=False)
+    assert db.pick_snapshot_headers(conn, "pari") == []
+    attempt.run_session(conn, 0, FAST, seed=1, log=lambda m: None)
+    assert len(db.pick_snapshot_headers(conn, "pari")) == 1
+
+
+def test_offline_known_terms_is_what_selection_uses(env, monkeypatch):
+    conn, state, _ = env
+    entry, known = attempt.offline_known_terms("A999999")
+    assert (entry.a_number, known.count) == ("A999999", 15)
+    assert attempt.Runnable(conn, FAST, False)._gated("A999999")[1].count == 15
+    monkeypatch.setattr(bfile, "cached", lambda a: (False, None))        # only a download could tell
+    assert attempt.offline_known_terms("A999999") is None
+    monkeypatch.setattr(oeisdata, "load_entry", lambda a: None)
+    assert attempt.offline_known_terms("A999999") is None
+
+
+def test_the_daemon_drives_real_sessions_end_to_end(env, monkeypatch):
+    """Item 58. `tests/test_daemon.py` scripts the session; this is the one place the daemon's loop meets
+    the real `run_session`, the real sandbox and the real database, so a keyword the two disagree about,
+    or a callback the session never calls, fails here."""
+    from oeisbot import daemon
+    conn, state, tmp = env
+    two_candidates(conn, monkeypatch)
+    db.set_meta(conn, "synced_at", db.now())
+    # the sandbox runs in the real data/scratch (its grants are path-based): recovery must not sweep it here
+    monkeypatch.setattr(daemon.Daemon, "sweep_scratch", lambda self: 0)
+    monkeypatch.setattr(daemon.Daemon, "free_disk", lambda self: 100 * config.GiB)
+    monkeypatch.setattr(daemon.Daemon, "free_ram", lambda self: 64 * config.GiB)
+    with pytest.raises(daemon.NotArmed):             # built directly, not through the command: still refused
+        daemon.Daemon(conn, daemon.Window.parse("always"), log=lambda m: None, sync=False).run()
+    daemon.arm()                                     # in this test's own data directory
+    told: list[dict] = []
+    real_beat = daemon.Daemon.beat
+    monkeypatch.setattr(daemon.Daemon, "beat", lambda self, **c: (real_beat(self, **c), told.append(dict(self.state)))[0])
+    lines: list[str] = []
+    quick = daemon.Tier("quick", 30, 5)
+    night = daemon.Daemon(conn, daemon.Window.parse("always"), log=lines.append, sync=False, tiers=(quick,))
+
+    assert night.run() == "nothing left to draw at any tier", lines
+
+    sessions = conn.execute("SELECT id, attempts, wins, finished_at, note FROM sessions ORDER BY id").fetchall()
+    assert [(s["attempts"], s["wins"]) for s in sessions] == [(2, 2)]    # both win; the empty pool costs no session row
+    assert all(s["finished_at"] and " verify_s=30 extend_s=5 " in s["note"] and s["note"].endswith(" daemon=1 tier=quick")
+               for s in sessions)
+    assert sorted(r["a_number"] for r in db.review_rows(conn)) == ["A999997", "A999999"]
+    # the night's one snapshot for the Pick map: the pool its first session drew from
+    assert [(h["session_id"], h["n"]) for h in db.pick_snapshot_headers(conn, "pari")] == [(sessions[0]["id"], 2)]
+    running = [b for b in told if b["state"] == "running" and b.get("a_number")]
+    assert sorted(b["a_number"] for b in running) == ["A999997", "A999999"] and {b["tier"] for b in running} == {"quick"}
+    assert told[-1]["state"] == "stopped"
+    assert any("session 1: picked 2 of 2 candidates" in l for l in lines)
+    assert any("session 1 at tier quick: 2 attempt row(s); pool 2, 0 cooling down" in l for l in lines)
+    assert any("tier quick: pool 0, 0 cooling down, nothing to draw" in l for l in lines)
+
+
+def test_the_daemon_interrupts_a_real_run_when_asked(env, monkeypatch):
+    """The stop path end to end: a stop request reaches a program running in the sandbox through the
+    daemon's flag, the run is recorded `interrupted`, the session is closed, and nothing is retired."""
+    from oeisbot import daemon
+    conn, state, tmp = env
+    state["program"] = SEARCHES_FOREVER
+    add_row(conn)
+    db.set_meta(conn, "synced_at", db.now())
+    monkeypatch.setattr(daemon.Daemon, "sweep_scratch", lambda self: 0)
+    monkeypatch.setattr(daemon.Daemon, "free_disk", lambda self: 100 * config.GiB)
+    monkeypatch.setattr(daemon.Daemon, "free_ram", lambda self: 64 * config.GiB)
+    with pytest.raises(daemon.NotArmed):             # built directly, not through the command: still refused
+        daemon.Daemon(conn, daemon.Window.parse("always"), log=lambda m: None, sync=False).run()
+    daemon.arm()                                     # in this test's own data directory
+    monkeypatch.setattr(daemon, "POLL_S", 0.05)
+    should_stop, seen = stop_once_verified(monkeypatch)
+    night = daemon.Daemon(conn, daemon.Window.parse("always"), log=lambda m: None, sync=False,
+                          tiers=(daemon.Tier("slow", 30, 120),))
+    real_poll = daemon.Daemon.poll
+
+    def poll(self):                                  # the watcher thread: ask for the stop once the run has verified
+        if should_stop():
+            daemon.request_stop()
+        real_poll(self)
+
+    monkeypatch.setattr(daemon.Daemon, "poll", poll)
+    assert night.run() == "stop requested (`oeisbot daemon --stop`)"
+    assert rows(conn) == [("pari:a(n)", "verified", "interrupted")]
+    row = conn.execute("SELECT runtime_s FROM attempts").fetchone()
+    assert row["runtime_s"] < 60
+    assert conn.execute("SELECT COUNT(*) FROM sessions WHERE finished_at IS NULL").fetchone()[0] == 0
+    names, keep = pool(conn, budgets=daemon.Tier("slow", 30, 120).budgets)
+    assert names == ["A999999"] and not keep.left_out               # still there for the next night

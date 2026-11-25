@@ -5,6 +5,7 @@ import {
 } from "./lib";
 import { describeError, sigFixed } from "./format";
 import { actualOrBound, dayColumns } from "./scale";
+import { notAWin, passesTrust, trustOf } from "./tabs";
 import { MAX_ALPHA, parseAlpha } from "./treemap";
 
 export function Status({ error, loading, hasData }: { error: string | null; loading: boolean; hasData: boolean }) {
@@ -20,6 +21,7 @@ interface PredictionPoint {
   model: string | null; trustworthy: number; feasible: number; value_dependent: number;
   predicted_s: number; predicted_s_low: number | null; predicted_s_high: number | null;
   actual_s: number | null; censored_s: number | null; started_at: string; finished?: boolean;
+  fit_trustworthy?: number | null; rate_drift?: number | null;
 }
 interface EstimatorData {
   points: PredictionPoint[];
@@ -27,12 +29,17 @@ interface EstimatorData {
            mean_abs_log10_error: number | null; in_reported_range_2x: number | null; underestimated_censored: number };
 }
 
+// `trustOf` (tabs.ts) says which of the three a projection is; these are the words for each
+const TRUST_NOTE = { trusted: "", fit: " (cost fit sound, rate drifting)", untrusted: " (untrusted)" };
+const TRUST_CELL = { trusted: "yes", fit: "no: rate drifting, cost fit sound", untrusted: "no" };
+const TRUST_ORDER = { trusted: 2, fit: 1, untrusted: 0 };
+
 export function EstimatorView() {
   const { data, error, loading } = useApi<EstimatorData>("/api/estimator");
   const [unit, setUnit] = useState("all");
-  const [trusted, setTrusted] = useState(false);
+  const [trust, setTrust] = useState("all");
   const [table, setTable] = useState(false);
-  const pts = (data?.points ?? []).filter((p) => (unit === "all" || p.cost_unit === unit) && (!trusted || p.trustworthy));
+  const pts = (data?.points ?? []).filter((p) => (unit === "all" || p.cost_unit === unit) && passesTrust(trust, p));
   // A point is what `actualOrBound` says it is: a finished time, or the time the term was stopped at. A row
   // with neither is not drawn at all (it used to be drawn at its own prediction, as if it had been measured).
   const scatter: ScatterPoint[] = pts.flatMap((p) => {
@@ -48,7 +55,9 @@ export function EstimatorView() {
         { label: "predicted", value: fmtSeconds(p.predicted_s) },
         { label: "predicted range", value: `${fmtSeconds(p.predicted_s_low)} – ${fmtSeconds(p.predicted_s_high)}` },
         { label: "actual / predicted", value: `${hollow ? "≥ " : ""}${sigFixed(y / p.predicted_s, 2)}` },
-        { label: "model", value: `${p.model ?? "none"}${p.trustworthy ? "" : " (untrusted)"}` },
+        { label: "model", value: `${p.model ?? "none"}${TRUST_NOTE[trustOf(p)]}` },
+        // the number the trust was withdrawn on: work per second late in the run over early in it
+        ...(trustOf(p) === "fit" && p.rate_drift != null ? [{ label: "rate drift", value: `${sigFixed(p.rate_drift, 3)}×` }] : []),
       ],
     }];
   });
@@ -66,7 +75,8 @@ export function EstimatorView() {
     { key: "ratio", label: "Actual / predicted", numeric: true,
       sortValue: (r) => { const t = timeOf(r); return t ? t.y / r.predicted_s : null; },
       render: (r) => { const t = timeOf(r); return !t ? "–" : `${t.finished ? "" : "≥ "}${sigFixed(t.y / r.predicted_s, 2)}`; } },
-    { key: "trustworthy", label: "Trusted", render: (r) => (r.trustworthy ? "yes" : "no") },
+    // three answers, not two: a sound cost fit whose trust was withdrawn for a drifting rate is not an unsound one
+    { key: "trustworthy", label: "Trusted", sortValue: (r) => TRUST_ORDER[trustOf(r)], render: (r) => TRUST_CELL[trustOf(r)] },
   ];
   return (
     <>
@@ -77,7 +87,11 @@ export function EstimatorView() {
             <option value="all">All</option><option value="work">Work counts</option><option value="cpu">CPU time</option>
           </select>
         </label>
-        <label><input type="checkbox" checked={trusted} onChange={(e) => setTrusted(e.target.checked)} /> Trusted projections only</label>
+        <label>Projections
+          <select value={trust} onChange={(e) => setTrust(e.target.value)}>
+            <option value="all">All</option><option value="trusted">Trusted</option><option value="fit">Trusted, or cost fit sound</option>
+          </select>
+        </label>
         <button className="chip" onClick={() => setTable(!table)}>{table ? "Show chart" : "Show table"}</button>
       </div>
       <div className="kpis">
@@ -189,7 +203,7 @@ interface AttemptRow {
   verified: number; known_terms: number | null; known_source: string | null; reproduced: number | null; new_terms: number;
   runtime_s: number | null; cpu_s: number | null; peak_mem_bytes: number | null; cost_unit: string | null;
   projected_next_s_high: number | null; outcome: string; failure_mode: string | null; detail: string | null; artifact_path: string | null;
-  win_rejected?: boolean;
+  win_rejected?: boolean; review_refused?: number | boolean | null;
 }
 interface AttemptsData {
   rows: AttemptRow[]; total?: number; failure_counts: Record<string, number>; skip_counts: Record<string, number>;
@@ -214,8 +228,9 @@ export function AttemptsView() {
     { key: "started_at", label: "Started", render: (r) => fmtTime(r.started_at) },
     { key: "a_number", label: "Sequence", render: (r) => <OeisLink a={r.a_number} /> },
     { key: "strategy", label: "Strategy", render: (r) => <span className="mono">{r.strategy}</span> },
-    // an `extended` run whose review was rejected (or refused) keeps its outcome, and is not a win: say so here
-    { key: "outcome", label: "Outcome", render: (r) => r.win_rejected ? <>{r.outcome} <span className="pill rejected">review rejected</span></> : r.outcome },
+    // an `extended` run whose review was rejected, or that was refused one, keeps its outcome and is not a win:
+    // say so here, and say which (tabs.notAWin)
+    { key: "outcome", label: "Outcome", render: (r) => { const not = notAWin(r); return not ? <>{r.outcome} <span className="pill rejected" title={not.title}>{not.label}</span></> : r.outcome; } },
     { key: "failure_mode", label: "Stopped because", render: (r) => r.failure_mode?.replace(/_/g, " ") ?? "–" },
     { key: "reproduced", label: "Verified", numeric: true, render: (r) => (r.known_terms ? `${r.reproduced ?? 0}/${r.known_terms}` : "–") },
     { key: "new_terms", label: "New", numeric: true },

@@ -111,6 +111,8 @@ def test_a_rejected_win_is_not_a_win_anywhere(client):
     by_id = {r["id"]: r for r in client.get("/api/attempts").json()["rows"]}
     assert by_id[aid]["outcome"] == "extended" and by_id[aid]["win_rejected"] is True
     assert [r["win_rejected"] for i, r in by_id.items() if i != aid] == [False]
+    # its own review was rejected: that is not a refusal, and no row here is one
+    assert [r["review_refused"] for r in by_id.values()] == [None, None]
 
 
 def test_a_refused_win_is_not_a_win_either(client):
@@ -125,6 +127,53 @@ def test_a_refused_win_is_not_a_win_either(client):
     assert (s["wins"], s["rejected_wins"], s["new_terms"]) == (1, 1, 2)
     last = client.get("/api/history").json()["days"][-1]
     assert (last["day"], last["attempts"], last["wins"], last["rejected_wins"]) == ("2026-09-19", 1, 0, 1)
+    # the Attempts table is told which kind of not-a-win this is, and which review stood in the way (item 57)
+    by_id = {r["id"]: r for r in client.get("/api/attempts").json()["rows"]}
+    assert (by_id[aid]["win_rejected"], by_id[aid]["review_refused"]) == (True, 1)
+    assert [(r["win_rejected"], r["review_refused"]) for i, r in by_id.items() if i != aid] == [(False, None)]
+    assert "refused" not in by_id[aid] and "refused_prior" not in by_id[aid]
+
+
+@pytest.mark.parametrize("stored, sent", [
+    ('{"prior_review": 3, "reason": "x"}', 3),      # as db.record_win writes it
+    ('{"reason": "x"}', True),                      # refused, and the row does not say by which review
+    ('{"prior_review": "3"}', True),                # hand-edited: only a whole number is passed on as a number
+    ('{"prior_review": 2.5}', True),
+    ('{"prior_review": true}', True),
+    ('"yes"', True),                                # not an object at all
+    ('7', True),
+])
+def test_a_refusal_is_reported_whatever_shape_its_record_has(client, stored, sent):
+    conn = db.connect(config.DB_PATH)
+    aid = db.record_attempt(conn, make_result(), started_at="2026-09-19T10:00:00+00:00")
+    conn.execute("UPDATE attempts SET extra = json_set(COALESCE(extra, '{}'), '$.review_refused', json(?)) WHERE id = ?",
+                 (stored, aid))
+    conn.commit()
+    conn.close()
+    row = {r["id"]: r for r in client.get("/api/attempts").json()["rows"]}[aid]
+    assert row["win_rejected"] is True and row["review_refused"] == sent and type(row["review_refused"]) is type(sent)
+
+
+def test_a_refusal_recorded_on_a_run_that_is_not_extended_is_not_reported(client):
+    """`review_refused` is only ever written beside `extended` (db.record_win). A row that carries it with
+    another outcome was edited by hand, is not a win that was refused, and must not be labelled as one."""
+    conn = db.connect(config.DB_PATH)
+    aid = db.record_attempt(conn, make_result(), started_at="2026-09-19T10:00:00+00:00")
+    conn.execute("UPDATE attempts SET outcome = 'verified', extra = json_set(COALESCE(extra, '{}'), '$.review_refused', "
+                 "json('{\"prior_review\": 1}')) WHERE id = ?", (aid,))
+    conn.commit()
+    conn.close()
+    row = {r["id"]: r for r in client.get("/api/attempts").json()["rows"]}[aid]
+    assert (row["win_rejected"], row["review_refused"]) == (False, None)
+
+
+def test_the_attempts_table_survives_an_extra_that_is_not_json(client):
+    conn = db.connect(config.DB_PATH)
+    conn.execute("UPDATE attempts SET extra = '{not json'")
+    conn.commit()
+    conn.close()
+    rows = client.get("/api/attempts").json()["rows"]
+    assert [(r["win_rejected"], r["review_refused"]) for r in rows] == [(False, None)]
 
 
 @pytest.mark.parametrize("query", ["alpha=nan", "alpha=inf", "alpha=-inf", "alpha=-1", "alpha=700", "alpha=6.01",
@@ -173,6 +222,20 @@ def test_the_estimator_says_which_points_finished_and_survives_a_missing_high(cl
     assert [(p["id"], p["finished"]) for p in est["points"]] == [(ids[0], False), (ids[1], True)]
     assert est["stats"]["finished"] == 1 and est["stats"]["censored"] == 1
     assert est["stats"]["in_reported_range_2x"] == 0.0          # no range to be inside; it used to raise
+
+
+def test_the_estimator_sends_the_cost_fits_own_verdict(client):
+    """`trustworthy` is the kill's flag: the cost fit's verdict AND the rate-drift test. The page can only
+    tell a sound fit withdrawn for drift from an unsound one if it is given both (item 57)."""
+    conn = db.connect(config.DB_PATH)
+    ids = [r[0] for r in conn.execute("SELECT id FROM predictions ORDER BY id")]
+    conn.execute("UPDATE predictions SET trustworthy = 0, fit_trustworthy = 1, rate_drift = 1.5 WHERE id = ?", (ids[0],))
+    conn.execute("UPDATE predictions SET trustworthy = 0, fit_trustworthy = NULL, rate_drift = NULL WHERE id = ?", (ids[1],))
+    conn.commit()
+    conn.close()
+    points = client.get("/api/estimator").json()["points"]
+    assert [(p["id"], p["trustworthy"], p["fit_trustworthy"], p["rate_drift"]) for p in points] == [
+        (ids[0], 0, 1, 1.5), (ids[1], 0, None, None)]
 
 
 def test_only_the_root_is_the_page_and_everything_unknown_is_a_404(client, monkeypatch, tmp_path):
@@ -274,3 +337,40 @@ def test_every_response_forbids_content_type_guessing(client):
                           ("/api/queue?alpha=nan", {}), ("/api/summary", {"Host": "attacker.example"}),
                           ("/api/summary", {"Sec-Fetch-Site": "cross-site"})):
         assert client.get(path, headers=headers).headers["x-content-type-options"] == "nosniff", path
+
+
+# ------------------------------------------------------------------ the daemon's line (item 58)
+
+def test_the_daemon_endpoint_answers_from_the_lock_and_the_heartbeat(client, tmp_path, monkeypatch):
+    import json
+
+    from oeisbot import daemon, lock
+    monkeypatch.setattr(config, "DATA", tmp_path / "daemon-data")
+    monkeypatch.setattr(lock, "ACQUIRE_PAUSE_S", 0.0)
+    monkeypatch.setattr(lock, "PROBE_PAUSE_S", 0.0)
+    assert client.get("/api/daemon").json() == {"running": False, "other_command": None, "heartbeat": None,
+                                                "armed": False}
+    assert not (tmp_path / "daemon-data").exists()               # asking wrote nothing: the dashboard only reads
+    daemon.daemon_dir().mkdir(parents=True)
+    daemon.heartbeat_path().write_text(json.dumps({"state": "running", "a_number": "A000045", "warnings": []}))
+    report = client.get("/api/daemon").json()
+    assert report["running"] is False and report["heartbeat"]["a_number"] == "A000045"   # a killed daemon's leftovers
+    with lock.writer("daemon"):
+        assert client.get("/api/daemon").json()["running"] is True
+    with lock.writer("sync"):
+        assert client.get("/api/daemon").json() | {"heartbeat": None} == \
+            {"running": False, "other_command": "sync", "heartbeat": None, "armed": False}
+    daemon.arm()
+    assert client.get("/api/daemon").json()["armed"] is True
+
+
+def test_the_daemon_endpoint_needs_no_database_and_keeps_the_api_guard(tmp_path, monkeypatch):
+    from oeisbot import lock
+    monkeypatch.setattr(config, "DATA", tmp_path / "data")
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "data" / "none.sqlite3")
+    c = TestClient(dashboard.app)
+    assert c.get("/api/summary").status_code == 503              # no database: the rest of the API says so
+    assert c.get("/api/daemon").status_code == 200               # ... and this still answers
+    assert c.get("/api/daemon", headers={"Sec-Fetch-Site": "cross-site"}).status_code == 403
+    assert c.get("/api/daemon", headers={"Host": "evil.example"}).status_code in (400, 403, 421)
+    assert not lock.lock_path().exists()

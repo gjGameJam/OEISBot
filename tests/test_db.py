@@ -272,7 +272,8 @@ def test_extension_used_up_is_a_dead_end_only_without_more_time(conn):
 
 def test_verify_timeout_is_a_dead_end_up_to_the_time_it_already_ran(conn):
     slow = make_result(stop=Stop.VERIFY_TIMEOUT, verified=False, new=0, sha_source="slow to verify")
-    slow.run = replace(slow.run, wall_s=60.3)      # the run spent 60.3 s without reproducing the known terms
+    # the run spent 60.3 s without reproducing the known terms, nearly all of it on the CPU
+    slow.run = replace(slow.run, wall_s=60.3, cpu_s=59.0)
     db.record_attempt(conn, slow, started_at=db.now())
     sha = slow.program.sha
     assert db.is_dead_end(conn, "A000001", sha, 2, Budgets(verify_wall_s=60))
@@ -280,7 +281,7 @@ def test_verify_timeout_is_a_dead_end_up_to_the_time_it_already_ran(conn):
     assert not db.is_dead_end(conn, "A000001", sha, 2, Budgets(verify_wall_s=600))   # a longer pass revisits it
     assert not db.is_dead_end(conn, "A000001", sha, 3, Budgets(verify_wall_s=60))    # more known terms to check
     exact = make_result(stop=Stop.VERIFY_TIMEOUT, verified=False, new=0, sha_source="stopped right at the budget")
-    exact.run = replace(exact.run, wall_s=60.0)
+    exact.run = replace(exact.run, wall_s=60.0, cpu_s=60.0)
     db.record_attempt(conn, exact, started_at=db.now())
     assert db.is_dead_end(conn, "A000001", exact.program.sha, 2, Budgets(verify_wall_s=60))
     # the sandbox's own wall clock is not the verify budget: still not a dead end (test_dead_end_detection)
@@ -421,3 +422,103 @@ def test_session_rollup(conn):
     db.finish_session(conn, sid)
     row = conn.execute("SELECT attempts, wins, machine_s FROM sessions WHERE id = ?", (sid,)).fetchone()
     assert tuple(row) == (2, 1, 3.0)
+
+
+def test_a_verify_timeout_starved_of_cpu_is_not_a_dead_end(conn):
+    """Item 58. The verify budget is wall time, so a machine that slept or was busy through a verification
+    used to retire the program at that budget for ever, though it never had its minute. The extension
+    rule has always asked for a CPU share (EXTEND_DEAD_END_MIN_CPU_SHARE); verification now asks the same."""
+    share = db.EXTEND_DEAD_END_MIN_CPU_SHARE
+
+    def timed_out(source, wall, cpu):
+        r = make_result(stop=Stop.VERIFY_TIMEOUT, verified=False, new=0, sha_source=source)
+        r.run = replace(r.run, wall_s=wall, cpu_s=cpu)
+        db.record_attempt(conn, r, started_at=db.now())
+        return r.program.sha
+
+    budgets = Budgets(verify_wall_s=60)
+    # the machine slept: ten minutes on the wall, twenty seconds of work
+    assert not db.is_dead_end(conn, "A000001", timed_out("slept", 600.0, 20.0), 2, budgets)
+    assert not db.is_dead_end(conn, "A000001", timed_out("just under", 60.0, 60.0 * share - 0.1), 2, budgets)
+    assert db.is_dead_end(conn, "A000001", timed_out("exactly", 60.0, 60.0 * share), 2, budgets)
+    assert db.is_dead_end(conn, "A000001", timed_out("just over", 60.0, 60.0 * share + 0.1), 2, budgets)
+    # What counts is the CPU the run got against the budget asked NOW, not its share of its own wall
+    # time. Ten minutes at half speed is 300 s of work: more than a 60 s budget could ever give, so the
+    # program is retired there, and less than 0.8 of a 600 s budget, so it is not retired there. (The
+    # first version of this rule compared with the run's own wall time and brought A272621 and A101722
+    # back to the 60 s pool after 288 s and 474 s of CPU had already failed them.)
+    half_speed = timed_out("ten minutes at half speed", 600.0, 300.0)
+    assert db.is_dead_end(conn, "A000001", half_speed, 2, budgets)
+    assert not db.is_dead_end(conn, "A000001", half_speed, 2, Budgets(verify_wall_s=600))
+    assert db.is_dead_end(conn, "A000001", half_speed, 2, Budgets(verify_wall_s=300 / share))     # exactly enough
+    assert not db.is_dead_end(conn, "A000001", half_speed, 2, Budgets(verify_wall_s=300 / share + 1))
+    # a row with no CPU figure cannot show it had the time, so it does not count
+    sha = timed_out("no cpu figure", 60.0, 59.0)
+    with conn:
+        conn.execute("UPDATE attempts SET cpu_s = NULL WHERE program_sha = ?", (sha,))
+    assert not db.is_dead_end(conn, "A000001", sha, 2, budgets)
+
+
+def test_an_interrupted_run_is_never_a_dead_end(conn):
+    """Item 58: `interrupted` is the caller stopping the run (the daemon's stop, the end of its window).
+    Whatever state the run was in, it says nothing about the program, at any budget."""
+    assert db.INTERRUPTED == Stop.INTERRUPTED.value
+    assert db.INTERRUPTED not in db.DETERMINISTIC_FAILURES
+    tiny = Budgets(verify_wall_s=1, extend_wall_s=1, mem_bytes=1)
+    for verified, source in ((False, "stopped while verifying"), (True, "stopped while extending")):
+        r = make_result(stop=Stop.INTERRUPTED, verified=verified, new=0, sha_source=source)
+        r.run = replace(r.run, wall_s=5000.0, cpu_s=5000.0)       # long, and all of it on the CPU
+        db.record_attempt(conn, r, started_at=db.now(),
+                          extra={"extend_wall_s": 99999, "mem_bytes": 2 * GiB, "mem_cap_bytes": 2 * GiB})
+        row = conn.execute("SELECT failure_mode, outcome FROM attempts ORDER BY id DESC LIMIT 1").fetchone()
+        assert tuple(row) == ("interrupted", "verified" if verified else "failed")
+        assert not db.is_dead_end(conn, "A000001", r.program.sha, 2, tiny)
+        assert not db.is_dead_end(conn, "A000001", r.program.sha, 2, Budgets())
+
+
+def test_an_interrupted_run_adds_no_failure_penalty(conn):
+    """A stop lands on whatever sequence happened to be running. Counting it would make that sequence
+    twice as hard to pick for something that was never about it."""
+    db.upsert_sequences(conn, [db.SequenceRow("A000001", "x", 0, "nonn,more", 10, 1, "pari", 0, False)])
+    base = select.difficulty(conn.execute("SELECT * FROM sequences").fetchone())
+
+    def penalty():
+        [c] = select.candidates(conn)
+        return c.difficulty / base
+
+    def run(stop, verified, call):
+        r = make_result(stop=stop, verified=verified, new=0)
+        return db.record_attempt(conn, r, started_at=db.now(), extra={"attempt_call": call})
+
+    run(Stop.INTERRUPTED, False, "a")                    # outcome `failed`, and not counted
+    run(Stop.INTERRUPTED, True, "b")                     # outcome `verified`, and not counted
+    assert penalty() == 1
+    run(Stop.WRONG_TERM, False, "c")                     # an attempt whose first program really failed ...
+    run(Stop.INTERRUPTED, False, "c")                    # ... and whose second was interrupted: counted once
+    assert penalty() == 2
+    skipped = db.record_skip(conn, "A000001", "pari", "no_supported_program")
+    with conn:                                           # made into a failed row with no failure_mode at all
+        conn.execute("UPDATE attempts SET outcome = 'failed', failure_mode = NULL WHERE id = ?", (skipped,))
+    assert penalty() == 4                                # NULL is not `interrupted`: it still counts
+
+
+def test_a_sequence_with_a_rejected_review_is_not_drawn(conn):
+    """Item 58. A win for a sequence whose review was rejected is refused a new review
+    (test_a_rejected_review_refuses_a_new_one_but_keeps_the_win), so drawing it can only spend the run
+    and write a folder nobody is shown. An attended session met that once in a while; a loop would meet
+    it every time the draw landed there."""
+    db.upsert_sequences(conn, [db.SequenceRow(a, "x", 0, "nonn,more", 10, 1, "pari", 0, False)
+                               for a in ("A000001", "A000002", "A000003")])
+
+    def drawn():
+        return sorted(c.a_number for c in select.candidates(conn))
+
+    assert drawn() == ["A000001", "A000002", "A000003"]
+    first = db.record_attempt(conn, make_result(sha_source="a"), started_at=db.now())
+    review = db.add_review(conn, "A000001", first, "artifacts/x", 2, 3)
+    assert drawn() == ["A000002", "A000003"]             # open: a human is deciding (as before)
+    db.set_review_status(conn, review, "rejected", "conjectural program")
+    assert drawn() == ["A000002", "A000003"]             # rejected: still out, which is the change
+    with conn:                                           # the row is a person's to remove; then it is back
+        conn.execute("DELETE FROM reviews WHERE id = ?", (review,))
+    assert drawn() == ["A000001", "A000002", "A000003"]

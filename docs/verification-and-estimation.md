@@ -102,6 +102,15 @@ The harness computes its memory budget once, at start: `min(mem_bytes, free phys
 
 ## Checks on each term (`Harness.on_line`)
 
+**Nothing is read once the run has halted** (since history item 58). The sandbox ends the job only
+after the callback that halted has returned and released the lock, so the output reader can deliver
+more lines before it sees the stop. Without this rule a run stopped during verification (by
+`verify_timeout`, or by an `interrupted` stop) could be recorded as verified because its last known
+term arrived a moment later. The price is that a real new term arriving in that instant is not counted,
+as one arriving an instant later never was. One line is still acted on after a halt: an `@ERR` line
+carrying the driver's contract error (`OEISBotContractError`), which voids the run's new terms; it can
+only take a result away.
+
 For every `@T` line, in order:
 
 1. **Parse.** Wrong field count or non-integers → stop `protocol`. So is any *counting* field longer than
@@ -143,6 +152,12 @@ strictly in index order and the first mismatch stops the run.
 
 ### Timers (`Harness.on_tick`, every 0.25 s)
 
+- **First**, if the caller passed `should_stop` and it returns true → stop `interrupted`, detail
+  `stopped on request N s into the run, during verification` (or `during the extension`). Only
+  `oeisbot daemon` passes one ([daemon](daemon.md#stopping)). It is asked before the budgets so that a
+  tick on which the run is both interrupted and out of a budget is recorded as the stop that retires
+  nothing. If `should_stop` itself raises, the sandbox reports a callback error and the run is a
+  `harness_error`.
 - Not yet verified and elapsed > `verify_wall_s` → stop `verify_timeout`.
 - Verified and time since verification > `extend_wall_s` → stop `extend_budget`.
 - The term currently being computed has run longer than its kill threshold (only trusted projections
@@ -151,7 +166,9 @@ strictly in index order and the first mismatch stops the run.
 ### The searched-bound check
 
 Many `more` entries publish, in a `%C` comment, a range a human has already searched and found empty:
-`No more terms <= 2 * 10^38` (A194099), `a(29) > 10^13`, `Any subsequent terms are > 10^12`. The pipeline
+`No more terms <= 2 * 10^38` (A194099), `a(29) > 10^13`, `Any subsequent terms are > 10^12`, `these are
+the only terms known up to 10^10` (A119748; item 57). A number may be a power, a decimal times a power, a
+number word from `thousand` to `decillion`, or a factorial (`31!`, up to `10000!`). The pipeline
 already parses those lines (`Entry.comments`). Once verification completes, and before any extension time
 is spent, `Harness._bound_exhausted` compares such a bound against the rate the run has just demonstrated:
 
@@ -229,6 +246,17 @@ later let a run skip a range that was never scanned:
 | behind a term already emitted | a term at k proves the driver tested k |
 | `tested` implies a rate above `pari.PREDICATE_MAX_RATE` | the same ceiling `out_of_reach` is built on, with gp's start-up granted because the harness clock counts it and the scan does not |
 
+**The same identity is required of every term line of that driver (item 57).** A predicate driver's
+`@T` line carries the term, which is the k just tested, and the count of every k tested from `start`, so
+`value - start + 1 == work` on every line the driver prints. A term line that breaks it was written by
+the entry's own code, not by the driver, and here the harness **halts** (`protocol`), where it only drops
+a heartbeat: a term line makes a term, and its work count sets the rate the searched-bound check and the
+cost fit reason with. The check comes before the index and the value are looked at, and its detail
+carries no number, because the detail reaches the model and the value on such a line could be a held-out
+term. It applies only when the caller passed `ScanTracking`; the other drivers report a work count of 0
+and a model program counts its own. All 731 term lines in the 67 predicate run logs on disk on
+2026-11-18 keep the identity (`data/item57/term_identity.txt`; 62 scans started at 1, 5 at 0).
+
 The result carries `scan_reached`, `heartbeats` and `heartbeats_ignored` (plus the first bad line), and
 `attempt.py` writes them to the row's `extra`. The ignored count exists so that a driver bug mangling
 every line shows up as a number rather than as silence -- otherwise the frontier would simply never move
@@ -253,7 +281,7 @@ resume (history item 42). Do not build it without new evidence.
 | `protocol` | any | malformed `@T` line, or a list-contract program yielding a pair or a value out of order (`OEISBotContractError`; after verification its new terms are voided) | yes |
 | `crash` | verify | program errored (`@ERR`, other than `OEISBotContractError`) or exited non-zero before verification | yes |
 | `incomplete` | verify | the program ended by itself before reproducing all known terms — always that, since the guard at the last known index cannot fire (step 6 above) | yes |
-| `verify_timeout` | verify | known terms not all reproduced within `verify_wall_s` | no, but counts as a dead end for runs with a `verify_wall_s` no larger than the time it already ran |
+| `verify_timeout` | verify | known terms not all reproduced within `verify_wall_s` | no, but counts as a dead end for runs with a `verify_wall_s` no larger than the time it already ran, provided its CPU time was at least 80% of that new `verify_wall_s` (the CPU condition since history item 58) |
 | `timeout` | any | sandbox wall clock | no |
 | `memory_cap` | any | job memory cap, or system RAM low | no |
 | `cpu_cap` | any | job CPU cap (unused by the pipeline) | no |
@@ -261,6 +289,7 @@ resume (history item 42). Do not build it without new evidence.
 | `output_cap` | any | stdout too large or a line over 1 MiB | no |
 | `launch_error` | start | not enough free RAM to start, or process creation failed | no |
 | `harness_error` | any | **our own** `on_line` or `on_tick` raised inside the sandbox (`Status.CALLBACK_ERROR`, since 2026-09-30, history item 51); the detail names the exception. A harness bug, never the program's doing | **no, deliberately**: outside `db.DETERMINISTIC_FAILURES`, so a bug of ours cannot retire a program for ever |
+| `interrupted` | any | the caller asked the run to stop (`oeisbot daemon`: a stop request, the end of its window, Ctrl-C; since history item 58). It says nothing about the program. New terms found before it still count and go to the re-check | **no, and never a dead end**: outside `db.DETERMINISTIC_FAILURES`, matched by no clause of `db.is_dead_end`, and left out of the selection's failure penalty (`db.INTERRUPTED`) |
 | `verified_only` | extend | verification done and extension was not requested | n/a |
 | `searched_bound` | extend | the entry publishes a searched range with no further term in it, and the extension cannot reach the end of it at the rate measured while verifying (predicate form only; see [above](#the-searched-bound-check)) | **no, and deliberately not a dead end**: nothing about the sequence has been disproved, so the program stays runnable. `extra.verified_scan_to` records how far this run's own scan reached |
 | `infeasible` | extend | the next term's projection does not fit the remaining budget: a trustworthy cost fit's time, or the memory. `extra.infeasible_on` says which (`time`, `memory` or `time+memory`; since 2026-09-30, history item 51) | counts as a dead end if nothing new was found, but only for runs whose budget *for the reason recorded* is no larger than the one that stopped: a verdict on time holds under any memory cap and one on memory under any extension time; rows without the key need both |
@@ -279,7 +308,14 @@ of memory ends a run as `memory_cap`, or as `finished` when gp's stack overflows
 (`db.EXTEND_DEAD_END_MIN_CPU_SHARE`; the nine real runs had 93–99%), so an extension spent on a busy
 machine does not make a dead end. A `verify_timeout` run is refused unless the new run has a
 `verify_wall_s` larger than that attempt's `runtime_s`: the program already ran that long without
-reproducing the known terms. (The sandbox's own `timeout` never counts.) Model programs are not checked
+reproducing the known terms. Since history item 58 it is refused only if that attempt's `cpu_s` is also
+at least 80% of the new run's `verify_wall_s` (the same constant; a row without a CPU figure never
+counts). The verify budget is wall time, so a machine that slept or was busy through a verification
+used to retire a program that never had its minute. The condition asks what the old run got against the
+budget planned now, not what share of its own wall time it had. On 2026-11-23, 5 of the 163
+`verify_timeout` rows have under 0.8 of their own wall time on the CPU (`data/item58/measure_pool.py`:
+attempts #34, #51, #52, #58, #59, on A272621, A101722, A217380 and A101569); the 0.8 is inherited from
+the extension rule, not fitted. (The sandbox's own `timeout` never counts, and nor does `interrupted`.) Model programs are not checked
 here; within one model stage, a program the model sends again after a deterministic failure or a
 `verify_timeout` is not run (see [strategies](strategies.md#steps)).
 

@@ -1,4 +1,18 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { tabAfter } from "./tabs";
+
+/** A key handler for a row of tabs, given the tabs' element ids in the order they are drawn: Left, Right, Home
+ *  and End move the focus along the row (tabs.tabAfter) and nothing else. With a modifier the key is left to
+ *  the browser, whose Alt+Left is Back. */
+export function tabKeys(elementIds: string[]) {
+  return (e: KeyboardEvent<HTMLElement>) => {
+    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    const to = tabAfter(elementIds, document.activeElement?.id ?? "", e.key);
+    if (to == null) return;
+    e.preventDefault();
+    document.getElementById(to)?.focus();
+  };
+}
 
 /** Polls a read-only API path: fetches `path`, then again every `refreshMs`, keeping the previous data while it
  *  refetches (no flash). `pollPath`, when given, is what the repeats ask for, so that a request which must not

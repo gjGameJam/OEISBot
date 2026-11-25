@@ -237,6 +237,61 @@ def test_every_stop_that_can_retry_is_classified():
                     and s is not Stop.WRONG_TERM                      # the one intended fall-through
                     and codegen.retry_guidance(s) == codegen.DEFINITION_GUIDANCE]
     assert unclassified == [], f"these stops silently inherit definition advice: {unclassified}"
+    # `interrupted` is classified although no retry can reach it (the next test): the operator stopped
+    # the run, so the model must not be sent back to the definition if that ever changes
+    assert "not by your program" in codegen.retry_guidance(Stop.INTERRUPTED)
+
+
+def test_an_interrupted_run_ends_the_model_stage_without_a_retry():
+    """Item 58. A run stopped on request failed for no reason of the program's: asking the model to fix
+    it would start another run while the caller is trying to stop, and would describe a failure that
+    never happened."""
+    known = KnownTerms("A999998", 0, dict(enumerate(int(x) for x in FIB.split(","))), "data")
+    entry = parse(f"%S A999998 {FIB}\n%N A999998 Fibonacci-like test sequence.\n%O A999998 0,4\n%K A999998 nonn,more\n")
+    model = FakeModel([PLAN, CORRECT, CORRECT, CORRECT])
+    ran: list[Program] = []
+
+    def runner(prog):
+        ran.append(prog)
+        return AttemptResult(prog, known, "failed", Stop.INTERRUPTED, "stopped on request", False, 3, [], [],
+                             RunResult(Status.STOPPED, 1, 1.0, 0.9, 0, 1 << 30, "stop"))
+
+    out = codegen.generate_and_verify(entry, known, model, runner, log=lambda m: None)
+    assert len(ran) == 1 and len(out.attempts) == 1          # one run, no second generation
+    assert len(model.calls) == 2                             # the plan and one program: no retry prompt
+    assert out.stopped
+
+
+def test_the_model_stage_asks_before_each_model_call_and_before_each_run():
+    """A local model takes minutes over a reply, so a stop is asked for before the call that would wait
+    for one, and again before running what came back."""
+    known = KnownTerms("A999998", 0, dict(enumerate(int(x) for x in FIB.split(","))), "data")
+    entry = parse(f"%S A999998 {FIB}\n%N A999998 Fibonacci-like test sequence.\n%O A999998 0,4\n%K A999998 nonn,more\n")
+
+    def stage(answers):
+        model, ran = FakeModel([PLAN, CORRECT, CORRECT, CORRECT]), []
+        asked = iter(answers)
+        out = codegen.generate_and_verify(entry, known, model, lambda prog: ran.append(prog) or pytest.fail("ran"),
+                                          log=lambda m: None, should_stop=lambda: next(asked))
+        return out, len(model.calls), len(ran)
+
+    out, calls, ran = stage([True])                          # arrived during the plan call
+    assert (out.stopped, calls, ran, out.attempts, out.skipped) == (True, 1, 0, [], None)   # the plan only
+    out, calls, ran = stage([False, True])                   # pending at the first generation
+    assert (out.stopped, calls, ran, out.attempts) == (True, 1, 0, [])                      # nothing was asked for
+    out, calls, ran = stage([False, False, True])            # arrived while the model was writing
+    assert (out.stopped, calls, ran, out.attempts) == (True, 2, 0, [])                      # the reply is not run
+    # and with no callback, or one that says no, the stage is what it always was
+    model = FakeModel([PLAN, WRONG_OFFSET, WRONG_OFFSET, WRONG_OFFSET])
+    ran = []
+
+    def failing(prog):
+        ran.append(prog)
+        return AttemptResult(prog, known, "failed", Stop.CRASH, "boom", False, 0, [], [],
+                             RunResult(Status.EXITED, 1, 1.0, 0.9, 0, 1 << 30))
+
+    out = codegen.generate_and_verify(entry, known, model, failing, log=lambda m: None, should_stop=lambda: False)
+    assert not out.stopped and len(out.attempts) + len(out.rejected) == config.CODEGEN_ATTEMPTS
 
 
 @pytest.mark.sandbox

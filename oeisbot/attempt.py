@@ -27,7 +27,7 @@ from http.client import HTTPException
 from pathlib import Path
 from typing import Callable
 
-from . import artifact, bounds, config, db, select
+from . import artifact, bounds, config, db, guard, select
 from .config import Budgets
 from .ingest import bfile, oeisdata, seqfile
 from .ingest.seqfile import Entry, parse
@@ -51,6 +51,10 @@ class SequenceReport:
     skipped: str | None = None
     artifact: str | None = None
     lines: list[str] = field(default_factory=list)
+    # a run of this attempt was stopped on request (verify.Stop.INTERRUPTED), or the request came between
+    # two of its programs or model calls: no further program was started, and what is recorded is not
+    # the whole attempt. (New terms such a run had already found are still re-checked and reviewed.)
+    interrupted: bool = False
 
 
 def recheck(known: KnownTerms, first_new_index: int, new_values: dict[int, int]) -> tuple[bool, str]:
@@ -177,6 +181,7 @@ def _load_pending(data: bytes) -> tuple[AttemptResult, str, Budgets]:
 
 def _save_pending(attempt_id: int, result: AttemptResult, entry_name: str, budgets: Budgets) -> None:
     path = pending_path(attempt_id)
+    guard.refuse_if_real(path, "saving a pending win")          # never from a test (oeisbot.guard)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".part")
     tmp.write_bytes(_dump_pending(result, entry_name, budgets))   # bytes: text mode would add CRLF here
@@ -267,11 +272,89 @@ def retry_pending_rechecks(conn: sqlite3.Connection, log: Callable[[str], None] 
     return still_pending
 
 
+class ReleaseRefused(ValueError):
+    """`release_pending` was asked to give up on a win it must not, or on a row that is not one."""
+
+
+def release_pending(conn: sqlite3.Connection, attempt_id: int, log: Callable[[str], None] = print) -> None:
+    """Give up on one pending win whose saved result can no longer be read, so its sequence is free again.
+
+    This is the hand-written `UPDATE attempts SET outcome = 'verified'` that operations.md used to
+    prescribe, as a command with the checks a person at a SQL prompt does not get. **Never called by the
+    pipeline**: a pending win is retried for ever (`_note_failure`), and only a person may decide that
+    one is lost. Refused (`ReleaseRefused`, nothing written):
+
+    * a row that is not `recheck_pending` -- there is nothing to release, and `verified` over an
+      `extended` row would un-record a win;
+    * a win whose saved result **still loads**. Its re-check can still finish -- oeis.org was
+      unreachable, or a folder is in the way -- and releasing it would throw new terms away to save a
+      wait. `oeisbot recheck` is the command for that one;
+    * a saved result that exists and **could not be opened** just now (`OSError` other than a missing
+      file: open in an editor, locked by a scanner). That says nothing about whether it still loads.
+
+    The saved file is not deleted: it is renamed `attempt-<id>.released.json`, because a result whose
+    fields drifted is still the whole result in readable JSON, and nothing reads that name again. The
+    sequence comes back to the draw with the selection penalty a `verified` row carries, as the SQL this
+    replaces left it.
+
+    **One window is not closed.** A run records its row as `recheck_pending` a moment before it saves
+    the result, so a release typed in that moment, while a session is running, sees no file and
+    releases a live win; the run's own re-check then either records the win over the release or leaves
+    the row `verified`. Do not release while `oeisbot run` is in progress."""
+    row = conn.execute("SELECT * FROM attempts WHERE id = ?", (attempt_id,)).fetchone()
+    if row is None:
+        raise ReleaseRefused(f"there is no attempt #{attempt_id}")
+    if row["outcome"] != "recheck_pending":
+        raise ReleaseRefused(f"attempt #{attempt_id} is not waiting for a re-check (its outcome is "
+                             f"{row['outcome']})")
+    path = pending_path(attempt_id)
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError as e:
+        data, why = None, f"{type(e).__name__}: {e}"
+    except OSError as e:
+        raise ReleaseRefused(f"attempt #{attempt_id}'s saved result exists and could not be opened "
+                             f"({type(e).__name__}: {e}); close whatever has {path} open and try again")
+    if data is not None:
+        try:
+            _load_pending(data)
+        except Exception as e:      # not JSON, another format, fields that drifted
+            why = f"{type(e).__name__}: {e}"
+        else:
+            raise ReleaseRefused(f"attempt #{attempt_id}'s saved result still loads, so its re-check can "
+                                 f"still finish: run `oeisbot recheck`. Releasing it would discard "
+                                 f"{row['new_terms']} new term(s)")
+    kept = path.with_name(f"attempt-{attempt_id}.released.json")
+    if not db.release_recheck(conn, attempt_id, f"released by hand, saved result unreadable: {why}"):
+        raise ReleaseRefused(f"attempt #{attempt_id} stopped waiting for a re-check while this ran")
+    a = row["a_number"]
+    log(f"[{a}] attempt #{attempt_id} released: the saved result could not be read ({why})")
+    try:
+        run_log = json.loads(row["extra"] or "{}").get("log")
+    except Exception:           # a hand-edited extra of any shape; the release is already done
+        run_log = None
+    if run_log and Path(run_log).exists():
+        where = f"they are in the run log: {run_log}"
+    elif run_log:
+        where = f"the run log the row names is gone: {run_log}"
+    else:
+        where = "the row names no run log"
+    log(f"[{a}] its {row['new_terms']} new term(s) are not published; {where}")
+    if data is not None:
+        try:
+            path.replace(kept)
+            log(f"[{a}] the saved result is kept as {kept}")
+        except OSError as e:    # the release is done; the file is only a keepsake
+            log(f"[{a}] could not rename {path}: {e}")
+
+
 class _Attempter:
     def __init__(self, conn: sqlite3.Connection, entry: Entry, known: KnownTerms, budgets: Budgets,
-                 session_id: int | None, rep: SequenceReport, say: Callable[[str], None], do_recheck: bool):
+                 session_id: int | None, rep: SequenceReport, say: Callable[[str], None], do_recheck: bool,
+                 should_stop: Callable[[], bool] | None = None):
         self.conn, self.entry, self.known, self.budgets = conn, entry, known, budgets
         self.session_id, self.rep, self.say, self.do_recheck = session_id, rep, say, do_recheck
+        self.should_stop = should_stop
         # a run found new terms (whatever its re-check then says): stop trying anything else
         self.found_new = False
         # the latest run that reproduced every known term but found no new one: other PARI programs are
@@ -285,6 +368,7 @@ class _Attempter:
     def run(self, prog: Program, form: str, search_start: int | None = None) -> AttemptResult:
         started = db.now()
         runs = config.DATA / "runs"
+        guard.refuse_if_real(runs, "writing a run log")         # never from a test (oeisbot.guard)
         runs.mkdir(parents=True, exist_ok=True)
         log_path = runs / f"{self.known.a_number}-{time.strftime('%Y%m%d-%H%M%S')}-{prog.sha[:8]}.jsonl"
         kept_program = None
@@ -309,7 +393,9 @@ class _Attempter:
                 scan = ScanTracking(search_start, pari.PREDICATE_MAX_RATE)
         self.say(f"running {prog.strategy} from {prog.origin}")
         result = run_attempt(prog, self.known, self.budgets, name=self.entry.name, log_path=log_path,
-                             searched_bound=bound, scan=scan)
+                             searched_bound=bound, scan=scan, should_stop=self.should_stop)
+        if result.stop is Stop.INTERRUPTED:
+            self.rep.interrupted = True
         new = result.new_terms
         self.say(f"-> {result.outcome}: {result.stop.value} ({brief_detail(result.detail)}); reproduced "
                  f"{result.reproduced}/{self.known.count}, {len(new)} new, {result.run.wall_s:.1f} s, "
@@ -321,7 +407,11 @@ class _Attempter:
                  # the cap the feasibility check was actually judged against, smaller when free RAM held
                  # the harness below the budget, so it -- not mem_bytes -- keys the infeasible dead end
                  "extend_wall_s": self.budgets.extend_wall_s, "mem_bytes": self.budgets.mem_bytes,
-                 "mem_cap_bytes": result.mem_cap}
+                 "mem_cap_bytes": result.mem_cap,
+                 # recorded since item 58 and read by nothing in the pipeline: `verify_timeout` is keyed on
+                 # the measured runtime, not on this. It is here so a row says what it was run under --
+                 # sessions 7 to 12 ran at budgets no row and no session note recorded in full
+                 "verify_wall_s": self.budgets.verify_wall_s}
         if result.stop is Stop.INFEASIBLE:
             # which budget the verdict was reached on, so db.is_dead_end asks about that one (item 51)
             extra["infeasible_on"] = "+".join(result.infeasible_on) or "unknown"
@@ -453,7 +543,18 @@ def pari_plan(conn: sqlite3.Connection, entry: Entry, known: KnownTerms, budgets
 def attempt_sequence(conn: sqlite3.Connection, a_number: str, budgets: Budgets = config.DEFAULT_BUDGETS, *,
                      session_id: int | None = None, log: Callable[[str], None] = print,
                      max_programs: int = MAX_PROGRAMS_PER_SEQUENCE, do_recheck: bool = True,
-                     model: ModelClient | None = None) -> SequenceReport:
+                     model: ModelClient | None = None,
+                     should_stop: Callable[[], bool] | None = None) -> SequenceReport:
+    """`should_stop`, when given, is asked on every tick of every run, before each program, before the
+    model stage, and inside it before each model call and each run: True ends the run in hand as `interrupted`
+    (verify.Stop.INTERRUPTED, which retires nothing) and starts no further program. New terms found
+    before the stop still go through the re-check and the review, as any others do, so a stop can take
+    as long as a re-check does. `rep.interrupted` says it happened. It is not asked during the gates
+    (entry, b-file, known terms), which make at most one request.
+
+    `should_stop` runs four times a second on the sandbox's own watchdog loop, with the lock the output
+    reader needs: it must be cheap and must not block or do I/O. If it raises inside a run the run is a
+    `harness_error`, which is not a dead end but is a `failed` row, and so counts in the failure penalty."""
     rep = SequenceReport(a_number)
 
     def say(msg: str):
@@ -493,7 +594,7 @@ def attempt_sequence(conn: sqlite3.Connection, a_number: str, budgets: Budgets =
         return skip("inconsistent_known_terms", str(e))
     say(f"known {known.describe()}{' (' + '; '.join(known.notes) + ')' if known.notes else ''}")
 
-    runner = _Attempter(conn, entry, known, budgets, session_id, rep, say, do_recheck)
+    runner = _Attempter(conn, entry, known, budgets, session_id, rep, say, do_recheck, should_stop)
     plan = pari_plan(conn, entry, known, budgets)
     for r in plan.rejected:
         say(f"PARI block {r.block}: {r.reason}")
@@ -506,12 +607,30 @@ def attempt_sequence(conn: sqlite3.Connection, a_number: str, budgets: Budgets =
         say(f"{cand.program.origin} ({cand.form}): not run: {why}")
     tried = 0
     for cand in plan.runnable:
-        if tried >= max_programs or runner.found_new or runner.verified is not None:
+        if tried >= max_programs or runner.found_new or runner.verified is not None or rep.interrupted:
+            break
+        if should_stop is not None and should_stop():
+            rep.interrupted = True
             break
         tried += 1
         runner.run(cand.program, cand.form, cand.search_start)
 
-    if not runner.found_new and model is not None:
+    use_model = not runner.found_new and model is not None
+    # Asked once more after the loop, but only if the model stage would otherwise start. The loop ends
+    # without asking when the last program finished by itself or there was none to run, and the stage
+    # would then begin with a stop pending (found by item 58's review: a model call, and a run killed on
+    # its first tick). With no model stage to hold back the attempt is already complete, and it is
+    # recorded as what it is
+    if use_model and not rep.interrupted and should_stop is not None and should_stop():
+        rep.interrupted = True
+    if rep.interrupted:
+        # Stopped with programs still unrun. Not the model stage: it would start new runs. And not the
+        # skip below when nothing ran at all: its reason would say the sequence had nothing to run, when
+        # its programs or the model were simply not started. No row is the honest record of that
+        say("stopped on request; no further program was started")
+        return rep
+
+    if use_model:
         if known.count < config.CODEGEN_MIN_KNOWN_TERMS:
             return skip("too_few_known_terms", f"{known.count} known terms; the model needs at least "
                         f"{config.CODEGEN_MIN_KNOWN_TERMS} so {config.CODEGEN_HELD_OUT_MIN} can be held out",
@@ -524,10 +643,22 @@ def attempt_sequence(conn: sqlite3.Connection, a_number: str, budgets: Budgets =
             say(f"{verified.origin} is correct but found nothing new; asking the model for a faster program")
         try:
             outcome = codegen.generate_and_verify(entry, known, model, lambda prog: runner.run(prog, "model"),
-                                                  log=say, verified_elsewhere=verified)
+                                                  log=say, verified_elsewhere=verified, should_stop=should_stop)
         except ModelUnavailable as e:
             say(f"model unavailable: {e}")
+            if should_stop is not None and should_stop():
+                # the model server went away in the same shutdown: not "no model", a stage cut short
+                rep.interrupted = True
+                say("stopped on request; no further program was started")
+                return rep
         else:
+            if outcome.stopped or rep.interrupted:
+                # the stop came during the model stage. Whatever ran is recorded; a skip row saying the
+                # model produced nothing runnable, or judged the sequence infeasible, is not written for
+                # a stage that was cut short
+                rep.interrupted = True
+                say("stopped on request; no further program was started")
+                return rep
             if outcome.skipped:
                 return skip("model_skip", outcome.skipped, strategy="python:model")
             if not outcome.attempts:
@@ -537,6 +668,24 @@ def attempt_sequence(conn: sqlite3.Connection, a_number: str, budgets: Budgets =
     if tried == 0:
         return skip(*plan.nothing_to_run())
     return rep
+
+
+def offline_known_terms(a_number: str) -> tuple[Entry, KnownTerms] | None:
+    """The entry and its known terms as an attempt would get them, decided without a request; None where
+    an attempt's gates would record a skip, or only a download could tell (see `Runnable`)."""
+    entry = oeisdata.load_entry(a_number)
+    if entry is None:
+        return None                             # not_in_oeisdata
+    try:
+        decided, bf = bfile.cached(a_number)
+    except Exception:
+        return None                             # bfile.fetch would raise too: bfile_error
+    if not decided:
+        return None                             # the attempt's lookup downloads it
+    try:
+        return entry, bfile.known_terms(entry, bf)
+    except bfile.InconsistentTerms:
+        return None                             # inconsistent_known_terms
 
 
 class Runnable:
@@ -579,19 +728,7 @@ class Runnable:
 
     def _gated(self, a_number: str) -> tuple[Entry, KnownTerms] | None:
         """Entry and known terms as the attempt gets them, or None where its gates would record a skip."""
-        entry = oeisdata.load_entry(a_number)
-        if entry is None:
-            return None                             # not_in_oeisdata
-        try:
-            decided, bf = bfile.cached(a_number)
-        except Exception:
-            return None                             # bfile.fetch would raise too: bfile_error
-        if not decided:
-            return None                             # the attempt's lookup downloads it
-        try:
-            return entry, bfile.known_terms(entry, bf)
-        except bfile.InconsistentTerms:
-            return None                             # inconsistent_known_terms
+        return offline_known_terms(a_number)
 
     def _why_not(self, a_number: str) -> str | None:
         gated = self._gated(a_number)
@@ -679,13 +816,13 @@ def rules_fingerprint() -> str:
 
     try:
         h = hashlib.sha256()
-        for obj in (Runnable, PariPlan, pari_plan, db.is_dead_end, oeisdata.load_entry, bfile.cached,
-                    bfile.known_terms):
+        for obj in (Runnable, offline_known_terms, PariPlan, pari_plan, db.is_dead_end, oeisdata.load_entry,
+                    bfile.cached, bfile.known_terms):
             h.update(text(inspect.getsource(obj).encode()))
         for mod in (select, pari, seqfile):
             h.update(text(Path(mod.__file__).read_bytes()))
         h.update(repr((db.DETERMINISTIC_FAILURES, db.OPEN_REVIEW_STATUSES, db.EXTEND_DEAD_END_MIN_CPU_SHARE,
-                       config.CODEGEN_MIN_KNOWN_TERMS)).encode())
+                       config.CODEGEN_MIN_KNOWN_TERMS, db.INTERRUPTED)).encode())
         return h.hexdigest()[:12]
     except (OSError, TypeError):
         return "unknown"
@@ -744,7 +881,33 @@ def snapshot_after_sync(conn: sqlite3.Connection, log: Callable[[str], None] = p
 
 def run_session(conn: sqlite3.Connection, count: int, budgets: Budgets = config.DEFAULT_BUDGETS, *,
                 alpha: float = 1.0, seed: int | None = None, log: Callable[[str], None] = print,
-                a_numbers: list[str] | None = None, model: ModelClient | None = None) -> int:
+                a_numbers: list[str] | None = None, model: ModelClient | None = None,
+                note: str = "", keep: Callable[[select.Candidate], bool] | None = None,
+                before_attempt: Callable[[str], None] | None = None,
+                may_start: Callable[[], bool] | None = None,
+                should_stop: Callable[[], bool] | None = None, snapshot: bool = True) -> int:
+    """One session: pick up to `count` sequences and attempt each. Returns the session id.
+
+    The last six arguments are for a caller that runs sessions unattended (`oeisbot daemon`, item 58).
+    Left at their defaults they change nothing but the session note, which now names the budgets:
+
+    * `note` is appended to the session's note (the daemon names itself and its tier).
+    * `keep(candidate)` is asked about every candidate of the pool, and one it refuses is not drawn. The
+      snapshot stored for the Pick map is still the **whole** pool: what `keep` leaves out is the
+      caller's own reason of the moment (a cooldown), not something that happened to the sequence, and
+      the map would otherwise show it leaving and coming back. Ignored with `a_numbers`: a caller that
+      names its own picks has already chosen.
+    * `snapshot=False` stores no Pick-map snapshot. The dashboard builds its live pool under the newest
+      snapshot's budgets, so a caller that runs sessions at several budgets in one night passes it for
+      all but one of them; otherwise the map would compare pools built under different budgets.
+    * `before_attempt(a_number)` is called before each pick starts. Whatever it raises is logged and
+      ignored: it reports progress, and a reporting fault must not cost a pick.
+    * `may_start()` is asked before each pick; False ends the session with the remaining picks unrun
+      (the caller's window is too short for another). `should_stop()` is asked there too, first, and on
+      every tick of every run: True also interrupts the run in hand (`attempt_sequence`, which says what
+      the callback must not do). What either raises in the pick loop ends the session through the
+      `finally` below, session row closed. Neither is asked before the session's own start-up (pending
+      re-checks, the pool, the snapshot): a caller that is already stopping should not start a session."""
     requested, count = count, min(count, budgets.session_attempt_cap)
     # Which gp produced this session's rows. `meta` alone would not answer it: it is overwritten the next
     # time gp changes, so after an upgrade it describes no historical row at all, while a note is written
@@ -759,9 +922,14 @@ def run_session(conn: sqlite3.Connection, count: int, budgets: Budgets = config.
 
     versions = runtime_versions()
     db.set_meta_many(conn, versions)
+    # The budgets are in the note since item 58. Sessions 7 to 12 all ran with a 30-minute extension and
+    # nothing but each attempt row's `extra` said so, which is how a plan came to be costed at the 3-hour
+    # default they never used
     session_id = db.start_session(conn, note=f"count={count} alpha={alpha} seed={seed} "
                                              f"model={getattr(model, 'name', None)} "
-                                             f"{gp_session_token(versions['gp_version'])}")
+                                             f"verify_s={budgets.verify_wall_s:g} extend_s={budgets.extend_wall_s:g} "
+                                             f"{gp_session_token(versions['gp_version'])}"
+                                             + (f" {note}" if note else ""))
     try:
         if requested > count:
             log(f"session {session_id}: asked for {requested}, capped at {count} "
@@ -771,18 +939,38 @@ def run_session(conn: sqlite3.Connection, count: int, budgets: Budgets = config.
             log(f"session {session_id}: {left} win(s) still waiting for a re-check" if left else
                 f"session {session_id}: pending re-checks resolved")
         if a_numbers is None:
-            pool, keep = session_pool(conn, budgets, model=model is not None, alpha=alpha)
-            chosen = [c.a_number for c in select.pick(pool, count, random.Random(seed))]
-            summary = keep.summary()
-            log(f"session {session_id}: picked {len(chosen)} of {len(pool)} candidates (alpha={alpha})"
+            pool, runnable = session_pool(conn, budgets, model=model is not None, alpha=alpha)
+            drawable = pool if keep is None else [c for c in pool if keep(c)]
+            chosen = [c.a_number for c in select.pick(drawable, count, random.Random(seed))]
+            summary = runnable.summary()
+            held = len(pool) - len(drawable)
+            log(f"session {session_id}: picked {len(chosen)} of {len(drawable)} candidates (alpha={alpha})"
+                + (f"; {held} more held back by the caller" if held else "")
                 + (f"; {summary}" if summary else ""))
             # after the "picked" line, which callers and tests read as the session's first line of output;
             # before any program runs, so the snapshot is the pool the picks were drawn from
-            snapshot_pool(conn, pool, model=model is not None, budgets=budgets, session_id=session_id, log=log)
+            if snapshot:
+                snapshot_pool(conn, pool, model=model is not None, budgets=budgets, session_id=session_id, log=log)
         else:
             chosen = a_numbers[:count]
-        for a in chosen:
-            attempt_sequence(conn, a, budgets, session_id=session_id, log=log, model=model)
+        for done, a in enumerate(chosen):
+            why = ("a stop was requested" if should_stop is not None and should_stop() else
+                   "the caller will not start another" if may_start is not None and not may_start() else None)
+            if why is not None:
+                log(f"session {session_id}: stopping before {a}, with {len(chosen) - done} of {len(chosen)} "
+                    f"picks not started: {why}")
+                break
+            if before_attempt is not None:
+                try:
+                    before_attempt(a)
+                except Exception as e:      # noqa: BLE001 -- see the docstring
+                    log(f"session {session_id}: before_attempt failed ({type(e).__name__}: {e}); going on")
+            rep = attempt_sequence(conn, a, budgets, session_id=session_id, log=log, model=model,
+                                   should_stop=should_stop)
+            if rep.interrupted:
+                log(f"session {session_id}: stopped during {a}, with {len(chosen) - done - 1} of "
+                    f"{len(chosen)} picks not started")
+                break
     finally:
         db.finish_session(conn, session_id)
     return session_id

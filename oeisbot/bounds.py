@@ -16,6 +16,7 @@ produced measured false positives.
 """
 from __future__ import annotations
 
+import math
 import re
 import sys
 from dataclasses import dataclass
@@ -44,9 +45,20 @@ class Bound:
 # into 2 and 3 -- discarding a 9.2e18 bound and a 3.5e9 one.
 _POWER = re.compile(r"(?:(\d[\d,]*(?:\.\d+)?)\s*[*x]\s*)?(\d+)\s*\^\s*(\d+)", re.I)
 _PLAIN = re.compile(r"\d[\d,]*(?:\.\d+)?")
-# 'No additional terms up to 10 billion' (A175492) parses as 10 without this
-_WORD_SCALE = re.compile(r"\A\s*(million|billion|trillion)\b", re.I)
-_SCALES = {"million": 10**6, "billion": 10**9, "trillion": 10**12}
+# 'No additional terms up to 10 billion' (A175492) parses as 10 without this. The short scale throughout,
+# which is what OEIS contributors write. `thousand` and the words past `trillion` follow no bound claim
+# in the corpus (item 57, `data/item57/bound_gaps.txt`): they are here so that the day one does, it is
+# not read as its bare coefficient, which is the same defect.
+_SCALES = {"thousand": 10**3, "million": 10**6, "billion": 10**9, "trillion": 10**12, "quadrillion": 10**15,
+           "quintillion": 10**18, "sextillion": 10**21, "septillion": 10**24, "octillion": 10**27,
+           "nonillion": 10**30, "decillion": 10**33}
+_WORD_SCALE = re.compile(rf"\A\s*({'|'.join(_SCALES)})\b", re.I)
+# 'No other elements < 31!' (A025494), 'a(15) > 40! if it exists' (A363212): read as 31 and 40 before
+# item 57. Only directly after the literal, and never `!=`, `!!` (a double factorial is far smaller:
+# 10!! is 3,840 and 10! is 3,628,800) or a factorial that is then divided (`20!/2`): each of those is
+# read as the bare number, which is too low and so only costs time. A sentence that merely ends in an
+# exclamation mark after a number would be misread as a factorial; none does in the corpus.
+_FACTORIAL = re.compile(r"\A\s*!(?![=!])(?!\s*/)")
 
 
 def _exact(mantissa: str | None, power: int) -> int | None:
@@ -81,7 +93,15 @@ def parse_number(text: str) -> int | None:
         return _exact(p.group(1), power)
     if q is None:
         return None
-    scale = _WORD_SCALE.match(text[q.end():])
+    after = text[q.end():]
+    if _FACTORIAL.match(after):
+        # a whole number no larger than MAX_EXPONENT: 10000! has 35,660 digits. People do publish larger
+        # ones (A227644: `greater than 20000!`); they are not read at all, which is the safe direction
+        literal = q.group(0).replace(",", "")
+        if not literal.isdigit() or int(literal) > MAX_EXPONENT:
+            return None
+        return math.factorial(int(literal))
+    scale = _WORD_SCALE.match(after)
     return _exact(q.group(0), _SCALES[scale.group(1).lower()] if scale else 1)
 
 
@@ -108,7 +128,29 @@ _UNINDEXED = [
     re.compile(rf"\bnext\s+terms?\b([^.;]{{0,30}}?){_COMPARE}\s*(.{{0,48}})", re.I),
     # 'Any subsequent terms are > X' carries no search word at all and was invisible to earlier patterns
     re.compile(rf"\bany\s+subsequent\s+terms?\b([^.;]{{0,30}}?){_COMPARE}\s*(.{{0,48}})", re.I),
+    # '... report that these are the only terms known up to 10^10' (A119748), '2, 5, 13, 37, 463 are the
+    # only terms up to 150 million' (A064384). The verb is required and nothing but `known` may stand
+    # between `terms` and the connective: without the verb the same words open a sub-case (A339449's
+    # `For the case ..., the only terms below 2*10^9 are 0, 2, 4, 8` is about a variant of the sequence),
+    # and with a word in between they narrow the claim (A398494's `the only terms p <= 10^9`, A125246's
+    # `The only terms not of the form b(k), below 10^13`). Item 57 read all nine corpus lines.
+    # This one is `_ONLY_TERMS` below, apart from the list because it is held to more than the others.
 ]
+# The tail is the clause up to the end of its sentence, and `bounds_in` requires it to be a number and
+# nothing else (`_NUMBER_ONLY`): `are the only terms below 10^8 which are squares` and `... up to 10^9 in
+# base 3` narrow the claim AFTER the number, where `_QUALIFIER` never looks, and `are the only terms
+# known up to now. a(7) = 10^11.` would otherwise take its number from the next sentence. The older
+# patterns have the same two holes and are left as measured; this one is new, so it starts strict.
+_ONLY_TERMS = re.compile(rf"\bare\s+the\s+only\s+terms?(?:\s+known)?(?:\s+|(?=<)){_CONNECT}\s*(.{{0,48}}?)(?:[.;,](?:\s|$)|$)",
+                         re.I)
+_NUMBER_ONLY = re.compile(rf"\s*[\d][\d,.\s*x^]*(?:\s*(?:{'|'.join(_SCALES)}))?\s*", re.I)
+# Deliberately ABSENT as well, measured in item 57 (`data/item57/bound_gaps.txt`, every hit read):
+# `checked / tested / verified / searched up to X` -- 106 lines, 14 of them on sequences with a predicate
+# candidate, and of the eight that would be live three are not a bound on the next term (A019279 speaks
+# of odd terms only, A272032 of one parameter range, A301776 counts primes rather than values): the
+# A088783 class again. `none was found up to X` -- two lines, both about a side question (A299118,
+# A384255). And primorial notation -- the one bound claim that uses it (A057230, `up to 23#`) writes n#
+# for the product of the first n primes and is about the products searched, not the terms.
 # 'a(10) (if it exists) is > 10^300', 'a(6), if it exists, is greater than 4*10^8' -- the commonest
 # missed form by a wide margin, so the interjection is allowed but tightly policed by `_bridges`
 _INDEXED = re.compile(rf"\ba\((\d+)\)([^.;]{{0,30}}?){_COMPARE}\s*(.{{0,48}})", re.I)
@@ -123,7 +165,11 @@ _QUALIFIER = re.compile(r"multiple\s+of|of\s+the\s+form|congruent\s+to|divisible
 # attribute 10^9 to k = 7
 _BRIDGE = re.compile(r"a\s*\(|=|\d")
 _ANUMBER = re.compile(r"A\d{6}")
-_SENTENCE = re.compile(r"(?<=[.!?])\s+(?=[A-Z(])")
+# A `!` directly after a digit is a factorial, not the end of a sentence: read as an end, `No more terms
+# < 20! (the search limit of A001220).` hid the A-number from `_borrowed`, the guard that exists for the
+# one wrong skip that cannot be undone (item 57's audit). Not ending there only ever makes the sentence
+# longer, so the guard can only reject more.
+_SENTENCE = re.compile(r"(?<=[.!?])(?<!\d!)\s+(?=[A-Z(])")
 
 
 def _bridges(interjection: str) -> bool:
@@ -172,6 +218,12 @@ def bounds_in(comments: list[str], a_number: str) -> list[Bound]:
                 value = parse_number(m.group(2))
                 if value is not None:
                     found.append(Bound(value, line, None))
+        for m in _ONLY_TERMS.finditer(line):
+            if _borrowed(line, m.start(), a_number) or not _NUMBER_ONLY.fullmatch(m.group(1)):
+                continue
+            value = parse_number(m.group(1))
+            if value is not None:
+                found.append(Bound(value, line, None))
         for m in _INDEXED.finditer(line):
             if _bridges(m.group(2)) or _borrowed(line, m.start(), a_number):
                 continue
